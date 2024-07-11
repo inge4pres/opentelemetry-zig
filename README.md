@@ -1,13 +1,14 @@
 # OpenTelemetry Zig
 
-## Maintainers
+This is an implementation of the OpenTelemetry specification for the [Zig](https://ziglang.org) programming language.
 
-- TODO
+Type are generated from the official protobuf [definitions](https://github.com/open-telemetry/opentelemetry-proto/tree/main/opentelemetry/proto) using
+the code generation provided by [Arwalk/zig-protobuf](https://github.com/Arwalk/zig-protobuf) (thanks @Arwalk).
 
-For more information about the maintainer role, see the [community repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
+Generated code is committed and can be updated by running:
 
-## Approvers
+```
+zig build gen-proto
+```
 
-- TODO
 
-For more information about the approver role, see the [community repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).

@@ -1,0 +1,6 @@
+[submodule "src/proto"]
+	path = src/proto
+	url = git@github.com:open-telemetry/opentelemetry-proto.git
+[submodule "proto-src"]
+	path = proto-src
+	url = git@github.com:open-telemetry/opentelemetry-proto.git
