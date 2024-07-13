@@ -22,10 +22,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const protobuf_mod = protobuf_dep.module("protobuf");
 
     const protoc_step = protobuf.RunProtocStep.create(b, protobuf_dep.builder, target, .{
         // Output directory for the generated zig files
-        .destination_directory = b.path("src/model"),
+        .destination_directory = b.path("src"),
         .source_files = &.{
             // Add more protobuf definitions as the API grows
             "proto-src/opentelemetry/proto/common/v1/common.proto",
@@ -45,33 +46,55 @@ pub fn build(b: *std.Build) void {
     const gen_proto = b.step("gen-proto", "generates zig files from protocol buffer definitions");
     gen_proto.dependOn(&protoc_step.step);
 
-    const lib = b.addStaticLibrary(.{
-        .name = "opentelemetry-zig",
+    const sdk_lib = b.addStaticLibrary(.{
+        .name = "opentelemetry-zig-sdk",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/sdk/sdk.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = false,
+        .unwind_tables = true,
     });
+    sdk_lib.root_module.addImport("protobuf", protobuf_mod);
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
-    b.installArtifact(lib);
+    b.installArtifact(sdk_lib);
+
+
+    sdk_lib.root_module.addAnonymousImport("pbcommonv1", .{
+        .root_source_file = b.path("src/opentelemetry/proto/common/v1.pb.zig"),
+    });
+    sdk_lib.root_module.addAnonymousImport("pbresourcev1", .{
+        .root_source_file = b.path("src/opentelemetry/proto/resource/v1.pb.zig"),
+    });
+    sdk_lib.root_module.addAnonymousImport("pbmetricsv1", .{
+        .root_source_file = b.path("src/opentelemetry/proto/metrics/v1.pb.zig"),
+    });
+
+    // Providing a way for the user to request running the unit tests.
+    const test_step = b.step("test", "Run unit tests");
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const lib_unit_tests = b.addTest(.{
+    const sdk_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    sdk_unit_tests.root_module.addAnonymousImport("pbcommonv1", .{
+        .root_source_file = b.path("src/opentelemetry/proto/common/v1.pb.zig"),
+    });
+    sdk_unit_tests.root_module.addAnonymousImport("pbresourcev1", .{
+        .root_source_file = b.path("src/opentelemetry/proto/resource/v1.pb.zig"),
+    });
+    sdk_unit_tests.root_module.addAnonymousImport("pbmetricsv1", .{
+        .root_source_file = b.path("src/opentelemetry/proto/metrics/v1.pb.zig"),
+    });
 
-    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+    const run_sdk_unit_tests = b.addRunArtifact(sdk_unit_tests);
 
-    // Similar to creating the run step earlier, this exposes a `test` step to
-    // the `zig build --help` menu, providing a way for the user to request
-    // running the unit tests.
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_lib_unit_tests.step);
+    test_step.dependOn(&run_sdk_unit_tests.step);
 }
