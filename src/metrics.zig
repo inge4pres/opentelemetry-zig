@@ -1,6 +1,5 @@
 const std = @import("std");
-const pb_common = @import("pbcommonv1");
-// const pb_resource = @import("../../model/opentelemetry/proto/resource/v1.pb.zig");
+const pb_common = @import("opentelemetry/proto/common/v1.pb.zig");
 
 pub const MeterProvider = struct {
     const self = @This();
@@ -10,7 +9,7 @@ pub const MeterProvider = struct {
     schema_url: ?[]const u8,
     attributes: ?pb_common.KeyValueList,
 
-    allocator: std.mem.Allocator = std.heap.GeneralPurposeAllocator(.{}),
+    const allocator: std.mem.Allocator = std.heap.GeneralPurposeAllocator(.{}).allocator();
 
     var instruments = std.AutoHashMap([]const u8, *Meter).init(self.allocator);
 
@@ -18,7 +17,7 @@ pub const MeterProvider = struct {
     pub fn init(name: []const u8, version: ?[]const u8, schemaURL: ?[]const u8, attributes: ?pb_common.KeyValueList) MeterProvider {
         return MeterProvider{
             .name = name,
-            .version = version,
+            .version = version orelse "0.0.0-alpha",
             .schema_url = schemaURL,
             .attributes = attributes,
         };
@@ -50,5 +49,3 @@ pub const MeterType = enum {
 };
 
 pub const Meter = struct { kind: MeterType };
-
-

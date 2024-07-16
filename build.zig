@@ -22,7 +22,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const protobuf_mod = protobuf_dep.module("protobuf");
 
     const protoc_step = protobuf.RunProtocStep.create(b, protobuf_dep.builder, target, .{
         // Output directory for the generated zig files
@@ -47,32 +46,22 @@ pub fn build(b: *std.Build) void {
     gen_proto.dependOn(&protoc_step.step);
 
     const sdk_lib = b.addStaticLibrary(.{
-        .name = "opentelemetry-zig-sdk",
+        .name = "opentelemetry-sdk",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/sdk/sdk.zig"),
+        .root_source_file = b.path("src/sdk.zig"),
         .target = target,
         .optimize = optimize,
         .strip = false,
         .unwind_tables = true,
     });
-    sdk_lib.root_module.addImport("protobuf", protobuf_mod);
+
+    sdk_lib.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
     // running `zig build`).
     b.installArtifact(sdk_lib);
-
-
-    sdk_lib.root_module.addAnonymousImport("pbcommonv1", .{
-        .root_source_file = b.path("src/opentelemetry/proto/common/v1.pb.zig"),
-    });
-    sdk_lib.root_module.addAnonymousImport("pbresourcev1", .{
-        .root_source_file = b.path("src/opentelemetry/proto/resource/v1.pb.zig"),
-    });
-    sdk_lib.root_module.addAnonymousImport("pbmetricsv1", .{
-        .root_source_file = b.path("src/opentelemetry/proto/metrics/v1.pb.zig"),
-    });
 
     // Providing a way for the user to request running the unit tests.
     const test_step = b.step("test", "Run unit tests");
@@ -80,19 +69,11 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const sdk_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/sdk.zig"),
         .target = target,
         .optimize = optimize,
     });
-    sdk_unit_tests.root_module.addAnonymousImport("pbcommonv1", .{
-        .root_source_file = b.path("src/opentelemetry/proto/common/v1.pb.zig"),
-    });
-    sdk_unit_tests.root_module.addAnonymousImport("pbresourcev1", .{
-        .root_source_file = b.path("src/opentelemetry/proto/resource/v1.pb.zig"),
-    });
-    sdk_unit_tests.root_module.addAnonymousImport("pbmetricsv1", .{
-        .root_source_file = b.path("src/opentelemetry/proto/metrics/v1.pb.zig"),
-    });
+    sdk_unit_tests.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));
 
     const run_sdk_unit_tests = b.addRunArtifact(sdk_unit_tests);
 
