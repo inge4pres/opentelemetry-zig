@@ -9,7 +9,7 @@ pub const MeterProvider = struct {
 
     const Self = @This();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    
+
     /// Create a new custom meter provider
     pub fn init(alloc: std.mem.Allocator) !*Self {
         const provider = try alloc.create(Self);
@@ -35,17 +35,23 @@ pub const MeterProvider = struct {
     /// Get a new meter by specifying its name, version, schemaURL, and attributes.
     /// SchemaURL and attributes are optional and defaults to null.
     /// If a meter with the same name already exists, it will be returned.
-    pub fn get_meter(self: *Self, name: []const u8, version: ?[]const u8, schemaURL: ?[]const u8, attributes: ?pb_common.KeyValueList) !*Meter {
+    pub fn get_meter(self: *Self, name: []const u8, opts: MeterOptions) !*Meter {
         const i = Meter{
             .name = name,
-            .version = version orelse defaultMeterVersion,
-            .schema_url = schemaURL,
-            .attributes = attributes,
+            .version = opts.version,
+            .attributes = opts.attributes,
+            .schema_url = opts.schema_url,
         };
         const meter = try self.meters.getOrPutValue(name, i);
 
         return meter.value_ptr;
     }
+};
+
+const MeterOptions = struct {
+    version: []const u8 = defaultMeterVersion,
+    schema_url: ?[]const u8 = null,
+    attributes: ?pb_common.KeyValueList = null,
 };
 
 const Meter = struct {
