@@ -1,18 +1,44 @@
 const std = @import("std");
 const pb_common = @import("opentelemetry/proto/common/v1.pb.zig");
-
 pub const metrics = @import("metrics.zig");
 
-test "default meter provider has name and version" {
-    const mp = metrics.MeterProvider.default();
-    std.debug.assert(std.mem.eql(u8, mp.name, "io.opentelemetry.sdk.metrics"));
+test "default meter provider can be fetched" {
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+
+    std.debug.assert(@intFromPtr(&mp) != 0);
 }
 
-test "custom meter provider can be configured with attributes" {
+test "custom meter provider can be created" {
+    const mp = try metrics.MeterProvider.init(std.testing.allocator);
+    defer mp.deinit();
+
+    std.debug.assert(@intFromPtr(&mp) != 0);
+}
+
+test "meter can be created from custom provider" {
+    const meter_name = "my-meter";
+    const meter_version = "my-meter";
+    const mp = try metrics.MeterProvider.init(std.testing.allocator);
+    defer mp.deinit();
+
+    const meter = try mp.get_meter(meter_name, meter_version, null, null);
+    std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
+    std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
+    std.debug.assert(meter.schema_url == null);
+    std.debug.assert(meter.attributes == null);
+}
+
+test "meter can be created from default provider with schema url and attributes" {
     const meter_name = "my-meter";
     const meter_version = "my-meter";
     const attributes = pb_common.KeyValueList{ .values = std.ArrayList(pb_common.KeyValue).init(std.testing.allocator) };
-    const mp = metrics.MeterProvider.init(meter_name, meter_version, null, attributes);
-    std.debug.assert(std.mem.eql(u8, mp.name, meter_name));
-    std.debug.assert(std.mem.eql(u8, mp.version, meter_version));
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+
+    const meter = try mp.get_meter(meter_name, meter_version, "http://foo.bar", attributes);
+    std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
+    std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
+    std.debug.assert(std.mem.eql(u8, meter.schema_url.?, "http://foo.bar"));
+    std.debug.assert(meter.attributes.?.values.items.len == attributes.values.items.len);
 }
