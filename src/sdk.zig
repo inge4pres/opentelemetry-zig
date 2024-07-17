@@ -22,7 +22,7 @@ test "meter can be created from custom provider" {
     const mp = try metrics.MeterProvider.init(std.testing.allocator);
     defer mp.deinit();
 
-    const meter = try mp.get_meter(meter_name, meter_version, null, null);
+    const meter = try mp.get_meter(meter_name, .{ .version = meter_version });
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
     std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
     std.debug.assert(meter.schema_url == null);
@@ -36,9 +36,18 @@ test "meter can be created from default provider with schema url and attributes"
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
 
-    const meter = try mp.get_meter(meter_name, meter_version, "http://foo.bar", attributes);
+    const meter = try mp.get_meter(meter_name, .{ .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
     std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
     std.debug.assert(std.mem.eql(u8, meter.schema_url.?, "http://foo.bar"));
     std.debug.assert(meter.attributes.?.values.items.len == attributes.values.items.len);
+}
+
+test "meter has default version when creted with no options" {
+    const meter_name = "my-meter";
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+
+    const meter = try mp.get_meter(meter_name, .{});
+    std.debug.assert(std.mem.eql(u8, meter.version, metrics.defaultMeterVersion));
 }
