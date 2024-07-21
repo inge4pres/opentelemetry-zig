@@ -51,3 +51,14 @@ test "meter has default version when creted with no options" {
     const meter = try mp.get_meter(meter_name, .{});
     std.debug.assert(std.mem.eql(u8, meter.version, metrics.defaultMeterVersion));
 }
+
+test "meter can create counter instrument and record counter increase without attributes" {
+    const meter_name = "my-meter";
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.get_meter(meter_name, .{});
+    var counter = try meter.create_counter(i32, "a-counter", .{});
+
+    try counter.add(10, null);
+    std.debug.assert(counter.series().count() == 1);
+}
