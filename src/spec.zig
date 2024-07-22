@@ -27,3 +27,17 @@ pub fn validateName(name: []const u8) FormatError!void {
     }
     return;
 }
+
+test "instrument name must conform to the OpenTelemetry specification" {
+    const longname = "longname" ** 32;
+    const invalid_names = &[_][]const u8{
+        "0invalid",
+        "wrongchar()",
+        // 256 chars
+        longname,
+    };
+    for (invalid_names) |name| {
+        const err = validateName(name);
+        try std.testing.expectEqual(FormatError.InvalidInstrumentName, err);
+    }
+}
