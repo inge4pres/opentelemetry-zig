@@ -72,10 +72,9 @@ test "instrument name must conform to the OpenTelemetry specification" {
 }
 
 test "meter can create counter instrument and record counter increase without attributes" {
-    const meter_name = "my-meter";
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
-    const meter = try mp.get_meter(meter_name, .{});
+    const meter = try mp.get_meter("my-meter", .{});
     var counter = try meter.create_counter(i32, "a-counter", .{});
 
     try counter.add(10, null);
@@ -83,10 +82,9 @@ test "meter can create counter instrument and record counter increase without at
 }
 
 test "meter can create counter instrument and record counter increase with attributes" {
-    const meter_name = "my-meter";
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
-    const meter = try mp.get_meter(meter_name, .{});
+    const meter = try mp.get_meter("my-meter", .{});
     var counter = try meter.create_counter(i32, "a-counter", .{
         .description = "a funny counter",
         .unit = "KiB",
@@ -97,8 +95,8 @@ test "meter can create counter instrument and record counter increase with attri
 
     var attrs = std.ArrayList(pb_common.KeyValue).init(std.testing.allocator);
     defer attrs.deinit();
-    const a = try attrs.addOne();
-    a.* = pb_common.KeyValue{ .key = .{ .Const = "some-key" }, .value = pb_common.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } };
+    try attrs.append(pb_common.KeyValue{ .key = .{ .Const = "some-key" }, .value = pb_common.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
+    try attrs.append(pb_common.KeyValue{ .key = .{ .Const = "another-key" }, .value = pb_common.AnyValue{ .value = .{ .int_value = 0x123456789 } } });
 
     try counter.add(2, pb_common.KeyValueList{ .values = attrs });
     std.debug.assert(counter.series().count() == 2);
