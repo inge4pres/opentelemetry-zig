@@ -4,6 +4,7 @@ const ManagedString = protobuf.ManagedString;
 const pb_common = @import("opentelemetry/proto/common/v1.pb.zig");
 const pb_metrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
 const pbutils = @import("pb_utils.zig");
+const spec = @import("spec.zig");
 
 pub const defaultMeterVersion = "0.1.0";
 
@@ -45,8 +46,6 @@ pub const MeterProvider = struct {
     /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#get-a-meter
     pub fn get_meter(self: *Self, name: []const u8, opts: MeterOptions) !*Meter {
         const i = Meter{
-            // TODO validate name before assignment here, optionally throw an error if non conformant.
-            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
             .name = name,
             .version = opts.version,
             .attributes = opts.attributes,
@@ -82,8 +81,16 @@ const Meter = struct {
     /// Options to identify the counter must be provided: a mandatory name,
     /// and optional description and unit.
     pub fn create_counter(self: *Self, comptime T: type, name: []const u8, options: InstrumentOptions) !Counter(T) {
+        switch (T) {
+            isize, i8, i16, i32, i64, f32, f64 => {},
+            else => @compileError("Unsupported counter value type for monotonic counter"),
+        }
+        try spec.validateName(name);
+
         const counter = try Counter(T).init(name, options, self.allocator);
         try self.instruments.put(name, pb_metrics.Metric{
+            // TODO validate name before assignment here, optionally throw an error if non conformant.
+            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
             .name = .{ .Const = name },
             .unit = if (options.unit) |u| .{ .Const = u } else .Empty,
             .description = if (options.description) |d| .{ .Const = d } else .Empty,
