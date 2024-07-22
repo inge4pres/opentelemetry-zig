@@ -3,6 +3,7 @@ const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
 const pb_common = @import("opentelemetry/proto/common/v1.pb.zig");
 const pb_metrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
+const pbutils = @import("pb_utils.zig");
 
 pub const defaultMeterVersion = "0.1.0";
 
@@ -129,7 +130,7 @@ fn Counter(comptime valueType: type) type {
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: valueType, attributes: ?pb_common.KeyValueList) !void {
-            const key = mapKeyFromAttributes(attributes);
+            const key = pbutils.hashIdentifyAttributes(attributes);
             if (self.cumulative.getEntry(key)) |c| {
                 c.value_ptr.* += delta;
             } else {
@@ -141,28 +142,4 @@ fn Counter(comptime valueType: type) type {
             return self.cumulative;
         }
     };
-}
-
-// Generate a hash from a set of attributes. The hash is made from both keys and values.
-// This is used to identify the counter for a given set of attributes and
-// alow incrementing it without allocating memory for each set of attributes.
-fn mapKeyFromAttributes(attributes: ?pb_common.KeyValueList) u64 {
-    if (attributes) |a| {
-        var hash: [1024]u8 = std.mem.zeroes([1024]u8);
-        var lastInserted: usize = 0;
-        for (a.values.items) |kv| {
-            const buf = std.mem.toBytes(kv);
-            // If the attributes are not going to fit, we stop hashing them.
-            if (lastInserted + buf.len > 1023) {
-                break;
-            }
-            for (hash[lastInserted..buf.len], buf) |*d, s| {
-                d.* = s;
-            }
-            lastInserted += buf.len;
-        }
-        return std.hash.XxHash3.hash(0, &hash);
-    } else {
-        return 0;
-    }
 }
