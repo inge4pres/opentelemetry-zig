@@ -1,6 +1,7 @@
 const std = @import("std");
 const metrics = @import("metrics.zig");
 const pb_common = @import("opentelemetry/proto/common/v1.pb.zig");
+const spec = @import("spec.zig");
 
 test "default meter provider can be fetched" {
     const mp = try metrics.MeterProvider.default();
@@ -50,6 +51,24 @@ test "meter has default version when creted with no options" {
 
     const meter = try mp.get_meter(meter_name, .{});
     std.debug.assert(std.mem.eql(u8, meter.version, metrics.defaultMeterVersion));
+}
+
+test "instrument name must conform to the OpenTelemetry specification" {
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.get_meter("my-meter", .{});
+    const invalid_names = &[_][]const u8{
+        // Does not start with a letter
+        "123",
+        // null or empty string
+        "",
+        // contains invalid characters
+        "alpha-?",
+    };
+    for (invalid_names) |name| {
+        const r = meter.create_counter(i32, name, .{});
+        try std.testing.expectError(spec.FormatError.InvalidInstrumentName, r);
+    }
 }
 
 test "meter can create counter instrument and record counter increase without attributes" {
