@@ -147,27 +147,22 @@ fn Counter(comptime valueType: type) type {
 // This is used to identify the counter for a given set of attributes and
 // alow incrementing it without allocating memory for each set of attributes.
 fn mapKeyFromAttributes(attributes: ?pb_common.KeyValueList) u64 {
-    if (attributes == null) {
-        return 0;
-    }
-    var hash: [1024]u8 = std.mem.zeroes([1024]u8);
-    var lastInserted: usize = 0;
     if (attributes) |a| {
+        var hash: [1024]u8 = std.mem.zeroes([1024]u8);
+        var lastInserted: usize = 0;
         for (a.values.items) |kv| {
-            const key = kv.key.getSlice();
-            const val = kv.value.?.value.?.string_value.getSlice();
-            if (lastInserted + val.len + key.len > 1023) {
+            const buf = std.mem.toBytes(kv);
+            // If the attributes are not going to fit, we stop hashing them.
+            if (lastInserted + buf.len > 1023) {
                 break;
             }
-            for (hash[lastInserted..key.len], key) |*d, s| {
+            for (hash[lastInserted..buf.len], buf) |*d, s| {
                 d.* = s;
             }
-            lastInserted += key.len;
-            for (hash[lastInserted..val.len], val) |*d, s| {
-                d.* = s;
-            }
-            lastInserted += val.len;
+            lastInserted += buf.len;
         }
+        return std.hash.XxHash3.hash(0, &hash);
+    } else {
+        return 0;
     }
-    return std.hash.XxHash3.hash(0, &hash);
 }

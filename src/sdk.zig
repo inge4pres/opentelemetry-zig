@@ -62,3 +62,25 @@ test "meter can create counter instrument and record counter increase without at
     try counter.add(10, null);
     std.debug.assert(counter.series().count() == 1);
 }
+
+test "meter can create counter instrument and record counter increase with attributes" {
+    const meter_name = "my-meter";
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.get_meter(meter_name, .{});
+    var counter = try meter.create_counter(i32, "a-counter", .{
+        .description = "a funny counter",
+        .unit = "KiB",
+    });
+
+    try counter.add(1, null);
+    std.debug.assert(counter.series().count() == 1);
+
+    var attrs = std.ArrayList(pb_common.KeyValue).init(std.testing.allocator);
+    defer attrs.deinit();
+    const a = try attrs.addOne();
+    a.* = pb_common.KeyValue{ .key = .{ .Const = "some-key" }, .value = pb_common.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } };
+
+    try counter.add(2, pb_common.KeyValueList{ .values = attrs });
+    std.debug.assert(counter.series().count() == 2);
+}
