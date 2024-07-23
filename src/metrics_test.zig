@@ -23,7 +23,7 @@ test "meter can be created from custom provider" {
     const mp = try metrics.MeterProvider.init(std.testing.allocator);
     defer mp.deinit();
 
-    const meter = try mp.get_meter(meter_name, .{ .version = meter_version });
+    const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
     std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
     std.debug.assert(meter.schema_url == null);
@@ -37,7 +37,7 @@ test "meter can be created from default provider with schema url and attributes"
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
 
-    const meter = try mp.get_meter(meter_name, .{ .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
+    const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
     std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
     std.debug.assert(std.mem.eql(u8, meter.schema_url.?, "http://foo.bar"));
@@ -45,18 +45,17 @@ test "meter can be created from default provider with schema url and attributes"
 }
 
 test "meter has default version when creted with no options" {
-    const meter_name = "my-meter";
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
 
-    const meter = try mp.get_meter(meter_name, .{});
+    const meter = try mp.getMeter(.{ .name = "ameter" });
     std.debug.assert(std.mem.eql(u8, meter.version, metrics.defaultMeterVersion));
 }
 
 test "instrument name must conform to the OpenTelemetry specification" {
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
-    const meter = try mp.get_meter("my-meter", .{});
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
     const invalid_names = &[_][]const u8{
         // Does not start with a letter
         "123",
@@ -66,7 +65,7 @@ test "instrument name must conform to the OpenTelemetry specification" {
         "alpha-?",
     };
     for (invalid_names) |name| {
-        const r = meter.create_counter(i32, name, .{});
+        const r = meter.createCounter(i32, .{ .name = name });
         try std.testing.expectError(spec.FormatError.InvalidInstrumentName, r);
     }
 }
@@ -74,8 +73,8 @@ test "instrument name must conform to the OpenTelemetry specification" {
 test "meter can create counter instrument and record counter increase without attributes" {
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
-    const meter = try mp.get_meter("my-meter", .{});
-    var counter = try meter.create_counter(i32, "a-counter", .{});
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createCounter(i32, .{ .name = "a-counter" });
 
     try counter.add(10, null);
     std.debug.assert(counter.series().count() == 1);
@@ -84,8 +83,9 @@ test "meter can create counter instrument and record counter increase without at
 test "meter can create counter instrument and record counter increase with attributes" {
     const mp = try metrics.MeterProvider.default();
     defer mp.deinit();
-    const meter = try mp.get_meter("my-meter", .{});
-    var counter = try meter.create_counter(i32, "a-counter", .{
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createCounter(i32, .{
+        .name = "a-counter",
         .description = "a funny counter",
         .unit = "KiB",
     });

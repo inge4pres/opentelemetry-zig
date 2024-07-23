@@ -44,22 +44,23 @@ pub const MeterProvider = struct {
     /// SchemaURL and attributes are default to null.
     /// If a meter with the same name already exists, it will be returned.
     /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#get-a-meter
-    pub fn get_meter(self: *Self, name: []const u8, opts: MeterOptions) !*Meter {
+    pub fn getMeter(self: *Self, options: MeterOptions) !*Meter {
         const i = Meter{
-            .name = name,
-            .version = opts.version,
-            .attributes = opts.attributes,
-            .schema_url = opts.schema_url,
+            .name = options.name,
+            .version = options.version,
+            .attributes = options.attributes,
+            .schema_url = options.schema_url,
             .instruments = std.StringHashMap(pb_metrics.Metric).init(self.allocator),
             .allocator = self.allocator,
         };
-        const meter = try self.meters.getOrPutValue(name, i);
+        const meter = try self.meters.getOrPutValue(options.name, i);
 
         return meter.value_ptr;
     }
 };
 
 pub const MeterOptions = struct {
+    name: []const u8,
     version: []const u8 = defaultMeterVersion,
     schema_url: ?[]const u8 = null,
     attributes: ?pb_common.KeyValueList = null,
@@ -80,18 +81,18 @@ const Meter = struct {
     /// Create a new Counter instrument using the specified type as the value type.
     /// Options to identify the counter must be provided: a mandatory name,
     /// and optional description and unit.
-    pub fn create_counter(self: *Self, comptime T: type, name: []const u8, options: InstrumentOptions) !Counter(T) {
+    pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
         switch (T) {
             isize, i8, i16, i32, i64, f32, f64 => {},
             else => @compileError("Unsupported counter value type for monotonic counter"),
         }
-        try spec.validateName(name);
+        try spec.validateName(options.name);
 
-        const counter = try Counter(T).init(name, options, self.allocator);
-        try self.instruments.put(name, pb_metrics.Metric{
+        const counter = try Counter(T).init(options, self.allocator);
+        try self.instruments.put(options.name, pb_metrics.Metric{
             // TODO validate name before assignment here, optionally throw an error if non conformant.
             // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
-            .name = .{ .Const = name },
+            .name = .{ .Const = options.name },
             .unit = if (options.unit) |u| .{ .Const = u } else .Empty,
             .description = if (options.description) |d| .{ .Const = d } else .Empty,
             .data = .{ .sum = counter.measures },
@@ -103,6 +104,7 @@ const Meter = struct {
 };
 
 const InstrumentOptions = struct {
+    name: []const u8,
     description: ?[]const u8 = null,
     unit: ?[]const u8 = null,
     // Advisory parameters are in development, we don't support them here.
@@ -121,9 +123,9 @@ fn Counter(comptime valueType: type) type {
         cumulative: std.AutoHashMap(u64, valueType),
         allocator: std.mem.Allocator,
 
-        fn init(name: []const u8, options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
+        fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
             return Self{
-                .name = name,
+                .name = options.name,
                 .measures = pb_metrics.Sum{
                     .data_points = std.ArrayList(pb_metrics.NumberDataPoint).init(allocator),
                     .is_monotonic = true,
