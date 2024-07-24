@@ -86,7 +86,6 @@ const Meter = struct {
             isize, i8, i16, i32, i64, f32, f64 => {},
             else => @compileError("Unsupported counter value type for monotonic counter"),
         }
-        try spec.validateName(options.name);
 
         const counter = try Counter(T).init(options, self.allocator);
         try self.instruments.put(options.name, pb_metrics.Metric{
@@ -103,37 +102,36 @@ const Meter = struct {
     }
 };
 
-const InstrumentOptions = struct {
+pub const InstrumentOptions = struct {
     name: []const u8,
     description: ?[]const u8 = null,
     unit: ?[]const u8 = null,
     // Advisory parameters are in development, we don't support them here.
 };
 
+// A Counter is a monotonically increasing value used to record a sum of events.
+// See https://opentelemetry.io/docs/specs/otel/metrics/api/#counter
 fn Counter(comptime valueType: type) type {
     return struct {
         const Self = @This();
 
-        name: []const u8,
         measures: pb_metrics.Sum,
         options: InstrumentOptions,
         // We should keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(u64, valueType),
-        allocator: std.mem.Allocator,
 
         fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
+            try spec.validateInstrumentOptions(options);
             return Self{
-                .name = options.name,
+                .options = options,
                 .measures = pb_metrics.Sum{
                     .data_points = std.ArrayList(pb_metrics.NumberDataPoint).init(allocator),
                     .is_monotonic = true,
                     .aggregation_temporality = pb_metrics.AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE,
                 },
-                .options = options,
                 .cumulative = std.AutoHashMap(u64, valueType).init(allocator),
-                .allocator = allocator,
             };
         }
 
