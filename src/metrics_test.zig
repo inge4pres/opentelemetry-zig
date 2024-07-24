@@ -66,7 +66,7 @@ test "instrument name must conform to the OpenTelemetry specification" {
     };
     for (invalid_names) |name| {
         const r = meter.createCounter(i32, .{ .name = name });
-        try std.testing.expectError(spec.FormatError.InvalidInstrumentName, r);
+        try std.testing.expectError(spec.FormatError.InvalidName, r);
     }
 }
 
