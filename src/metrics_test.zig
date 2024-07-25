@@ -24,6 +24,7 @@ test "meter can be created from custom provider" {
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
+
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
     std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
     std.debug.assert(meter.schema_url == null);
@@ -50,6 +51,23 @@ test "meter has default version when creted with no options" {
 
     const meter = try mp.getMeter(.{ .name = "ameter" });
     std.debug.assert(std.mem.eql(u8, meter.version, metrics.defaultMeterVersion));
+}
+
+test "getting same meter with different attributes returns an error" {
+    const name = "my-meter";
+    const version = "v1.2.3";
+    const schema_url = "http://foo.bar";
+    var attributes = pb_common.KeyValueList{ .values = std.ArrayList(pb_common.KeyValue).init(std.testing.allocator) };
+    defer attributes.values.deinit();
+    try attributes.values.append(pb_common.KeyValue{ .key = .{ .Const = "key" }, .value = pb_common.AnyValue{ .value = .{ .string_value = .{ .Const = "value" } } } });
+
+    const mp = try metrics.MeterProvider.default();
+    _ = try mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
+    // modify the attributes adding one
+    try attributes.values.append(pb_common.KeyValue{ .key = .{ .Const = "key2" }, .value = pb_common.AnyValue{ .value = .{ .string_value = .{ .Const = "value2" } } } });
+
+    const r = mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
+    try std.testing.expectError(spec.ResourceError.MeterExistsWithDifferentAttributes, r);
 }
 
 test "instrument name must conform to the OpenTelemetry specification" {
