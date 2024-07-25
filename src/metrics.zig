@@ -12,7 +12,7 @@ pub const defaultMeterVersion = "0.1.0";
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meterprovider
 pub const MeterProvider = struct {
     allocator: std.mem.Allocator,
-    meters: std.StringHashMap(Meter),
+    meters: std.AutoHashMap(u64, Meter),
 
     const Self = @This();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -22,7 +22,7 @@ pub const MeterProvider = struct {
         const provider = try alloc.create(Self);
         provider.* = Self{
             .allocator = alloc,
-            .meters = std.StringHashMap(Meter).init(alloc),
+            .meters = std.AutoHashMap(u64, Meter).init(alloc),
         };
 
         return provider;
@@ -53,9 +53,26 @@ pub const MeterProvider = struct {
             .instruments = std.StringHashMap(pb_metrics.Metric).init(self.allocator),
             .allocator = self.allocator,
         };
-        const meter = try self.meters.getOrPutValue(options.name, i);
+        // A Meter is identified uniquely by its name, version and schema_url.
+        // We use a hash of these values to identify the meter.
+        const meterId = spec.meterIdentifier(options);
+
+        // Raise an error if a meter with the same name/version/schema_url is asked to be fetched with different attributes.
+        if (self.meterExistsWithDifferentAttributes(meterId, options.attributes)) {
+            return spec.ResourceError.MeterExistsWithDifferentAttributes;
+        }
+        const meter = try self.meters.getOrPutValue(meterId, i);
 
         return meter.value_ptr;
+    }
+
+    fn meterExistsWithDifferentAttributes(self: *Self, identifier: u64, attributes: ?pb_common.KeyValueList) bool {
+        if (self.meters.get(identifier)) |m| {
+            if (!std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes))) {
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -88,9 +105,8 @@ const Meter = struct {
         }
 
         const counter = try Counter(T).init(options, self.allocator);
+        // FIXME double registration?
         try self.instruments.put(options.name, pb_metrics.Metric{
-            // TODO validate name before assignment here, optionally throw an error if non conformant.
-            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
             .name = .{ .Const = options.name },
             .unit = if (options.unit) |u| .{ .Const = u } else .Empty,
             .description = if (options.description) |d| .{ .Const = d } else .Empty,
@@ -123,6 +139,8 @@ fn Counter(comptime valueType: type) type {
         cumulative: std.AutoHashMap(u64, valueType),
 
         fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
+            // Validate name, unit anddescription, optionally throw an error if non conformant.
+            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
             try spec.validateInstrumentOptions(options);
             return Self{
                 .options = options,
