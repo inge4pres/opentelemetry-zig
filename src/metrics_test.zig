@@ -119,3 +119,39 @@ test "meter can create counter instrument and record counter increase with attri
     try counter.add(2, pb_common.KeyValueList{ .values = attrs });
     std.debug.assert(counter.series().count() == 2);
 }
+
+test "meter can create histogram instrument and record histogram increase without buckets" {
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(i32, .{ .name = "anything" });
+
+    try histogram.record(1, null);
+    try histogram.record(5, null);
+    try histogram.record(15, null);
+
+    try std.testing.expectEqual(.{ 1, 15 }, histogram.minAndMax());
+    std.debug.assert(histogram.series().count() == 1);
+    const counts = histogram.bucketCounts(null).?;
+    std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
+    const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    try std.testing.expectEqualSlices(usize, expected_counts, counts);
+}
+
+test "meter can create histogram instrument and record histogram increase with explicit buckets" {
+    const mp = try metrics.MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(i32, .{ .name = "a-histogram", .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } });
+
+    try histogram.record(1, null);
+    try histogram.record(5, null);
+    try histogram.record(15, null);
+
+    try std.testing.expectEqual(.{ 1, 15 }, histogram.minAndMax());
+    std.debug.assert(histogram.series().count() == 1);
+    const counts = histogram.bucketCounts(null).?;
+    std.debug.assert(counts.len == 4);
+    const expected_counts = &[_]usize{ 1, 1, 1, 0 };
+    try std.testing.expectEqualSlices(usize, expected_counts, counts);
+}
