@@ -8,6 +8,7 @@ pub const FormatError = error{
     InvalidName,
     invalidUnit,
     InvalidDescription,
+    InvalidExplicitBucketBoundaries,
 };
 
 /// Validate the instrument options are conformant to the OpenTelemetry specification.
@@ -151,4 +152,40 @@ test "meter identifier changes with different schema url" {
     const id = meterIdentifier(.{ .name = name, .version = version, .schema_url = schema_url });
     const id2 = meterIdentifier(.{ .name = name, .version = version, .schema_url = schema_url2 });
     std.debug.assert(id != id2);
+}
+
+pub const defaultHistogramBucketBoundaries: []const f64 = &[_]f64{ 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0 };
+
+/// Validate the histogram option to use explicit bucket boundaries is conformant to the OpenTelemetry specification.
+/// Bucket boundaries must be between 0 and a positive real number, and in increasing order.
+/// There is no theoretical limit on the number of buckets, but the number of buckets should be kept small (usually between 5 and 20).
+pub fn validateExplicitBuckets(buckets: []const f64) FormatError!void {
+    if (buckets.len == 0) {
+        return FormatError.InvalidExplicitBucketBoundaries;
+    }
+    var prev = buckets[0];
+    for (1..buckets.len) |i| {
+        if (buckets[i] <= prev) {
+            return FormatError.InvalidExplicitBucketBoundaries;
+        }
+        prev = buckets[i];
+    }
+}
+
+test "validate default buckets" {
+    const err = validateExplicitBuckets(defaultHistogramBucketBoundaries);
+    try std.testing.expectEqual({}, err);
+}
+
+test "validate explicit buckets" {
+    const invalid_buckets = &[_][]const f64{
+        // empty buckets
+        &[_]f64{},
+        // not in increasing order
+        &[_]f64{ 0.0, 1.0, 0.5 },
+    };
+    for (invalid_buckets) |buckets| {
+        const err = validateExplicitBuckets(buckets);
+        try std.testing.expectEqual(FormatError.InvalidExplicitBucketBoundaries, err);
+    }
 }
