@@ -1,9 +1,8 @@
 // OpenTelemetry SDK implementation for Zig.
 
+// Test SDK implementations
 test {
-    // SDK implementations
-    _ = @import("metrics_test.zig");
+    _ = @import("metrics/test.zig");
     // helpers
-    _ = @import("pb_utils.zig");
-    _ = @import("spec.zig");
+    _ = @import("pbutils.zig");
 }
