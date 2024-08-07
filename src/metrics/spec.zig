@@ -1,7 +1,10 @@
 const std = @import("std");
-const metrics = @import("metrics.zig");
-const pb_common = @import("opentelemetry/proto/common/v1.pb.zig");
-const pb_utils = @import("pb_utils.zig");
+const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
+const pbutils = @import("../pbutils.zig");
+
+const MeterProvider = @import("meter.zig").MeterProvider;
+const MeterOptions = @import("meter.zig").MeterOptions;
+const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 
 /// FormatError is an error type that is used to represent errors in the format of the data.
 pub const FormatError = error{
@@ -13,7 +16,7 @@ pub const FormatError = error{
 
 /// Validate the instrument options are conformant to the OpenTelemetry specification.
 /// The name, unit and description of the instrument are validated in sequence.
-pub fn validateInstrumentOptions(opts: ?metrics.InstrumentOptions) !void {
+pub fn validateInstrumentOptions(opts: ?InstrumentOptions) !void {
     if (opts) |o| {
         try validateName(o.name);
         try validateUnit(o.unit);
@@ -55,6 +58,24 @@ test "instrument name must conform to the OpenTelemetry specification" {
     for (invalid_names) |name| {
         const err = validateName(name);
         try std.testing.expectEqual(FormatError.InvalidName, err);
+    }
+}
+
+test "meter cannot create instrument if name does not conform to the OpenTelemetry specification" {
+    const mp = try MeterProvider.default();
+    defer mp.deinit();
+    const m = try mp.getMeter(.{ .name = "my-meter" });
+    const invalid_names = &[_][]const u8{
+        // Does not start with a letter
+        "123",
+        // null or empty string
+        "",
+        // contains invalid characters
+        "alpha-?",
+    };
+    for (invalid_names) |name| {
+        const r = m.createCounter(i32, .{ .name = name });
+        try std.testing.expectError(FormatError.InvalidName, r);
     }
 }
 
@@ -117,11 +138,12 @@ test "validate description" {
 /// ResourceError indicates that there is a problem in the access of the resoruce.
 pub const ResourceError = error{
     MeterExistsWithDifferentAttributes,
+    InstrumentExistsWithSameName,
 };
 
 /// Generate an identifier for a meter: an existing meter with same
 /// name, version and schemUrl cannot be created again with different attributes.
-pub fn meterIdentifier(options: metrics.MeterOptions) u64 {
+pub fn meterIdentifier(options: MeterOptions) u64 {
     var hash: [2048]u8 = std.mem.zeroes([2048]u8);
     var nextInsertIdx: usize = 0;
     const keys = [_][]const u8{ options.name, options.version, options.schema_url orelse "" };
@@ -154,6 +176,57 @@ test "meter identifier changes with different schema url" {
     std.debug.assert(id != id2);
 }
 
+/// Identify an instrument in a meter by its name, kind, unit and description.
+/// Used to recognize duplicate instrument registration as defined in
+/// https://opentelemetry.io/docs/specs/otel/metrics/sdk/#duplicate-instrument-registration.
+/// Returned identifier must be freed by the caller using the allocator.
+pub fn instrumentIdentifier(allocator: std.mem.Allocator, name: []const u8, kind: []const u8, unit: []const u8, description: []const u8) ![]u8 {
+    var h = std.hash.Wyhash.init(42);
+    h.update(description);
+    const id = h.final();
+    return try std.fmt.allocPrint(allocator, "{s}-{s}-{s}-{x}", .{ lowerCaseName(name), kind, unit, id });
+}
+
+/// All instrument names must be case-insensitive.
+pub fn lowerCaseName(name: []const u8) []u8 {
+    var lowName: [255]u8 = [_]u8{0} ** 255;
+    for (name, 0..name.len) |c, i| {
+        lowName[i] = std.ascii.toLower(c);
+    }
+    return lowName[0..name.len];
+}
+
+test "identifying field for instrument remain equal upon similar name with mixed case" {
+    const name: []const u8 = "BytesCounter";
+    const equivalentName: []const u8 = "bytesCounter";
+    const kind: []const u8 = "Counter(i64)/sync";
+    const description: []const u8 = "some interesting counter for bytes";
+    const alloc = std.testing.allocator;
+
+    const a = try instrumentIdentifier(alloc, name, kind, "", description);
+    defer alloc.free(a);
+    const b = try instrumentIdentifier(alloc, equivalentName, kind, "", description);
+    defer alloc.free(b);
+    std.debug.assert(std.mem.eql(u8, a, b));
+}
+
+test "identifying fields for instruments change with unit" {
+
+    // Name, kind,unit and description must uniquely identify an instrument in a meter
+    const name: []const u8 = "bytes-counter";
+    const kind: []const u8 = "Counter(i64)/sync";
+    const description: []const u8 = "some interesting counter for bytes";
+    const alloc = std.testing.allocator;
+
+    const a = try instrumentIdentifier(alloc, name, kind, "", description);
+    defer alloc.free(a);
+    const b = try instrumentIdentifier(alloc, name, kind, "bytes", description);
+    defer alloc.free(b);
+    std.debug.assert(!std.mem.eql(u8, a, b));
+}
+
+// Represents the default histogram bucket boundaries as documented in the OpenTelemetry specification.
+// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation
 pub const defaultHistogramBucketBoundaries: []const f64 = &[_]f64{ 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0 };
 
 /// Validate the histogram option to use explicit bucket boundaries is conformant to the OpenTelemetry specification.
