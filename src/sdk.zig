@@ -2,7 +2,7 @@
 
 // Test SDK implementations
 test {
-    _ = @import("metrics/test.zig");
+    _ = @import("metrics/metrics.zig");
     // helpers
     _ = @import("pbutils.zig");
 }

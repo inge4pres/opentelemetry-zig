@@ -18,6 +18,9 @@ fn Instrument(comptime T: type) type {
     };
 }
 
+/// InstrumentOptions is used to configure the instrument.
+/// Base instrument options are name, description and unit.
+/// Kibd is inferredfrom the concrete type of the instrument.
 pub const InstrumentOptions = struct {
     name: []const u8,
     description: ?[]const u8 = null,
@@ -26,7 +29,8 @@ pub const InstrumentOptions = struct {
     /// Leave empty for default SDK buckets.
     explicitBuckets: ?[]const f64 = null,
     recordMinMax: bool = true,
-    // Advisory parameters are in development, we don't support them here.
+    // Advisory parameters are in development, we don't support them yet, so we set to null.
+    advisory: ?pb_common.KeyValueList = null,
 };
 
 // A Counter is a monotonically increasing value used to record a sum of values.
@@ -59,10 +63,6 @@ pub fn Counter(comptime valueType: type) type {
             } else {
                 try self.cumulative.put(key, delta);
             }
-        }
-
-        pub fn series(self: *Self) std.AutoHashMap(u64, valueType) {
-            return self.cumulative;
         }
     };
 }
@@ -152,16 +152,6 @@ pub fn Histogram(comptime valueType: type) type {
             // The last bucket is returned if the value is greater than it.
             return self.buckets.len - 1;
         }
-
-        pub fn series(self: Self) std.AutoHashMap(u64, valueType) {
-            return self.cumulative;
-        }
-        pub fn minAndMax(self: Self) std.meta.Tuple(&.{ valueType, valueType }) {
-            return .{ self.min orelse 0, self.max orelse 0 };
-        }
-        pub fn bucketCounts(self: Self, attributes: ?pb_common.KeyValueList) ?[]usize {
-            return self.bucket_counts.get(pbutils.hashIdentifyAttributes(attributes));
-        }
     };
 }
 
@@ -174,7 +164,7 @@ test "meter can create counter instrument and record increase without attributes
     var counter = try meter.createCounter(i32, .{ .name = "a-counter" });
 
     try counter.add(10, null);
-    std.debug.assert(counter.series().count() == 1);
+    std.debug.assert(counter.cumulative.count() == 1);
 }
 
 test "meter can create counter instrument and record increase with attributes" {
@@ -188,7 +178,7 @@ test "meter can create counter instrument and record increase with attributes" {
     });
 
     try counter.add(1, null);
-    std.debug.assert(counter.series().count() == 1);
+    std.debug.assert(counter.cumulative.count() == 1);
 
     var attrs = std.ArrayList(pb_common.KeyValue).init(std.testing.allocator);
     defer attrs.deinit();
@@ -196,7 +186,7 @@ test "meter can create counter instrument and record increase with attributes" {
     try attrs.append(pb_common.KeyValue{ .key = .{ .Const = "another-key" }, .value = pb_common.AnyValue{ .value = .{ .int_value = 0x123456789 } } });
 
     try counter.add(2, pb_common.KeyValueList{ .values = attrs });
-    std.debug.assert(counter.series().count() == 2);
+    std.debug.assert(counter.cumulative.count() == 2);
 }
 
 test "meter can create histogram instrument and record value without explicit buckets" {
@@ -209,9 +199,9 @@ test "meter can create histogram instrument and record value without explicit bu
     try histogram.record(5, null);
     try histogram.record(15, null);
 
-    try std.testing.expectEqual(.{ 1, 15 }, histogram.minAndMax());
-    std.debug.assert(histogram.series().count() == 1);
-    const counts = histogram.bucketCounts(null).?;
+    try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
+    std.debug.assert(histogram.cumulative.count() == 1);
+    const counts = histogram.bucket_counts.get(pbutils.hashIdentifyAttributes(null)).?;
     std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
     const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     try std.testing.expectEqualSlices(usize, expected_counts, counts);
@@ -227,9 +217,9 @@ test "meter can create histogram instrument and record value with explicit bucke
     try histogram.record(5, null);
     try histogram.record(15, null);
 
-    try std.testing.expectEqual(.{ 1, 15 }, histogram.minAndMax());
-    std.debug.assert(histogram.series().count() == 1);
-    const counts = histogram.bucketCounts(null).?;
+    try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
+    std.debug.assert(histogram.cumulative.count() == 1);
+    const counts = histogram.bucket_counts.get(pbutils.hashIdentifyAttributes(null)).?;
     std.debug.assert(counts.len == 4);
     const expected_counts = &[_]usize{ 1, 1, 1, 0 };
     try std.testing.expectEqualSlices(usize, expected_counts, counts);
