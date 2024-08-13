@@ -88,7 +88,7 @@ pub fn Histogram(comptime valueType: type) type {
         max: ?valueType = null,
 
         pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
-            // Validate name, unit anddescription, optionally throw an error if non conformant.
+            // Validate name, unit and description, optionally throwing an error if non conformant.
             // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
             try spec.validateInstrumentOptions(options);
             const buckets = options.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
@@ -155,13 +155,38 @@ pub fn Histogram(comptime valueType: type) type {
     };
 }
 
+pub fn Gauge(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        options: InstrumentOptions,
+        values: std.AutoHashMap(u64, T),
+
+        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
+            // Validate name, unit and description, optionally throwing an error if non conformant.
+            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
+            try spec.validateInstrumentOptions(options);
+            return Self{
+                .options = options,
+                .values = std.AutoHashMap(u64, T).init(allocator),
+            };
+        }
+
+        /// Record the given value to the gauge, using the provided attributes.
+        pub fn record(self: *Self, value: T, attributes: ?pb_common.KeyValueList) !void {
+            const key = pbutils.hashIdentifyAttributes(attributes);
+            try self.values.put(key, value);
+        }
+    };
+}
+
 const MeterProvider = @import("meter.zig").MeterProvider;
 
 test "meter can create counter instrument and record increase without attributes" {
     const mp = try MeterProvider.default();
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var counter = try meter.createCounter(i32, .{ .name = "a-counter" });
+    var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
     try counter.add(10, null);
     std.debug.assert(counter.cumulative.count() == 1);
@@ -171,7 +196,7 @@ test "meter can create counter instrument and record increase with attributes" {
     const mp = try MeterProvider.default();
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var counter = try meter.createCounter(i32, .{
+    var counter = try meter.createCounter(u32, .{
         .name = "a-counter",
         .description = "a funny counter",
         .unit = "KiB",
@@ -193,7 +218,7 @@ test "meter can create histogram instrument and record value without explicit bu
     const mp = try MeterProvider.default();
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(i32, .{ .name = "anything" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
 
     try histogram.record(1, null);
     try histogram.record(5, null);
@@ -211,7 +236,7 @@ test "meter can create histogram instrument and record value with explicit bucke
     const mp = try MeterProvider.default();
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(i32, .{ .name = "a-histogram", .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } });
 
     try histogram.record(1, null);
     try histogram.record(5, null);
@@ -223,4 +248,16 @@ test "meter can create histogram instrument and record value with explicit bucke
     std.debug.assert(counts.len == 4);
     const expected_counts = &[_]usize{ 1, 1, 1, 0 };
     try std.testing.expectEqualSlices(usize, expected_counts, counts);
+}
+
+test "meter can create gauge instrument and record value without attributes" {
+    const mp = try MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
+
+    try gauge.record(42, null);
+    try gauge.record(-42, null);
+    std.debug.assert(gauge.values.count() == 1);
+    std.debug.assert(gauge.values.get(0) == -42);
 }

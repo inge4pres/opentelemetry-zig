@@ -8,6 +8,7 @@ const spec = @import("spec.zig");
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const Counter = @import("instrument.zig").Counter;
 const Histogram = @import("instrument.zig").Histogram;
+const Gauge = @import("instrument.zig").Gauge;
 
 const defaultMeterVersion = "0.1.0";
 
@@ -104,11 +105,10 @@ const Meter = struct {
     /// and optional description and unit.
     pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
         switch (T) {
-            isize, i8, i16, i32, i64, f32, f64 => {},
+            usize, u8, u16, u32, u64, f32, f64 => {},
             else => {
-                const b: [128]u8 = undefined;
-                const msg = try std.fmt.bufPrint(b, "Unsupported monotonic counter value: {s}", .{@typeName(T)});
-                @compileError(msg);
+                std.debug.print("Unsupported monotonic counter value type: {s}\n", .{@typeName(T)});
+                return spec.FormatError.UnsupportedValueType;
             },
         }
 
@@ -121,11 +121,10 @@ const Meter = struct {
 
     pub fn createHistogram(self: *Self, comptime T: type, options: InstrumentOptions) !Histogram(T) {
         switch (T) {
-            isize, i8, i16, i32, i64, f32, f64 => {},
+            usize, u8, u16, u32, u64, f32, f64 => {},
             else => {
-                const b: [128]u8 = undefined;
-                const msg = try std.fmt.bufPrint(b, "Unsupported histogram value: {s}", .{@typeName(T)});
-                @compileError(msg);
+                std.debug.print("Unsupported histogram value type: {s}\n", .{@typeName(T)});
+                return spec.FormatError.UnsupportedValueType;
             },
         }
 
@@ -136,8 +135,18 @@ const Meter = struct {
         return histogram;
     }
 
+    pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !Gauge(T) {
+        const gauge = try Gauge(T).init(options, self.allocator);
+        // var i = Instrument(T){ .inner = gauge };
+        try self.registerInstrument(options);
+
+        return gauge;
+    }
+
     // Check that the instrument is not already registered with the same name.
     // Name is case-insensitive.
+    // FIXME this is not actually storing the instrument, but the options.
+    // how are we supposed to read from them?
     fn registerInstrument(self: *Self, opts: InstrumentOptions) !void {
         if (self.instruments.getEntry(spec.lowerCaseName(opts.name))) |_| {
             return spec.ResourceError.InstrumentExistsWithSameName;

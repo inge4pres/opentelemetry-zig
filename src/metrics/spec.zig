@@ -12,6 +12,9 @@ pub const FormatError = error{
     invalidUnit,
     InvalidDescription,
     InvalidExplicitBucketBoundaries,
+    /// UnsupportedValueType indicates that the type asked to represent
+    /// the instrument value is not adequate.
+    UnsupportedValueType,
 };
 
 /// Validate the instrument options are conformant to the OpenTelemetry specification.
@@ -74,7 +77,7 @@ test "meter cannot create instrument if name does not conform to the OpenTelemet
         "alpha-?",
     };
     for (invalid_names) |name| {
-        const r = m.createCounter(i32, .{ .name = name });
+        const r = m.createCounter(u32, .{ .name = name });
         try std.testing.expectError(FormatError.InvalidName, r);
     }
 }
