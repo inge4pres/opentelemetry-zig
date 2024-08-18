@@ -1,26 +1,103 @@
 const std = @import("std");
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pb_common = @import("../opentelemetry/proto/common/v1.pb.zig");
-const pb_metrics = @import("../opentelemetry/proto/metrics/v1.pb.zig");
+const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
 const pbutils = @import("../pbutils.zig");
 const spec = @import("spec.zig");
 
-// Supported instruments go here.
-fn Instrument(comptime T: type) type {
-    return struct {
-        const Self = @This();
+pub const Kind = enum {
+    Counter,
+    Histogram,
+    Gauge,
+};
 
-        inner: union {
-            counter: Counter(T),
-            histogram: Histogram(T),
-        },
-    };
-}
+// TODO this should be the abstraction containing all instruments.
+// We should have a single struct that contains all the instruments.
+// The current Counter(T), Histogra(T) and Gauge(T) should be part of the instrument and
+// when the Meter wants to create a new instrument, it should call the appropriate method.
+//In this way, storing the instruments in a single hashmap also contains the concrete type of the instrument.
+pub const Instrument = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    kind: Kind,
+    opts: InstrumentOptions,
+    data: union(enum) {
+        Counter_u16: Counter(u16),
+        Counter_u32: Counter(u32),
+        Counter_u64: Counter(u64),
+        Histogram_u16: Histogram(u16),
+        Histogram_u32: Histogram(u32),
+        Histogram_u64: Histogram(u64),
+        Histogram_f32: Histogram(f32),
+        Histogram_f64: Histogram(f64),
+        Gauge_i16: Gauge(i16),
+        Gauge_i32: Gauge(i32),
+        Gauge_i64: Gauge(i64),
+        Gauge_f32: Gauge(f32),
+        Gauge_f64: Gauge(f64),
+    },
+
+    pub fn Get(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !Self {
+        try spec.validateInstrumentOptions(opts);
+        return Self{
+            .allocator = allocator,
+            .kind = kind,
+            .opts = opts,
+            .data = undefined,
+        };
+    }
+
+    pub fn counter(self: *Self, comptime T: type) !Counter(T) {
+        const c = try Counter(T).init(self.opts, self.allocator);
+        self.data = switch (T) {
+            u16 => .{ .Counter_u16 = c },
+            u32 => .{ .Counter_u32 = c },
+            u64 => .{ .Counter_u64 = c },
+            else => {
+                std.debug.print("Unsupported monotonic counter value type: {s}\n", .{@typeName(T)});
+                return spec.FormatError.UnsupportedValueType;
+            },
+        };
+        return c;
+    }
+
+    pub fn histogram(self: *Self, comptime T: type) !Histogram(T) {
+        const h = try Histogram(T).init(self.opts, self.allocator);
+        self.data = switch (T) {
+            u16 => .{ .Histogram_u16 = h },
+            u32 => .{ .Histogram_u32 = h },
+            u64 => .{ .Histogram_u64 = h },
+            f32 => .{ .Histogram_f32 = h },
+            f64 => .{ .Histogram_f64 = h },
+            else => {
+                std.debug.print("Unsupported histogram value type: {s}\n", .{@typeName(T)});
+                return spec.FormatError.UnsupportedValueType;
+            },
+        };
+        return h;
+    }
+
+    pub fn gauge(self: *Self, comptime T: type) !Gauge(T) {
+        const g = try Gauge(T).init(self.opts, self.allocator);
+        self.data = switch (T) {
+            i16 => .{ .Gauge_i16 = g },
+            i32 => .{ .Gauge_i32 = g },
+            i64 => .{ .Gauge_i64 = g },
+            f32 => .{ .Gauge_f32 = g },
+            f64 => .{ .Gauge_f64 = g },
+            else => {
+                std.debug.print("Unsupported gauge value type: {s}\n", .{@typeName(T)});
+                return spec.FormatError.UnsupportedValueType;
+            },
+        };
+        return g;
+    }
+};
 
 /// InstrumentOptions is used to configure the instrument.
 /// Base instrument options are name, description and unit.
-/// Kibd is inferredfrom the concrete type of the instrument.
+/// Kind is inferred from the concrete type of the instrument.
 pub const InstrumentOptions = struct {
     name: []const u8,
     description: ?[]const u8 = null,
@@ -30,12 +107,12 @@ pub const InstrumentOptions = struct {
     explicitBuckets: ?[]const f64 = null,
     recordMinMax: bool = true,
     // Advisory parameters are in development, we don't support them yet, so we set to null.
-    advisory: ?pb_common.KeyValueList = null,
+    advisory: ?pbcommon.KeyValueList = null,
 };
 
-// A Counter is a monotonically increasing value used to record a sum of values.
+// A Counter is a monotonically increasing value used to record cumulative events.
 // See https://opentelemetry.io/docs/specs/otel/metrics/api/#counter
-pub fn Counter(comptime valueType: type) type {
+pub fn Counter(comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -43,7 +120,7 @@ pub fn Counter(comptime valueType: type) type {
         // We should keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(u64, valueType),
+        cumulative: std.AutoHashMap(u64, T),
 
         pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
             // Validate name, unit anddescription, optionally throw an error if non conformant.
@@ -51,12 +128,12 @@ pub fn Counter(comptime valueType: type) type {
             try spec.validateInstrumentOptions(options);
             return Self{
                 .options = options,
-                .cumulative = std.AutoHashMap(u64, valueType).init(allocator),
+                .cumulative = std.AutoHashMap(u64, T).init(allocator),
             };
         }
 
         /// Add the given delta to the counter, using the provided attributes.
-        pub fn add(self: *Self, delta: valueType, attributes: ?pb_common.KeyValueList) !void {
+        pub fn add(self: *Self, delta: T, attributes: ?pbcommon.KeyValueList) !void {
             const key = pbutils.hashIdentifyAttributes(attributes);
             if (self.cumulative.getEntry(key)) |c| {
                 c.value_ptr.* += delta;
@@ -67,7 +144,7 @@ pub fn Counter(comptime valueType: type) type {
     };
 }
 
-pub fn Histogram(comptime valueType: type) type {
+pub fn Histogram(comptime T: type) type {
     return struct {
         const Self = @This();
         // Define a maximum number of buckets that can be used to record measurements.
@@ -77,15 +154,15 @@ pub fn Histogram(comptime valueType: type) type {
         // We should keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(u64, valueType),
+        cumulative: std.AutoHashMap(u64, T),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
         // buckets are used.
         // Buckets are always defined as f64.
         buckets: []const f64,
         bucket_counts: std.AutoHashMap(u64, []usize),
-        min: ?valueType = null,
-        max: ?valueType = null,
+        min: ?T = null,
+        max: ?T = null,
 
         pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
             // Validate name, unit and description, optionally throwing an error if non conformant.
@@ -96,14 +173,14 @@ pub fn Histogram(comptime valueType: type) type {
 
             return Self{
                 .options = options,
-                .cumulative = std.AutoHashMap(u64, valueType).init(allocator),
+                .cumulative = std.AutoHashMap(u64, T).init(allocator),
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(u64, []usize).init(allocator),
             };
         }
 
         /// Add the given value to the histogram, using the provided attributes.
-        pub fn record(self: *Self, value: valueType, attributes: ?pb_common.KeyValueList) !void {
+        pub fn record(self: *Self, value: T, attributes: ?pbcommon.KeyValueList) !void {
             const key = pbutils.hashIdentifyAttributes(attributes);
             if (self.cumulative.getEntry(key)) |c| {
                 c.value_ptr.* += value;
@@ -142,7 +219,7 @@ pub fn Histogram(comptime valueType: type) type {
             }
         }
 
-        fn findBucket(self: Self, value: valueType) usize {
+        fn findBucket(self: Self, value: T) usize {
             const vf64: f64 = @as(f64, @floatFromInt(value));
             for (self.buckets, 0..) |b, i| {
                 if (b >= vf64) {
@@ -173,7 +250,7 @@ pub fn Gauge(comptime T: type) type {
         }
 
         /// Record the given value to the gauge, using the provided attributes.
-        pub fn record(self: *Self, value: T, attributes: ?pb_common.KeyValueList) !void {
+        pub fn record(self: *Self, value: T, attributes: ?pbcommon.KeyValueList) !void {
             const key = pbutils.hashIdentifyAttributes(attributes);
             try self.values.put(key, value);
         }
@@ -205,12 +282,12 @@ test "meter can create counter instrument and record increase with attributes" {
     try counter.add(1, null);
     std.debug.assert(counter.cumulative.count() == 1);
 
-    var attrs = std.ArrayList(pb_common.KeyValue).init(std.testing.allocator);
+    var attrs = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator);
     defer attrs.deinit();
-    try attrs.append(pb_common.KeyValue{ .key = .{ .Const = "some-key" }, .value = pb_common.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
-    try attrs.append(pb_common.KeyValue{ .key = .{ .Const = "another-key" }, .value = pb_common.AnyValue{ .value = .{ .int_value = 0x123456789 } } });
+    try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "some-key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
+    try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "another-key" }, .value = pbcommon.AnyValue{ .value = .{ .int_value = 0x123456789 } } });
 
-    try counter.add(2, pb_common.KeyValueList{ .values = attrs });
+    try counter.add(2, pbcommon.KeyValueList{ .values = attrs });
     std.debug.assert(counter.cumulative.count() == 2);
 }
 
