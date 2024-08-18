@@ -5,6 +5,7 @@ const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
 const pbutils = @import("../pbutils.zig");
 const spec = @import("spec.zig");
 
+const Instrument = @import("instrument.zig").Instrument;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const Counter = @import("instrument.zig").Counter;
 const Histogram = @import("instrument.zig").Histogram;
@@ -32,7 +33,8 @@ pub const MeterProvider = struct {
         return provider;
     }
 
-    /// Default MeterProvider
+    /// Adopt the default MeterProvider.
+    /// The GeneralPurposeAllocator is used to allocate memory for the meters.
     pub fn default() !*Self {
         return try init(gpa.allocator());
     }
@@ -54,7 +56,7 @@ pub const MeterProvider = struct {
             .version = options.version,
             .attributes = options.attributes,
             .schema_url = options.schema_url,
-            .instruments = std.StringHashMap(InstrumentOptions).init(self.allocator),
+            .instruments = std.StringHashMap(Instrument).init(self.allocator),
             .allocator = self.allocator,
         };
         // A Meter is identified uniquely by its name, version and schema_url.
@@ -94,8 +96,7 @@ const Meter = struct {
     version: []const u8,
     schema_url: ?[]const u8,
     attributes: ?pbcommon.KeyValueList,
-    // Maybe the value of this map should be a new type, holding the instrument and its kind as well.
-    instruments: std.StringHashMap(InstrumentOptions),
+    instruments: std.StringHashMap(Instrument),
     allocator: std.mem.Allocator,
 
     const Self = @This();
@@ -104,54 +105,40 @@ const Meter = struct {
     /// Options to identify the counter must be provided: a mandatory name,
     /// and optional description and unit.
     pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
-        switch (T) {
-            usize, u8, u16, u32, u64, f32, f64 => {},
-            else => {
-                std.debug.print("Unsupported monotonic counter value type: {s}\n", .{@typeName(T)});
-                return spec.FormatError.UnsupportedValueType;
-            },
-        }
+        var i = try Instrument.Get(.Counter, options, self.allocator);
+        const c = try i.counter(T);
+        try self.registerInstrument(i);
 
-        const counter = try Counter(T).init(options, self.allocator);
-        // var i = Instrument(T){ .inner = counter };
-        try self.registerInstrument(options);
-
-        return counter;
+        return c;
     }
 
     pub fn createHistogram(self: *Self, comptime T: type, options: InstrumentOptions) !Histogram(T) {
-        switch (T) {
-            usize, u8, u16, u32, u64, f32, f64 => {},
-            else => {
-                std.debug.print("Unsupported histogram value type: {s}\n", .{@typeName(T)});
-                return spec.FormatError.UnsupportedValueType;
-            },
-        }
+        var i = try Instrument.Get(.Histogram, options, self.allocator);
+        const h = i.histogram(T);
+        try self.registerInstrument(i);
 
-        const histogram = try Histogram(T).init(options, self.allocator);
-        // var i = Instrument(T){ .inner = histogram };
-        try self.registerInstrument(options);
-
-        return histogram;
+        return h;
     }
 
     pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !Gauge(T) {
-        const gauge = try Gauge(T).init(options, self.allocator);
-        // var i = Instrument(T){ .inner = gauge };
-        try self.registerInstrument(options);
+        var i = try Instrument.Get(.Gauge, options, self.allocator);
+        const g = i.gauge(T);
+        try self.registerInstrument(i);
 
-        return gauge;
+        return g;
     }
 
     // Check that the instrument is not already registered with the same name.
     // Name is case-insensitive.
     // FIXME this is not actually storing the instrument, but the options.
     // how are we supposed to read from them?
-    fn registerInstrument(self: *Self, opts: InstrumentOptions) !void {
-        if (self.instruments.getEntry(spec.lowerCaseName(opts.name))) |_| {
+    fn registerInstrument(self: *Self, instrument: Instrument) !void {
+        const name = instrument.opts.name;
+        if (self.instruments.getEntry(spec.lowerCaseName(name))) |_| {
+            std.debug.print("Instrument with the name {s} already exists in this meter\n", .{name});
             return spec.ResourceError.InstrumentExistsWithSameName;
         }
-        try self.instruments.put(spec.lowerCaseName(opts.name), opts);
+        try self.instruments.put(spec.lowerCaseName(name), instrument);
     }
 };
 
@@ -220,4 +207,15 @@ test "getting same meter with different attributes returns an error" {
 
     const r = mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
     try std.testing.expectError(spec.ResourceError.MeterExistsWithDifferentAttributes, r);
+}
+
+test "meter register instrument" {
+    const mp = try MeterProvider.default();
+    defer mp.deinit();
+
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    const i = try Instrument.Get(.Counter, .{ .name = "my-counter" }, std.testing.allocator);
+    try meter.registerInstrument(i);
+
+    try std.testing.expectEqual(1, meter.instruments.count());
 }
