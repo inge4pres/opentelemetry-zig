@@ -39,6 +39,8 @@ pub const Instrument = struct {
     },
 
     pub fn Get(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !Self {
+        // Validate name, unit anddescription, optionally throw an error if non conformant.
+        // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
         try spec.validateInstrumentOptions(opts);
         return Self{
             .allocator = allocator,
@@ -49,7 +51,7 @@ pub const Instrument = struct {
     }
 
     pub fn counter(self: *Self, comptime T: type) !Counter(T) {
-        const c = try Counter(T).init(self.opts, self.allocator);
+        const c = Counter(T).init(self.opts, self.allocator);
         self.data = switch (T) {
             u16 => .{ .Counter_u16 = c },
             u32 => .{ .Counter_u32 = c },
@@ -79,7 +81,7 @@ pub const Instrument = struct {
     }
 
     pub fn gauge(self: *Self, comptime T: type) !Gauge(T) {
-        const g = try Gauge(T).init(self.opts, self.allocator);
+        const g = Gauge(T).init(self.opts, self.allocator);
         self.data = switch (T) {
             i16 => .{ .Gauge_i16 = g },
             i32 => .{ .Gauge_i32 = g },
@@ -122,10 +124,7 @@ pub fn Counter(comptime T: type) type {
         // So we store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(u64, T),
 
-        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
-            // Validate name, unit anddescription, optionally throw an error if non conformant.
-            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
-            try spec.validateInstrumentOptions(options);
+        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) Self {
             return Self{
                 .options = options,
                 .cumulative = std.AutoHashMap(u64, T).init(allocator),
@@ -165,9 +164,7 @@ pub fn Histogram(comptime T: type) type {
         max: ?T = null,
 
         pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
-            // Validate name, unit and description, optionally throwing an error if non conformant.
-            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
-            try spec.validateInstrumentOptions(options);
+            // buckets are part of the options, so we validate them from there.
             const buckets = options.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
             try spec.validateExplicitBuckets(buckets);
 
@@ -239,10 +236,7 @@ pub fn Gauge(comptime T: type) type {
         options: InstrumentOptions,
         values: std.AutoHashMap(u64, T),
 
-        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
-            // Validate name, unit and description, optionally throwing an error if non conformant.
-            // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
-            try spec.validateInstrumentOptions(options);
+        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) Self {
             return Self{
                 .options = options,
                 .values = std.AutoHashMap(u64, T).init(allocator),
