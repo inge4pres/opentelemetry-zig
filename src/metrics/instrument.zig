@@ -9,6 +9,14 @@ pub const Kind = enum {
     Counter,
     Histogram,
     Gauge,
+
+    pub fn toString(self: Kind) []const u8 {
+        return switch (self) {
+            .Counter => "Counter",
+            .Histogram => "Histogram",
+            .Gauge => "Gauge",
+        };
+    }
 };
 
 // TODO this should be the abstraction containing all instruments.

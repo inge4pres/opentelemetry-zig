@@ -6,6 +6,7 @@ const pbutils = @import("../pbutils.zig");
 const spec = @import("spec.zig");
 
 const Instrument = @import("instrument.zig").Instrument;
+const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const Counter = @import("instrument.zig").Counter;
 const Histogram = @import("instrument.zig").Histogram;
@@ -128,15 +129,26 @@ const Meter = struct {
         return g;
     }
 
-    // Check that the instrument is not already registered with the same name.
+    // Check that the instrument is not already registered with the same name identifier.
     // Name is case-insensitive.
+    // The remaining are also forming the identifier.
     fn registerInstrument(self: *Self, instrument: Instrument) !void {
-        const name = instrument.opts.name;
-        if (self.instruments.getEntry(spec.lowerCaseName(name))) |_| {
-            std.debug.print("Instrument with the name {s} already exists in this meter\n", .{name});
-            return spec.ResourceError.InstrumentExistsWithSameName;
+        const identifyingName = try spec.instrumentIdentifier(
+            self.allocator,
+            instrument.opts.name,
+            instrument.kind.toString(),
+            instrument.opts.unit orelse "",
+            instrument.opts.description orelse "",
+        );
+
+        if (self.instruments.contains(identifyingName)) {
+            std.debug.print(
+                "Instrument with identifying name {s} already exists in meter {s}\n",
+                .{ identifyingName, self.name },
+            );
+            return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
-        try self.instruments.put(spec.lowerCaseName(name), instrument);
+        try self.instruments.put(identifyingName, instrument);
     }
 };
 
@@ -207,6 +219,19 @@ test "getting same meter with different attributes returns an error" {
     try std.testing.expectError(spec.ResourceError.MeterExistsWithDifferentAttributes, r);
 }
 
+test "meter register instrument twice with same name fails" {
+    const mp = try MeterProvider.default();
+    defer mp.deinit();
+
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    const i = try Instrument.Get(.Counter, .{ .name = "some-counter" }, std.testing.allocator);
+    try meter.registerInstrument(i);
+
+    const n = try Instrument.Get(.Counter, .{ .name = "some-counter" }, std.testing.allocator);
+    const r = meter.registerInstrument(n);
+    try std.testing.expectError(spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields, r);
+}
+
 test "meter register instrument" {
     const mp = try MeterProvider.default();
     defer mp.deinit();
@@ -216,4 +241,20 @@ test "meter register instrument" {
     try meter.registerInstrument(i);
 
     try std.testing.expectEqual(1, meter.instruments.count());
+
+    const id = try spec.instrumentIdentifier(
+        std.testing.allocator,
+        "my-counter",
+        Kind.Counter.toString(),
+        "",
+        "",
+    );
+    defer std.testing.allocator.free(id);
+
+    if (meter.instruments.getKey(id)) |key| {
+        const iFromReg = meter.instruments.get(key);
+        try std.testing.expectEqual(i, iFromReg.?);
+    } else {
+        std.debug.assert(false);
+    }
 }

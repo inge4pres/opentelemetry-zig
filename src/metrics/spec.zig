@@ -141,7 +141,7 @@ test "validate description" {
 /// ResourceError indicates that there is a problem in the access of the resoruce.
 pub const ResourceError = error{
     MeterExistsWithDifferentAttributes,
-    InstrumentExistsWithSameName,
+    InstrumentExistsWithSameNameAndIdentifyingFields,
 };
 
 /// Generate an identifier for a meter: an existing meter with same
@@ -187,16 +187,9 @@ pub fn instrumentIdentifier(allocator: std.mem.Allocator, name: []const u8, kind
     var h = std.hash.Wyhash.init(42);
     h.update(description);
     const id = h.final();
-    return try std.fmt.allocPrint(allocator, "{s}-{s}-{s}-{x}", .{ lowerCaseName(name), kind, unit, id });
-}
-
-/// All instrument names must be case-insensitive.
-pub fn lowerCaseName(name: []const u8) []u8 {
-    var lowName: [255]u8 = [_]u8{0} ** 255;
-    for (name, 0..name.len) |c, i| {
-        lowName[i] = std.ascii.toLower(c);
-    }
-    return lowName[0..name.len];
+    const lowerName = try std.ascii.allocLowerString(allocator, name);
+    defer allocator.free(lowerName);
+    return try std.fmt.allocPrint(allocator, "{s}-{s}-{s}-{x}", .{ lowerName, kind, unit, id });
 }
 
 test "identifying field for instrument remain equal upon similar name with mixed case" {
