@@ -130,8 +130,6 @@ const Meter = struct {
 
     // Check that the instrument is not already registered with the same name.
     // Name is case-insensitive.
-    // FIXME this is not actually storing the instrument, but the options.
-    // how are we supposed to read from them?
     fn registerInstrument(self: *Self, instrument: Instrument) !void {
         const name = instrument.opts.name;
         if (self.instruments.getEntry(spec.lowerCaseName(name))) |_| {
