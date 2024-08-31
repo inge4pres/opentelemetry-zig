@@ -381,7 +381,7 @@ test "meter creates upDownCounter and stores value" {
 
     var attrs = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator);
     defer attrs.deinit();
-    
+
     try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "some-key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
 
     try counter.add(1, pbcommon.KeyValueList{ .values = attrs });
