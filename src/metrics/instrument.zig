@@ -7,12 +7,14 @@ const spec = @import("spec.zig");
 
 pub const Kind = enum {
     Counter,
+    UpDownCounter,
     Histogram,
     Gauge,
 
     pub fn toString(self: Kind) []const u8 {
         return switch (self) {
             .Counter => "Counter",
+            .UpDownCounter => "UpDownCounter",
             .Histogram => "Histogram",
             .Gauge => "Gauge",
         };
@@ -34,6 +36,9 @@ pub const Instrument = struct {
         Counter_u16: Counter(u16),
         Counter_u32: Counter(u32),
         Counter_u64: Counter(u64),
+        UpDownCounter_i16: Counter(i16),
+        UpDownCounter_i32: Counter(i32),
+        UpDownCounter_i64: Counter(i64),
         Histogram_u16: Histogram(u16),
         Histogram_u32: Histogram(u32),
         Histogram_u64: Histogram(u64),
@@ -66,6 +71,20 @@ pub const Instrument = struct {
             u64 => .{ .Counter_u64 = c },
             else => {
                 std.debug.print("Unsupported monotonic counter value type: {s}\n", .{@typeName(T)});
+                return spec.FormatError.UnsupportedValueType;
+            },
+        };
+        return c;
+    }
+
+    pub fn upDownCounter(self: *Self, comptime T: type) !Counter(T) {
+        const c = Counter(T).init(self.opts, self.allocator);
+        self.data = switch (T) {
+            i16 => .{ .UpDownCounter_i16 = c },
+            i32 => .{ .UpDownCounter_i32 = c },
+            i64 => .{ .UpDownCounter_i64 = c },
+            else => {
+                std.debug.print("Unsupported Up Down counter value type: {s}\n", .{@typeName(T)});
                 return spec.FormatError.UnsupportedValueType;
             },
         };
@@ -339,4 +358,38 @@ test "meter can create gauge instrument and record value without attributes" {
     try gauge.record(-42, null);
     std.debug.assert(gauge.values.count() == 1);
     std.debug.assert(gauge.values.get(0) == -42);
+}
+
+test "meter creates upDownCounter and stores value" {
+    const mp = try MeterProvider.default();
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
+
+    try counter.add(10, null);
+    try counter.add(-5, null);
+    try counter.add(-4, null);
+    std.debug.assert(counter.cumulative.count() == 1);
+
+    // Validate the number stored is correct.
+    // Null attributes produce a key hashed == 0.
+    if (counter.cumulative.get(0)) |c| {
+        std.debug.assert(c == 1);
+    } else {
+        std.debug.panic("Counter not found", .{});
+    }
+
+    var attrs = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator);
+    defer attrs.deinit();
+    
+    try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "some-key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
+
+    try counter.add(1, pbcommon.KeyValueList{ .values = attrs });
+    std.debug.assert(counter.cumulative.count() == 2);
+
+    var iter = counter.cumulative.valueIterator();
+
+    while (iter.next()) |v| {
+        std.debug.assert(v.* == 1);
+    }
 }
