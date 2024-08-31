@@ -103,8 +103,7 @@ const Meter = struct {
     const Self = @This();
 
     /// Create a new Counter instrument using the specified type as the value type.
-    /// Options to identify the counter must be provided: a mandatory name,
-    /// and optional description and unit.
+    /// This is a monotonic counter that can only be incremented.
     pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
         var i = try Instrument.Get(.Counter, options, self.allocator);
         const c = try i.counter(T);
@@ -113,6 +112,18 @@ const Meter = struct {
         return c;
     }
 
+    /// Create a new UpDownCounter instrument using the specified type as the value type.
+    /// This is a counter that can be incremented and decremented.
+    pub fn createUpDownCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
+        var i = try Instrument.Get(.UpDownCounter, options, self.allocator);
+        const c = try i.upDownCounter(T);
+        try self.registerInstrument(i);
+
+        return c;
+    }
+
+    /// Create a new Histogram instrument using the specified type as the value type.
+    /// A histogram is a metric that samples observations and counts them in different buckets.
     pub fn createHistogram(self: *Self, comptime T: type, options: InstrumentOptions) !Histogram(T) {
         var i = try Instrument.Get(.Histogram, options, self.allocator);
         const h = i.histogram(T);
@@ -121,6 +132,9 @@ const Meter = struct {
         return h;
     }
 
+    /// Create a new Gauge instrument using the specified type as the value type.
+    /// A gauge is a metric that represents a single numerical value that can arbitrarily go up and down,
+    /// and represents a point-in-time value.
     pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !Gauge(T) {
         var i = try Instrument.Get(.Gauge, options, self.allocator);
         const g = i.gauge(T);
