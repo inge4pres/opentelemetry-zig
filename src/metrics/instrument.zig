@@ -64,7 +64,7 @@ pub const Instrument = struct {
     }
 
     pub fn counter(self: *Self, comptime T: type) !Counter(T) {
-        const c = Counter(T).init(self.opts, self.allocator);
+        const c = Counter(T).init(self.allocator);
         self.data = switch (T) {
             u16 => .{ .Counter_u16 = c },
             u32 => .{ .Counter_u32 = c },
@@ -78,7 +78,7 @@ pub const Instrument = struct {
     }
 
     pub fn upDownCounter(self: *Self, comptime T: type) !Counter(T) {
-        const c = Counter(T).init(self.opts, self.allocator);
+        const c = Counter(T).init(self.allocator);
         self.data = switch (T) {
             i16 => .{ .UpDownCounter_i16 = c },
             i32 => .{ .UpDownCounter_i32 = c },
@@ -92,7 +92,7 @@ pub const Instrument = struct {
     }
 
     pub fn histogram(self: *Self, comptime T: type) !Histogram(T) {
-        const h = try Histogram(T).init(self.opts, self.allocator);
+        const h = try Histogram(T).init(self.allocator,  self.opts.histogramOpts);
         self.data = switch (T) {
             u16 => .{ .Histogram_u16 = h },
             u32 => .{ .Histogram_u32 = h },
@@ -108,7 +108,7 @@ pub const Instrument = struct {
     }
 
     pub fn gauge(self: *Self, comptime T: type) !Gauge(T) {
-        const g = Gauge(T).init(self.opts, self.allocator);
+        const g = Gauge(T).init(self.allocator);
         self.data = switch (T) {
             i16 => .{ .Gauge_i16 = g },
             i32 => .{ .Gauge_i32 = g },
@@ -131,12 +131,18 @@ pub const InstrumentOptions = struct {
     name: []const u8,
     description: ?[]const u8 = null,
     unit: ?[]const u8 = null,
-    /// ExplicitBuckets is used only in histograms to specify the bucket boundaries.
-    /// Leave empty for default SDK buckets.
-    explicitBuckets: ?[]const f64 = null,
-    recordMinMax: bool = true,
     // Advisory parameters are in development, we don't support them yet, so we set to null.
     advisory: ?pbcommon.KeyValueList = null,
+
+    histogramOpts: ?HistogramOptions = null,
+};
+
+/// HistogramOptions is used to configure the histogram instrument.
+pub const HistogramOptions = struct {
+    /// ExplicitBuckets is used to specify the bucket boundaries.
+    /// Do not set to rely on the specification default buckets.
+    explicitBuckets: ?[]const f64 = null,
+    recordMinMax: bool = true,
 };
 
 // A Counter is a monotonically increasing value used to record cumulative events.
@@ -145,15 +151,13 @@ pub fn Counter(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        options: InstrumentOptions,
         // We should keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(u64, T),
 
-        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) Self {
+        pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .options = options,
                 .cumulative = std.AutoHashMap(u64, T).init(allocator),
             };
         }
@@ -176,10 +180,10 @@ pub fn Histogram(comptime T: type) type {
         // Define a maximum number of buckets that can be used to record measurements.
         const maxBuckets = 1024;
 
-        options: InstrumentOptions,
-        // We should keep track of the current value of the counter for each unique comibination of attribute.
-        // At the same time, we don't want to allocate memory for each attribute set that comes in.
-        // So we store all the counters in a single array and keep track of the state of each counter.
+        options: HistogramOptions,
+        // Keep track of the current value of the counter for each unique comibination of attribute.
+        // At the same time, don't want allocate memory for each attribute set that comes in.
+        // Store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(u64, T),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
@@ -190,13 +194,15 @@ pub fn Histogram(comptime T: type) type {
         min: ?T = null,
         max: ?T = null,
 
-        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) !Self {
-            // buckets are part of the options, so we validate them from there.
-            const buckets = options.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
+        pub fn init(allocator: std.mem.Allocator, options: ?HistogramOptions) !Self {
+            // Use the default options if none are provided.
+            const opts = options orelse HistogramOptions{};
+            // Buckets are part of the options, so we validate them from there.
+            const buckets = opts.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
             try spec.validateExplicitBuckets(buckets);
 
             return Self{
-                .options = options,
+                .options = opts,
                 .cumulative = std.AutoHashMap(u64, T).init(allocator),
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(u64, []usize).init(allocator),
@@ -260,12 +266,10 @@ pub fn Gauge(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        options: InstrumentOptions,
         values: std.AutoHashMap(u64, T),
 
-        pub fn init(options: InstrumentOptions, allocator: std.mem.Allocator) Self {
+        pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .options = options,
                 .values = std.AutoHashMap(u64, T).init(allocator),
             };
         }
@@ -334,7 +338,7 @@ test "meter can create histogram instrument and record value with explicit bucke
     const mp = try MeterProvider.default();
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } }});
 
     try histogram.record(1, null);
     try histogram.record(5, null);
