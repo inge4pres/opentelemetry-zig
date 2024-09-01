@@ -92,7 +92,7 @@ pub const Instrument = struct {
     }
 
     pub fn histogram(self: *Self, comptime T: type) !Histogram(T) {
-        const h = try Histogram(T).init(self.allocator,  self.opts.histogramOpts);
+        const h = try Histogram(T).init(self.allocator, self.opts.histogramOpts);
         self.data = switch (T) {
             u16 => .{ .Histogram_u16 = h },
             u32 => .{ .Histogram_u32 = h },
@@ -338,7 +338,7 @@ test "meter can create histogram instrument and record value with explicit bucke
     const mp = try MeterProvider.default();
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } }});
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
 
     try histogram.record(1, null);
     try histogram.record(5, null);
@@ -383,12 +383,10 @@ test "meter creates upDownCounter and stores value" {
         std.debug.panic("Counter not found", .{});
     }
 
-    var attrs = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator);
-    defer attrs.deinit();
+    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", @as(i64, 42) });
+    defer attrs.values.deinit();
 
-    try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "some-key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
-
-    try counter.add(1, pbcommon.KeyValueList{ .values = attrs });
+    try counter.add(1, attrs);
     std.debug.assert(counter.cumulative.count() == 2);
 
     var iter = counter.cumulative.valueIterator();
