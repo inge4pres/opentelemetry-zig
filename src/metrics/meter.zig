@@ -41,7 +41,7 @@ pub const MeterProvider = struct {
     }
 
     /// Delete the meter provider and free up the memory allocated for it.
-    pub fn deinit(self: *Self) void {
+    pub fn shutdown(self: *Self) void {
         self.meters.deinit();
         self.allocator.destroy(self);
     }
@@ -168,14 +168,14 @@ const Meter = struct {
 
 test "default meter provider can be fetched" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
 }
 
 test "custom meter provider can be created" {
     const mp = try MeterProvider.init(std.testing.allocator);
-    defer mp.deinit();
+    defer mp.shutdown();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
 }
@@ -184,7 +184,7 @@ test "meter can be created from custom provider" {
     const meter_name = "my-meter";
     const meter_version = "my-meter";
     const mp = try MeterProvider.init(std.testing.allocator);
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
 
@@ -199,7 +199,7 @@ test "meter can be created from default provider with schema url and attributes"
     const meter_version = "my-meter";
     const attributes = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator) };
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
@@ -210,7 +210,7 @@ test "meter can be created from default provider with schema url and attributes"
 
 test "meter has default version when creted with no options" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "ameter" });
     std.debug.assert(std.mem.eql(u8, meter.version, defaultMeterVersion));
@@ -235,7 +235,7 @@ test "getting same meter with different attributes returns an error" {
 
 test "meter register instrument twice with same name fails" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const i = try Instrument.Get(.Counter, .{ .name = "some-counter" }, std.testing.allocator);
@@ -248,7 +248,7 @@ test "meter register instrument twice with same name fails" {
 
 test "meter register instrument" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const i = try Instrument.Get(.Counter, .{ .name = "my-counter" }, std.testing.allocator);

@@ -286,7 +286,7 @@ const MeterProvider = @import("meter.zig").MeterProvider;
 
 test "meter can create counter instrument and record increase without attributes" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
@@ -296,7 +296,7 @@ test "meter can create counter instrument and record increase without attributes
 
 test "meter can create counter instrument and record increase with attributes" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{
         .name = "a-counter",
@@ -318,7 +318,7 @@ test "meter can create counter instrument and record increase with attributes" {
 
 test "meter can create histogram instrument and record value without explicit buckets" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
 
@@ -336,7 +336,7 @@ test "meter can create histogram instrument and record value without explicit bu
 
 test "meter can create histogram instrument and record value with explicit buckets" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
 
@@ -354,7 +354,7 @@ test "meter can create histogram instrument and record value with explicit bucke
 
 test "meter can create gauge instrument and record value without attributes" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
 
@@ -366,7 +366,7 @@ test "meter can create gauge instrument and record value without attributes" {
 
 test "meter creates upDownCounter and stores value" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
 
