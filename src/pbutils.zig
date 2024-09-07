@@ -78,18 +78,23 @@ fn keyValue(comptime T: type) type {
 pub fn WithAttributes(allocator: std.mem.Allocator, args: anytype) !pbcommon.KeyValueList {
     var attrs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(allocator) };
 
+    // Straight copied from the zig std library: std.fmt.
+    // Check if the argument is a tuple.
     const ArgsType = @TypeOf(args);
     const args_type_info = @typeInfo(ArgsType);
     if (args_type_info != .Struct) {
         @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
     }
+    // Then check its length.
     const fields_info = args_type_info.Struct.fields;
     if (fields_info.len % 2 != 0) {
         @compileError("expected an even number of arguments");
     }
 
+    // Build a key-value pair from the tuple, traversing in order.
     var key: []const u8 = undefined;
     comptime var i = 1;
+    // Unroll the loop at compile time.
     inline for (std.meta.fields(ArgsType)) |kv| {
         const e = @field(args, kv.name);
         if (i % 2 == 0) {
