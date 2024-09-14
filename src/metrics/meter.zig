@@ -6,6 +6,7 @@ const pbutils = @import("../pbutils.zig");
 const spec = @import("spec.zig");
 
 const Instrument = @import("instrument.zig").Instrument;
+const MetricReader = @import("reader.zig").MetricReader;
 const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const Counter = @import("instrument.zig").Counter;
@@ -19,6 +20,7 @@ const defaultMeterVersion = "0.1.0";
 pub const MeterProvider = struct {
     allocator: std.mem.Allocator,
     meters: std.AutoHashMap(u64, Meter),
+    readers: std.ArrayList(MetricReader),
 
     const Self = @This();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -29,6 +31,7 @@ pub const MeterProvider = struct {
         provider.* = Self{
             .allocator = alloc,
             .meters = std.AutoHashMap(u64, Meter).init(alloc),
+            .readers = std.ArrayList(MetricReader).init(alloc),
         };
 
         return provider;
@@ -43,6 +46,7 @@ pub const MeterProvider = struct {
     /// Delete the meter provider and free up the memory allocated for it.
     pub fn shutdown(self: *Self) void {
         self.meters.deinit();
+        self.readers.deinit();
         self.allocator.destroy(self);
     }
 
@@ -75,11 +79,13 @@ pub const MeterProvider = struct {
 
     fn meterExistsWithDifferentAttributes(self: *Self, identifier: u64, attributes: ?pbcommon.KeyValueList) bool {
         if (self.meters.get(identifier)) |m| {
-            if (!std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes))) {
-                return true;
-            }
+            return !std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes));
         }
         return false;
+    }
+
+    pub fn AddReader(self: *Self, m: MetricReader) !void {
+        try self.readers.append(m);
     }
 };
 
@@ -271,4 +277,12 @@ test "meter register instrument" {
     } else {
         std.debug.assert(false);
     }
+}
+
+test "meter provider adds metric reader" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    try mp.AddReader(MetricReader{});
+
+    std.debug.assert(mp.readers.items.len == 1);
 }

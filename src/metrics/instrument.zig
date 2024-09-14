@@ -2,6 +2,7 @@ const std = @import("std");
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
+const pbmetrics = @import("../opentelemetry/proto/metrics/v1.pb.zig");
 const pbutils = @import("../pbutils.zig");
 const spec = @import("spec.zig");
 
@@ -21,9 +22,32 @@ pub const Kind = enum {
     }
 };
 
+pub const instrumentData = union(enum) {
+    Counter_u16: Counter(u16),
+    Counter_u32: Counter(u32),
+    Counter_u64: Counter(u64),
+    UpDownCounter_i16: Counter(i16),
+    UpDownCounter_i32: Counter(i32),
+    UpDownCounter_i64: Counter(i64),
+    Histogram_u16: Histogram(u16),
+    Histogram_u32: Histogram(u32),
+    Histogram_u64: Histogram(u64),
+    Histogram_f32: Histogram(f32),
+    Histogram_f64: Histogram(f64),
+    Gauge_i16: Gauge(i16),
+    Gauge_i32: Gauge(i32),
+    Gauge_i64: Gauge(i64),
+    Gauge_f32: Gauge(f32),
+    Gauge_f64: Gauge(f64),
+
+    // pub fn getData() pbmetric.Metric {
+
+    // }
+};
+
 // TODO this should be the abstraction containing all instruments.
 // We should have a single struct that contains all the instruments.
-// The current Counter(T), Histogra(T) and Gauge(T) should be part of the instrument and
+// The current Counter(T), Histogram(T) and Gauge(T) should be part of the instrument and
 // when the Meter wants to create a new instrument, it should call the appropriate method.
 //In this way, storing the instruments in a single hashmap also contains the concrete type of the instrument.
 pub const Instrument = struct {
@@ -32,24 +56,7 @@ pub const Instrument = struct {
     allocator: std.mem.Allocator,
     kind: Kind,
     opts: InstrumentOptions,
-    data: union(enum) {
-        Counter_u16: Counter(u16),
-        Counter_u32: Counter(u32),
-        Counter_u64: Counter(u64),
-        UpDownCounter_i16: Counter(i16),
-        UpDownCounter_i32: Counter(i32),
-        UpDownCounter_i64: Counter(i64),
-        Histogram_u16: Histogram(u16),
-        Histogram_u32: Histogram(u32),
-        Histogram_u64: Histogram(u64),
-        Histogram_f32: Histogram(f32),
-        Histogram_f64: Histogram(f64),
-        Gauge_i16: Gauge(i16),
-        Gauge_i32: Gauge(i32),
-        Gauge_i64: Gauge(i64),
-        Gauge_f32: Gauge(f32),
-        Gauge_f64: Gauge(f64),
-    },
+    data: instrumentData,
 
     pub fn Get(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !Self {
         // Validate name, unit anddescription, optionally throw an error if non conformant.
@@ -150,21 +157,23 @@ pub const HistogramOptions = struct {
 pub fn Counter(comptime T: type) type {
     return struct {
         const Self = @This();
+        allocator: std.mem.Allocator,
 
         // We should keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(u64, T),
+        cumulative: std.AutoHashMap(?pbcommon.KeyValueList, T),
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .cumulative = std.AutoHashMap(u64, T).init(allocator),
+                .cumulative = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
+                .allocator = allocator,
             };
         }
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: ?pbcommon.KeyValueList) !void {
-            const key = pbutils.hashIdentifyAttributes(attributes);
+            const key = attributes;
             if (self.cumulative.getEntry(key)) |c| {
                 c.value_ptr.* += delta;
             } else {
@@ -184,13 +193,13 @@ pub fn Histogram(comptime T: type) type {
         // Keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, don't want allocate memory for each attribute set that comes in.
         // Store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(u64, T),
+        cumulative: std.AutoHashMap(?pbcommon.KeyValueList, T),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
         // buckets are used.
         // Buckets are always defined as f64.
         buckets: []const f64,
-        bucket_counts: std.AutoHashMap(u64, []usize),
+        bucket_counts: std.AutoHashMap(?pbcommon.KeyValueList, []usize),
         min: ?T = null,
         max: ?T = null,
 
@@ -203,15 +212,15 @@ pub fn Histogram(comptime T: type) type {
 
             return Self{
                 .options = opts,
-                .cumulative = std.AutoHashMap(u64, T).init(allocator),
+                .cumulative = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
                 .buckets = buckets,
-                .bucket_counts = std.AutoHashMap(u64, []usize).init(allocator),
+                .bucket_counts = std.AutoHashMap(?pbcommon.KeyValueList, []usize).init(allocator),
             };
         }
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: ?pbcommon.KeyValueList) !void {
-            const key = pbutils.hashIdentifyAttributes(attributes);
+            const key = attributes;
             if (self.cumulative.getEntry(key)) |c| {
                 c.value_ptr.* += value;
             } else {
@@ -266,17 +275,17 @@ pub fn Gauge(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        values: std.AutoHashMap(u64, T),
+        values: std.AutoHashMap(?pbcommon.KeyValueList, T),
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .values = std.AutoHashMap(u64, T).init(allocator),
+                .values = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
             };
         }
 
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: ?pbcommon.KeyValueList) !void {
-            const key = pbutils.hashIdentifyAttributes(attributes);
+            const key = attributes;
             try self.values.put(key, value);
         }
     };
@@ -304,10 +313,13 @@ test "meter can create counter instrument and record increase with attributes" {
         .unit = "KiB",
     });
 
-    try counter.add(1, null);
+    try counter.add(100, null);
+    try counter.add(1000, null);
     std.debug.assert(counter.cumulative.count() == 1);
+    std.debug.assert(counter.cumulative.get(null).? == 1100);
 
     var attrs = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator);
+    // const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", "some-value", "another-key", "another-value" });
     defer attrs.deinit();
     try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "some-key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
     try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "another-key" }, .value = pbcommon.AnyValue{ .value = .{ .int_value = 0x123456789 } } });
@@ -328,7 +340,7 @@ test "meter can create histogram instrument and record value without explicit bu
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
     std.debug.assert(histogram.cumulative.count() == 1);
-    const counts = histogram.bucket_counts.get(pbutils.hashIdentifyAttributes(null)).?;
+    const counts = histogram.bucket_counts.get(null).?;
     std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
     const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     try std.testing.expectEqualSlices(usize, expected_counts, counts);
@@ -346,7 +358,7 @@ test "meter can create histogram instrument and record value with explicit bucke
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
     std.debug.assert(histogram.cumulative.count() == 1);
-    const counts = histogram.bucket_counts.get(pbutils.hashIdentifyAttributes(null)).?;
+    const counts = histogram.bucket_counts.get(null).?;
     std.debug.assert(counts.len == 4);
     const expected_counts = &[_]usize{ 1, 1, 1, 0 };
     try std.testing.expectEqualSlices(usize, expected_counts, counts);
@@ -361,7 +373,7 @@ test "meter can create gauge instrument and record value without attributes" {
     try gauge.record(42, null);
     try gauge.record(-42, null);
     std.debug.assert(gauge.values.count() == 1);
-    std.debug.assert(gauge.values.get(0) == -42);
+    std.debug.assert(gauge.values.get(null) == -42);
 }
 
 test "meter creates upDownCounter and stores value" {
@@ -377,7 +389,7 @@ test "meter creates upDownCounter and stores value" {
 
     // Validate the number stored is correct.
     // Null attributes produce a key hashed == 0.
-    if (counter.cumulative.get(0)) |c| {
+    if (counter.cumulative.get(null)) |c| {
         std.debug.assert(c == 1);
     } else {
         std.debug.panic("Counter not found", .{});
