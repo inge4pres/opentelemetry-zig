@@ -142,6 +142,7 @@ test "validate description" {
 pub const ResourceError = error{
     MeterExistsWithDifferentAttributes,
     InstrumentExistsWithSameNameAndIdentifyingFields,
+    MetricReaderAlreadyAttached,
 };
 
 /// Generate an identifier for a meter: an existing meter with same

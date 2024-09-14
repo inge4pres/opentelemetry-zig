@@ -20,7 +20,7 @@ const defaultMeterVersion = "0.1.0";
 pub const MeterProvider = struct {
     allocator: std.mem.Allocator,
     meters: std.AutoHashMap(u64, Meter),
-    readers: std.ArrayList(MetricReader),
+    readers: std.ArrayList(*MetricReader),
 
     const Self = @This();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -31,7 +31,7 @@ pub const MeterProvider = struct {
         provider.* = Self{
             .allocator = alloc,
             .meters = std.AutoHashMap(u64, Meter).init(alloc),
-            .readers = std.ArrayList(MetricReader).init(alloc),
+            .readers = std.ArrayList(*MetricReader).init(alloc),
         };
 
         return provider;
@@ -84,7 +84,11 @@ pub const MeterProvider = struct {
         return false;
     }
 
-    pub fn AddReader(self: *Self, m: MetricReader) !void {
+    pub fn addReader(self: *Self, m: *MetricReader) !void {
+        if (m.meterProvider != null) {
+            return spec.ResourceError.MetricReaderAlreadyAttached;
+        }
+        m.meterProvider = self;
         try self.readers.append(m);
     }
 };
@@ -282,7 +286,44 @@ test "meter register instrument" {
 test "meter provider adds metric reader" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    try mp.AddReader(MetricReader{});
+    var mr = MetricReader{};
+    try mp.addReader(&mr);
 
     std.debug.assert(mp.readers.items.len == 1);
+}
+
+test "meter provider adds multiple metric readers" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    var mr1 = MetricReader{};
+    var mr2 = MetricReader{};
+    try mp.addReader(&mr1);
+    try mp.addReader(&mr2);
+
+    std.debug.assert(mp.readers.items.len == 2);
+}
+
+test "same metric reader cannot be registered with multiple providers" {
+    const mp1 = try MeterProvider.init(std.testing.allocator);
+    defer mp1.shutdown();
+
+    const mp2 = try MeterProvider.init(std.testing.allocator);
+    defer mp2.shutdown();
+
+    var mr = MetricReader{};
+
+    try mp1.addReader(&mr);
+    const err = mp2.addReader(&mr);
+    try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
+}
+
+test "same metric reader cannot be registered twice on same meter provider" {
+    const mp1 = try MeterProvider.init(std.testing.allocator);
+    defer mp1.shutdown();
+
+    var mr = MetricReader{};
+
+    try mp1.addReader(&mr);
+    const err = mp1.addReader(&mr);
+    try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
 }
