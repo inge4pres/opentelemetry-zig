@@ -103,6 +103,21 @@ test "metric reader shutdown prevents collect() to execute" {
     try reader.collect();
 }
 
+test "metric reader collects data from meter provider" {
+    var mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    var reader = MetricReader{ .allocator = std.testing.allocator };
+    defer reader.shutdown();
+
+    try mp.addReader(&reader);
+
+    const m = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try m.createCounter(u32, .{ .name = "my-counter" });
+    try counter.add(1, null);
+
+    try reader.collect();
+}
+
 pub const MetricExporter = struct {
     exporter: *const fn (pbmetrics.ExportMetricsServiceRequest) MetricReadError!void,
 };
