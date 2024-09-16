@@ -157,7 +157,7 @@ const Meter = struct {
     // Name is case-insensitive.
     // The remaining are also forming the identifier.
     fn registerInstrument(self: *Self, instrument: Instrument) !void {
-        const identifyingName = try spec.instrumentIdentifier(
+        const id = try spec.instrumentIdentifier(
             self.allocator,
             instrument.opts.name,
             instrument.kind.toString(),
@@ -165,14 +165,14 @@ const Meter = struct {
             instrument.opts.description orelse "",
         );
 
-        if (self.instruments.contains(identifyingName)) {
+        if (self.instruments.contains(id)) {
             std.debug.print(
                 "Instrument with identifying name {s} already exists in meter {s}\n",
-                .{ identifyingName, self.name },
+                .{ id, self.name },
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
-        try self.instruments.put(identifyingName, instrument);
+        try self.instruments.put(id, instrument);
     }
 };
 
@@ -286,7 +286,7 @@ test "meter register instrument" {
 test "meter provider adds metric reader" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    var mr = MetricReader{};
+    var mr = MetricReader{ .allocator = std.testing.allocator };
     try mp.addReader(&mr);
 
     std.debug.assert(mp.readers.items.len == 1);
@@ -295,8 +295,8 @@ test "meter provider adds metric reader" {
 test "meter provider adds multiple metric readers" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    var mr1 = MetricReader{};
-    var mr2 = MetricReader{};
+    var mr1 = MetricReader{ .allocator = std.testing.allocator };
+    var mr2 = MetricReader{ .allocator = std.testing.allocator };
     try mp.addReader(&mr1);
     try mp.addReader(&mr2);
 
@@ -310,7 +310,7 @@ test "same metric reader cannot be registered with multiple providers" {
     const mp2 = try MeterProvider.init(std.testing.allocator);
     defer mp2.shutdown();
 
-    var mr = MetricReader{};
+    var mr = MetricReader{ .allocator = std.testing.allocator };
 
     try mp1.addReader(&mr);
     const err = mp2.addReader(&mr);
@@ -321,7 +321,7 @@ test "same metric reader cannot be registered twice on same meter provider" {
     const mp1 = try MeterProvider.init(std.testing.allocator);
     defer mp1.shutdown();
 
-    var mr = MetricReader{};
+    var mr = MetricReader{ .allocator = std.testing.allocator };
 
     try mp1.addReader(&mr);
     const err = mp1.addReader(&mr);

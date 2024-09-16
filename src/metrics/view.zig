@@ -26,7 +26,7 @@ pub const Temporality = enum {
     Delta,
 };
 
-pub fn TemporalityFor(kind: Instrument.Kind) Temporality {
+pub fn DefaultTemporalityFor(kind: Instrument.Kind) Temporality {
     return switch (kind) {
         .Counter => Temporality.Cumulative,
         .UpDownCounter => Temporality.Cumulative,
