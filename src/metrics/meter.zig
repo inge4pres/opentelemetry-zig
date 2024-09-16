@@ -6,6 +6,7 @@ const pbutils = @import("../pbutils.zig");
 const spec = @import("spec.zig");
 
 const Instrument = @import("instrument.zig").Instrument;
+const MetricReader = @import("reader.zig").MetricReader;
 const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const Counter = @import("instrument.zig").Counter;
@@ -19,6 +20,7 @@ const defaultMeterVersion = "0.1.0";
 pub const MeterProvider = struct {
     allocator: std.mem.Allocator,
     meters: std.AutoHashMap(u64, Meter),
+    readers: std.ArrayList(*MetricReader),
 
     const Self = @This();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -29,6 +31,7 @@ pub const MeterProvider = struct {
         provider.* = Self{
             .allocator = alloc,
             .meters = std.AutoHashMap(u64, Meter).init(alloc),
+            .readers = std.ArrayList(*MetricReader).init(alloc),
         };
 
         return provider;
@@ -41,8 +44,9 @@ pub const MeterProvider = struct {
     }
 
     /// Delete the meter provider and free up the memory allocated for it.
-    pub fn deinit(self: *Self) void {
+    pub fn shutdown(self: *Self) void {
         self.meters.deinit();
+        self.readers.deinit();
         self.allocator.destroy(self);
     }
 
@@ -75,11 +79,17 @@ pub const MeterProvider = struct {
 
     fn meterExistsWithDifferentAttributes(self: *Self, identifier: u64, attributes: ?pbcommon.KeyValueList) bool {
         if (self.meters.get(identifier)) |m| {
-            if (!std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes))) {
-                return true;
-            }
+            return !std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes));
         }
         return false;
+    }
+
+    pub fn addReader(self: *Self, m: *MetricReader) !void {
+        if (m.meterProvider != null) {
+            return spec.ResourceError.MetricReaderAlreadyAttached;
+        }
+        m.meterProvider = self;
+        try self.readers.append(m);
     }
 };
 
@@ -147,7 +157,7 @@ const Meter = struct {
     // Name is case-insensitive.
     // The remaining are also forming the identifier.
     fn registerInstrument(self: *Self, instrument: Instrument) !void {
-        const identifyingName = try spec.instrumentIdentifier(
+        const id = try spec.instrumentIdentifier(
             self.allocator,
             instrument.opts.name,
             instrument.kind.toString(),
@@ -155,27 +165,27 @@ const Meter = struct {
             instrument.opts.description orelse "",
         );
 
-        if (self.instruments.contains(identifyingName)) {
+        if (self.instruments.contains(id)) {
             std.debug.print(
                 "Instrument with identifying name {s} already exists in meter {s}\n",
-                .{ identifyingName, self.name },
+                .{ id, self.name },
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
-        try self.instruments.put(identifyingName, instrument);
+        try self.instruments.put(id, instrument);
     }
 };
 
 test "default meter provider can be fetched" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
 }
 
 test "custom meter provider can be created" {
     const mp = try MeterProvider.init(std.testing.allocator);
-    defer mp.deinit();
+    defer mp.shutdown();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
 }
@@ -184,7 +194,7 @@ test "meter can be created from custom provider" {
     const meter_name = "my-meter";
     const meter_version = "my-meter";
     const mp = try MeterProvider.init(std.testing.allocator);
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
 
@@ -199,7 +209,7 @@ test "meter can be created from default provider with schema url and attributes"
     const meter_version = "my-meter";
     const attributes = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator) };
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
     std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
@@ -210,7 +220,7 @@ test "meter can be created from default provider with schema url and attributes"
 
 test "meter has default version when creted with no options" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "ameter" });
     std.debug.assert(std.mem.eql(u8, meter.version, defaultMeterVersion));
@@ -235,7 +245,7 @@ test "getting same meter with different attributes returns an error" {
 
 test "meter register instrument twice with same name fails" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const i = try Instrument.Get(.Counter, .{ .name = "some-counter" }, std.testing.allocator);
@@ -248,7 +258,7 @@ test "meter register instrument twice with same name fails" {
 
 test "meter register instrument" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const i = try Instrument.Get(.Counter, .{ .name = "my-counter" }, std.testing.allocator);
@@ -271,4 +281,49 @@ test "meter register instrument" {
     } else {
         std.debug.assert(false);
     }
+}
+
+test "meter provider adds metric reader" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    var mr = MetricReader{ .allocator = std.testing.allocator };
+    try mp.addReader(&mr);
+
+    std.debug.assert(mp.readers.items.len == 1);
+}
+
+test "meter provider adds multiple metric readers" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    var mr1 = MetricReader{ .allocator = std.testing.allocator };
+    var mr2 = MetricReader{ .allocator = std.testing.allocator };
+    try mp.addReader(&mr1);
+    try mp.addReader(&mr2);
+
+    std.debug.assert(mp.readers.items.len == 2);
+}
+
+test "same metric reader cannot be registered with multiple providers" {
+    const mp1 = try MeterProvider.init(std.testing.allocator);
+    defer mp1.shutdown();
+
+    const mp2 = try MeterProvider.init(std.testing.allocator);
+    defer mp2.shutdown();
+
+    var mr = MetricReader{ .allocator = std.testing.allocator };
+
+    try mp1.addReader(&mr);
+    const err = mp2.addReader(&mr);
+    try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
+}
+
+test "same metric reader cannot be registered twice on same meter provider" {
+    const mp1 = try MeterProvider.init(std.testing.allocator);
+    defer mp1.shutdown();
+
+    var mr = MetricReader{ .allocator = std.testing.allocator };
+
+    try mp1.addReader(&mr);
+    const err = mp1.addReader(&mr);
+    try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
 }

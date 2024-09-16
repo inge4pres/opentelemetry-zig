@@ -66,7 +66,7 @@ test "instrument name must conform to the OpenTelemetry specification" {
 
 test "meter cannot create instrument if name does not conform to the OpenTelemetry specification" {
     const mp = try MeterProvider.default();
-    defer mp.deinit();
+    defer mp.shutdown();
     const m = try mp.getMeter(.{ .name = "my-meter" });
     const invalid_names = &[_][]const u8{
         // Does not start with a letter
@@ -142,6 +142,7 @@ test "validate description" {
 pub const ResourceError = error{
     MeterExistsWithDifferentAttributes,
     InstrumentExistsWithSameNameAndIdentifyingFields,
+    MetricReaderAlreadyAttached,
 };
 
 /// Generate an identifier for a meter: an existing meter with same
