@@ -22,7 +22,7 @@ pub const Kind = enum {
     }
 };
 
-pub const instrumentData = union(enum) {
+const SupportedInstrument = union(enum) {
     Counter_u16: Counter(u16),
     Counter_u32: Counter(u32),
     Counter_u64: Counter(u64),
@@ -39,10 +39,6 @@ pub const instrumentData = union(enum) {
     Gauge_i64: Gauge(i64),
     Gauge_f32: Gauge(f32),
     Gauge_f64: Gauge(f64),
-
-    // pub fn getData() pbmetric.Metric {
-
-    // }
 };
 
 // TODO this should be the abstraction containing all instruments.
@@ -56,7 +52,7 @@ pub const Instrument = struct {
     allocator: std.mem.Allocator,
     kind: Kind,
     opts: InstrumentOptions,
-    data: instrumentData,
+    data: SupportedInstrument,
 
     pub fn Get(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !Self {
         // Validate name, unit anddescription, optionally throw an error if non conformant.
