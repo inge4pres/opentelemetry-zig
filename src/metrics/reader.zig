@@ -63,13 +63,12 @@ pub const MetricReader = struct {
             .name = ManagedString.managed(i.opts.name),
             .description = if (i.opts.description) |d| ManagedString.managed(d) else .Empty,
             .unit = if (i.opts.unit) |u| ManagedString.managed(u) else .Empty,
-            .data = null,
-            // .data = switch (i.data) {
-            //     .Counter_u32 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-            //         .data_points = try sumDataPoints(allocator, u32, i.data.Counter_u32),
-            //     } },
-            //     else => unreachable,
-            // },
+            .data = switch (i.data) {
+                .Counter_u32 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
+                    .data_points = try sumDataPoints(allocator, u32, i.data.Counter_u32),
+                } },
+                else => unreachable,
+            },
             // Metadata used for internal translations and we can discard for now.
             // Consumers of SDK should not rely on this field.
             .metadata = std.ArrayList(pbcommon.KeyValue).init(allocator),
