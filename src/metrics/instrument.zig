@@ -39,6 +39,12 @@ const SupportedInstrument = union(enum) {
     Gauge_i64: Gauge(i64),
     Gauge_f32: Gauge(f32),
     Gauge_f64: Gauge(f64),
+
+    pub fn deinit(self: *SupportedInstrument) void {
+        switch (self.*) {
+            inline else => |*i| i.deinit(),
+        }
+    }
 };
 
 // TODO this should be the abstraction containing all instruments.
@@ -125,6 +131,10 @@ pub const Instrument = struct {
         };
         return g;
     }
+
+    pub fn deinit(self: *Self) void {
+        self.data.deinit();
+    }
 };
 
 /// InstrumentOptions is used to configure the instrument.
@@ -160,11 +170,15 @@ pub fn Counter(comptime T: type) type {
         // So we store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(?pbcommon.KeyValueList, T),
 
-        pub fn init(allocator: std.mem.Allocator) Self {
+        fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .cumulative = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
                 .allocator = allocator,
             };
+        }
+
+        fn deinit(self: *Self) void {
+            self.cumulative.deinit();
         }
 
         /// Add the given delta to the counter, using the provided attributes.
@@ -199,7 +213,7 @@ pub fn Histogram(comptime T: type) type {
         min: ?T = null,
         max: ?T = null,
 
-        pub fn init(allocator: std.mem.Allocator, options: ?HistogramOptions) !Self {
+        fn init(allocator: std.mem.Allocator, options: ?HistogramOptions) !Self {
             // Use the default options if none are provided.
             const opts = options orelse HistogramOptions{};
             // Buckets are part of the options, so we validate them from there.
@@ -212,6 +226,11 @@ pub fn Histogram(comptime T: type) type {
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(?pbcommon.KeyValueList, []usize).init(allocator),
             };
+        }
+
+        fn deinit(self: *Self) void {
+            self.cumulative.deinit();
+            self.bucket_counts.deinit();
         }
 
         /// Add the given value to the histogram, using the provided attributes.
@@ -273,10 +292,14 @@ pub fn Gauge(comptime T: type) type {
 
         values: std.AutoHashMap(?pbcommon.KeyValueList, T),
 
-        pub fn init(allocator: std.mem.Allocator) Self {
+        fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .values = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
             };
+        }
+
+        fn deinit(self: *Self) void {
+            self.values.deinit();
         }
 
         /// Record the given value to the gauge, using the provided attributes.

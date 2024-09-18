@@ -45,6 +45,14 @@ pub const MeterProvider = struct {
 
     /// Delete the meter provider and free up the memory allocated for it.
     pub fn shutdown(self: *Self) void {
+        var meters = self.meters.valueIterator();
+        while (meters.next()) |m| {
+            var instrs = m.instruments.valueIterator();
+            while (instrs.next()) |i| {
+                i.deinit();
+            }
+            m.instruments.deinit();
+        }
         self.meters.deinit();
         self.readers.deinit();
         self.allocator.destroy(self);
@@ -164,15 +172,16 @@ const Meter = struct {
             instrument.opts.unit orelse "",
             instrument.opts.description orelse "",
         );
+        std.debug.print("registering with name {s}\n", .{ id });
 
-        if (self.instruments.contains(id)) {
+        if (self.instruments.getKey(id)) |n| {
             std.debug.print(
                 "Instrument with identifying name {s} already exists in meter {s}\n",
-                .{ id, self.name },
+                .{ n, self.name },
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
-        try self.instruments.put(id, instrument);
+        return self.instruments.put(id, instrument);
     }
 };
 
@@ -273,7 +282,6 @@ test "meter register instrument" {
         "",
         "",
     );
-    defer std.testing.allocator.free(id);
 
     if (meter.instruments.getKey(id)) |key| {
         const iFromReg = meter.instruments.get(key);
