@@ -111,6 +111,7 @@ test "metric reader collects data from meter provider" {
     try mp.addReader(&reader);
 
     const m = try mp.getMeter(.{ .name = "my-meter" });
+
     var counter = try m.createCounter(u32, .{ .name = "my-counter" });
     try counter.add(1, null);
 

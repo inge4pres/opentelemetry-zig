@@ -183,14 +183,14 @@ test "meter identifier changes with different schema url" {
 /// Identify an instrument in a meter by its name, kind, unit and description.
 /// Used to recognize duplicate instrument registration as defined in
 /// https://opentelemetry.io/docs/specs/otel/metrics/sdk/#duplicate-instrument-registration.
-/// Returned identifier must be freed by the caller using the allocator.
 pub fn instrumentIdentifier(allocator: std.mem.Allocator, name: []const u8, kind: []const u8, unit: []const u8, description: []const u8) ![]u8 {
     var h = std.hash.Wyhash.init(42);
     h.update(description);
     const id = h.final();
     const lowerName = try std.ascii.allocLowerString(allocator, name);
     defer allocator.free(lowerName);
-    return try std.fmt.allocPrint(allocator, "{s}-{s}-{s}-{x}", .{ lowerName, kind, unit, id });
+    var buf: [4096]u8 = [_]u8{0} ** 4096;
+    return std.fmt.bufPrintZ(&buf, "{s}-{s}-{s}-{x}", .{ lowerName, kind, unit, id });
 }
 
 test "identifying field for instrument remain equal upon similar name with mixed case" {
@@ -201,9 +201,7 @@ test "identifying field for instrument remain equal upon similar name with mixed
     const alloc = std.testing.allocator;
 
     const a = try instrumentIdentifier(alloc, name, kind, "", description);
-    defer alloc.free(a);
     const b = try instrumentIdentifier(alloc, equivalentName, kind, "", description);
-    defer alloc.free(b);
     std.debug.assert(std.mem.eql(u8, a, b));
 }
 
@@ -216,9 +214,7 @@ test "identifying fields for instruments change with unit" {
     const alloc = std.testing.allocator;
 
     const a = try instrumentIdentifier(alloc, name, kind, "", description);
-    defer alloc.free(a);
     const b = try instrumentIdentifier(alloc, name, kind, "bytes", description);
-    defer alloc.free(b);
     std.debug.assert(!std.mem.eql(u8, a, b));
 }
 
