@@ -68,10 +68,12 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
+    const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
     const sdk_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/sdk.zig"),
         .target = target,
         .optimize = optimize,
+        .filters = test_filters,
     });
     sdk_unit_tests.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));
 

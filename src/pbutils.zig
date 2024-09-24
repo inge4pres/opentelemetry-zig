@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const protobuf = @import("protobuf");
+const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("opentelemetry/proto/common/v1.pb.zig");
 
 // Converts a key-value pair into a pbcommon.KeyValue.
@@ -12,10 +13,11 @@ fn keyValue(comptime T: type) type {
 
         fn resolve(self: keyValue(T)) pbcommon.KeyValue {
             return pbcommon.KeyValue{
-                .key = .{ .Const = self.key },
+                .key = ManagedString.managed(self.key),
                 .value = switch (@TypeOf(self.value)) {
                     bool => pbcommon.AnyValue{ .value = .{ .bool_value = self.value } },
-                    []const u8 => pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = self.value } } },
+                    []const u8 => pbcommon.AnyValue{ .value = .{ .string_value = ManagedString.managed(self.value) } },
+                    []u8 => pbcommon.AnyValue{ .value = .{ .string_value = ManagedString.managed(self.value) } },
                     i64 => pbcommon.AnyValue{ .value = .{ .int_value = self.value } },
                     f64 => pbcommon.AnyValue{ .value = .{ .double_value = self.value } },
                     else => @compileError("unsupported value type for attribute " ++ @typeName(@TypeOf(self.value))),
