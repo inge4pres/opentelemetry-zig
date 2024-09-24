@@ -44,14 +44,11 @@ pub const MeterProvider = struct {
     }
 
     /// Delete the meter provider and free up the memory allocated for it.
+    /// as well as its child objects: Meters and MetricReaders.
     pub fn shutdown(self: *Self) void {
         var meters = self.meters.valueIterator();
         while (meters.next()) |m| {
-            var instrs = m.instruments.valueIterator();
-            while (instrs.next()) |i| {
-                i.deinit();
-            }
-            m.instruments.deinit();
+            m.deinit();
         }
         self.meters.deinit();
         self.readers.deinit();
@@ -69,7 +66,7 @@ pub const MeterProvider = struct {
             .version = options.version,
             .attributes = options.attributes,
             .schema_url = options.schema_url,
-            .instruments = std.StringHashMap(Instrument).init(self.allocator),
+            .instruments = std.StringHashMap(*Instrument).init(self.allocator),
             .allocator = self.allocator,
         };
         // A Meter is identified uniquely by its name, version and schema_url.
@@ -115,16 +112,17 @@ const Meter = struct {
     version: []const u8,
     schema_url: ?[]const u8,
     attributes: ?pbcommon.KeyValueList,
-    instruments: std.StringHashMap(Instrument),
+    instruments: std.StringHashMap(*Instrument),
     allocator: std.mem.Allocator,
 
     const Self = @This();
 
     /// Create a new Counter instrument using the specified type as the value type.
     /// This is a monotonic counter that can only be incremented.
-    pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
+    pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !*Counter(T) {
         var i = try Instrument.Get(.Counter, options, self.allocator);
         const c = try i.counter(T);
+        errdefer self.allocator.destroy(c);
         try self.registerInstrument(i);
 
         return c;
@@ -132,9 +130,10 @@ const Meter = struct {
 
     /// Create a new UpDownCounter instrument using the specified type as the value type.
     /// This is a counter that can be incremented and decremented.
-    pub fn createUpDownCounter(self: *Self, comptime T: type, options: InstrumentOptions) !Counter(T) {
+    pub fn createUpDownCounter(self: *Self, comptime T: type, options: InstrumentOptions) !*Counter(T) {
         var i = try Instrument.Get(.UpDownCounter, options, self.allocator);
         const c = try i.upDownCounter(T);
+        errdefer self.allocator.destroy(c);
         try self.registerInstrument(i);
 
         return c;
@@ -142,9 +141,10 @@ const Meter = struct {
 
     /// Create a new Histogram instrument using the specified type as the value type.
     /// A histogram is a metric that samples observations and counts them in different buckets.
-    pub fn createHistogram(self: *Self, comptime T: type, options: InstrumentOptions) !Histogram(T) {
+    pub fn createHistogram(self: *Self, comptime T: type, options: InstrumentOptions) !*Histogram(T) {
         var i = try Instrument.Get(.Histogram, options, self.allocator);
-        const h = i.histogram(T);
+        const h = try i.histogram(T);
+        errdefer self.allocator.destroy(h);
         try self.registerInstrument(i);
 
         return h;
@@ -153,9 +153,10 @@ const Meter = struct {
     /// Create a new Gauge instrument using the specified type as the value type.
     /// A gauge is a metric that represents a single numerical value that can arbitrarily go up and down,
     /// and represents a point-in-time value.
-    pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !Gauge(T) {
+    pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !*Gauge(T) {
         var i = try Instrument.Get(.Gauge, options, self.allocator);
-        const g = i.gauge(T);
+        const g = try i.gauge(T);
+        errdefer self.allocator.destroy(g);
         try self.registerInstrument(i);
 
         return g;
@@ -164,7 +165,7 @@ const Meter = struct {
     // Check that the instrument is not already registered with the same name identifier.
     // Name is case-insensitive.
     // The remaining are also forming the identifier.
-    fn registerInstrument(self: *Self, instrument: Instrument) !void {
+    fn registerInstrument(self: *Self, instrument: *Instrument) !void {
         const id = try spec.instrumentIdentifier(
             self.allocator,
             instrument.opts.name,
@@ -172,16 +173,29 @@ const Meter = struct {
             instrument.opts.unit orelse "",
             instrument.opts.description orelse "",
         );
-        std.debug.print("registering with name {s}\n", .{ id });
 
-        if (self.instruments.getKey(id)) |n| {
+        if (self.instruments.contains(id)) {
             std.debug.print(
                 "Instrument with identifying name {s} already exists in meter {s}\n",
-                .{ n, self.name },
+                .{ id, self.name },
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
         return self.instruments.put(id, instrument);
+    }
+
+    fn deinit(self: *Self) void {
+        var instrs = self.instruments.iterator();
+        while (instrs.next()) |i| {
+            // Instrument.deinit() will free up the memory allocated for the instrument,
+            i.value_ptr.*.deinit();
+            // Also free up the memory allocated for the instrument keys.
+            self.allocator.free(i.key_ptr.*);
+        }
+        // Cleanup Meters' Instruments values.
+        self.instruments.deinit();
+        // Cleanup the meter attributes.
+        if (self.attributes) |attrs| attrs.deinit();
     }
 };
 
@@ -217,6 +231,7 @@ test "meter can be created from default provider with schema url and attributes"
     const meter_name = "my-meter";
     const meter_version = "my-meter";
     const attributes = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator) };
+
     const mp = try MeterProvider.default();
     defer mp.shutdown();
 
@@ -257,11 +272,11 @@ test "meter register instrument twice with same name fails" {
     defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    const i = try Instrument.Get(.Counter, .{ .name = "some-counter" }, std.testing.allocator);
-    try meter.registerInstrument(i);
 
-    const n = try Instrument.Get(.Counter, .{ .name = "some-counter" }, std.testing.allocator);
-    const r = meter.registerInstrument(n);
+    const counterName = "beautiful-counter";
+    _ = try meter.createCounter(u16, .{ .name = counterName });
+    const r = meter.createCounter(u16, .{ .name = counterName });
+
     try std.testing.expectError(spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields, r);
 }
 
@@ -270,24 +285,25 @@ test "meter register instrument" {
     defer mp.shutdown();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    const i = try Instrument.Get(.Counter, .{ .name = "my-counter" }, std.testing.allocator);
-    try meter.registerInstrument(i);
 
-    try std.testing.expectEqual(1, meter.instruments.count());
+    const counter = try meter.createCounter(u16, .{ .name = "my-counter" });
+    _ = try meter.createHistogram(u16, .{ .name = "my-histogram" });
 
-    const id = try spec.instrumentIdentifier(
+    try std.testing.expectEqual(2, meter.instruments.count());
+
+    const id: []const u8 = try spec.instrumentIdentifier(
         std.testing.allocator,
         "my-counter",
         Kind.Counter.toString(),
         "",
         "",
     );
+    defer std.testing.allocator.free(id);
 
-    if (meter.instruments.getKey(id)) |key| {
-        const iFromReg = meter.instruments.get(key);
-        try std.testing.expectEqual(i, iFromReg.?);
+    if (meter.instruments.get(id)) |inst| {
+        try std.testing.expectEqual(counter, inst.data.Counter_u16);
     } else {
-        std.debug.assert(false);
+        unreachable;
     }
 }
 
@@ -334,4 +350,33 @@ test "same metric reader cannot be registered twice on same meter provider" {
     try mp1.addReader(&mr);
     const err = mp1.addReader(&mr);
     try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
+}
+
+test "meter provider end to end" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "service.company.com" });
+
+    var counter = try meter.createCounter(u32, .{
+        .name = "loc",
+        .description = "lines of code written",
+    });
+    const meVal: []const u8 = "person@company.com";
+    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "author", meVal });
+
+    try counter.add(1000000, null);
+    try counter.add(10, attrs);
+
+    var hist = try meter.createHistogram(u16, .{ .name = "my-histogram" });
+    const v: []const u8 = "success";
+    const attrs2 = try pbutils.WithAttributes(
+        std.testing.allocator,
+        .{ "amazing", v },
+    );
+
+    try hist.record(1234, null);
+    try hist.record(4567, attrs2);
+
+    std.debug.assert(meter.instruments.count() == 2);
 }

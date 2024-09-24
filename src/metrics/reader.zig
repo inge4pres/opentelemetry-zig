@@ -3,6 +3,7 @@ const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
 const pbmetrics = @import("../opentelemetry/proto/metrics/v1.pb.zig");
+const pbutils = @import("../pbutils.zig");
 const instr = @import("instrument.zig");
 const Instrument = instr.Instrument;
 const Kind = instr.Kind;
@@ -44,8 +45,9 @@ pub const MetricReader = struct {
             while (mpIter.next()) |meter| {
                 var instrIter = meter.instruments.valueIterator();
                 while (instrIter.next()) |i| {
-                    const metric = try toMetric(self.allocator, i);
-                    defer metric.metadata.deinit();
+                    const metric = try toMetric(self.allocator, i.*);
+                    // FIXME: only call deinit() after populating the exporter output.
+                    defer metric.deinit();
                 }
             }
         } else {
@@ -64,8 +66,35 @@ pub const MetricReader = struct {
             .description = if (i.opts.description) |d| ManagedString.managed(d) else .Empty,
             .unit = if (i.opts.unit) |u| ManagedString.managed(u) else .Empty,
             .data = switch (i.data) {
+                .Counter_u16 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
+                    .data_points = try sumDataPoints(allocator, u16, i.data.Counter_u16),
+                    .aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE,
+                    .is_monotonic = true,
+                } },
                 .Counter_u32 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
                     .data_points = try sumDataPoints(allocator, u32, i.data.Counter_u32),
+                    .aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE,
+                    .is_monotonic = true,
+                } },
+
+                .Counter_u64 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
+                    .data_points = try sumDataPoints(allocator, u64, i.data.Counter_u64),
+                    .aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE,
+                    .is_monotonic = true,
+                } },
+                .Histogram_u16 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                    .data_points = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator),
+                    .aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE,
+                } },
+
+                .Histogram_u32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                    .data_points = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator),
+                    .aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE,
+                } },
+
+                .Histogram_u64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                    .data_points = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator),
+                    .aggregation_temporality = .AGGREGATION_TEMPORALITY_CUMULATIVE,
                 } },
                 else => unreachable,
             },
@@ -76,7 +105,7 @@ pub const MetricReader = struct {
     }
 };
 
-fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: instr.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
+fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
     var dataPoints = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
     var iter = c.cumulative.iterator();
     while (iter.next()) |measure| {
@@ -114,6 +143,14 @@ test "metric reader collects data from meter provider" {
 
     var counter = try m.createCounter(u32, .{ .name = "my-counter" });
     try counter.add(1, null);
+
+    var hist = try m.createHistogram(u16, .{ .name = "my-histogram" });
+    const v: []const u8 = "success";
+    const attrs = try pbutils.WithAttributes(
+        std.testing.allocator,
+        .{ "amazing", v },
+    );
+    try hist.record(10, attrs);
 
     try reader.collect();
 }
