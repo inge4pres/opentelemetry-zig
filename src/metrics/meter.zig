@@ -46,6 +46,7 @@ pub const MeterProvider = struct {
     /// Delete the meter provider and free up the memory allocated for it.
     /// as well as its child objects: Meters and MetricReaders.
     pub fn shutdown(self: *Self) void {
+        // TODO call shutdown on all readers.
         var meters = self.meters.valueIterator();
         while (meters.next()) |m| {
             m.deinit();
