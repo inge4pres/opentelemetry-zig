@@ -380,3 +380,25 @@ test "meter provider end to end" {
 
     std.debug.assert(meter.instruments.count() == 2);
 }
+
+test "meter provider with arena allocator" {
+    var buffer: [10 << 20]u8 = undefined;
+    var fb = std.heap.FixedBufferAllocator.init(&buffer);
+    defer fb.reset();
+    var arena = std.heap.ArenaAllocator.init(fb.allocator());
+    defer arena.deinit();
+
+    const mp = try MeterProvider.init(arena.allocator());
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "service.company.com" });
+
+    var counter = try meter.createCounter(u32, .{
+        .name = "loc",
+        .description = "lines of code written",
+    });
+    const meVal: []const u8 = "test";
+    const attrs = try pbutils.WithAttributes(arena.allocator(), .{ "author", meVal });
+
+    try counter.add(1, attrs);
+}
