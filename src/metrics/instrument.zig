@@ -219,6 +219,9 @@ pub fn Histogram(comptime T: type) type {
         // At the same time, don't want allocate memory for each attribute set that comes in.
         // Store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(?pbcommon.KeyValueList, T),
+
+        // Keeps track of how many values are summed for each set of attributes.
+        counts: std.AutoHashMap(?pbcommon.KeyValueList, usize),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
         // buckets are used.
@@ -238,12 +241,14 @@ pub fn Histogram(comptime T: type) type {
             return Self{
                 .options = opts,
                 .cumulative = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
+                .counts = std.AutoHashMap(?pbcommon.KeyValueList, usize).init(allocator),
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(?pbcommon.KeyValueList, []usize).init(allocator),
             };
         }
 
         fn deinit(self: *Self) void {
+            // Cleanup the cumulative hashmap and the keys.
             if (self.cumulative.count() > 0) {
                 var keyIter = self.cumulative.keyIterator();
                 while (keyIter.next()) |key1| {
@@ -253,9 +258,10 @@ pub fn Histogram(comptime T: type) type {
                 }
             }
             self.cumulative.deinit();
-            // We don't need to deinit the bucket_counts keys,
+            // We don't need to deinit the counts or bucket_counts keys,
             // because the keys are pointers to the same optional
             // KeyValueList used in cumulative.
+            self.counts.deinit();
             self.bucket_counts.deinit();
         }
 
@@ -279,6 +285,13 @@ pub fn Histogram(comptime T: type) type {
                 try self.bucket_counts.put(attributes, counts[0..self.buckets.len]);
             }
 
+            // Increment the count of values for the given attributes.
+            if (self.counts.getEntry(attributes)) |c| {
+                c.value_ptr.* += 1;
+            } else {
+                try self.counts.put(attributes, 1);
+            }
+
             // Update Min and Max values.
             if (self.options.recordMinMax) {
                 if (self.max) |max| {
@@ -299,7 +312,11 @@ pub fn Histogram(comptime T: type) type {
         }
 
         fn findBucket(self: Self, value: T) usize {
-            const vf64: f64 = @as(f64, @floatFromInt(value));
+            const vf64: f64 = switch (T) {
+                u16, u32, u64 => @as(f64, @floatFromInt(value)),
+                f32, f64 => @as(f64, value),
+                else => unreachable,
+            };
             for (self.buckets, 0..) |b, i| {
                 if (b >= vf64) {
                     return i;
