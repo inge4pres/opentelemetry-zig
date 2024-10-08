@@ -86,6 +86,7 @@ pub const MetricReader = struct {
             std.debug.print("MetricReader shutdown: error while collecting metrics: {?}\n", .{e});
         };
         self.hasShutDown.store(true, .release);
+        self.exporter.shutdown();
     }
 
     fn toMetric(self: Self, i: *Instrument) !pbmetrics.Metric {
@@ -242,8 +243,33 @@ test "metric reader collects data from meter provider" {
     try reader.collect();
 }
 
+fn deltaTemporality(_: Kind) view.Temporality {
+    return view.Temporality.Delta;
+}
+
+const InMemoryExporter = @import("exporter.zig").ImMemoryExporter;
+
 test "metric reader custom temporality" {
-    // TODO
+    var mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    var reader = MetricReader{
+        .allocator = std.testing.allocator,
+        .exporter = InMemoryExporter.GetMetricExporter(),
+        .temporality = deltaTemporality,
+    };
+    defer reader.shutdown();
+
+    try mp.addReader(&reader);
+
+    const m = try mp.getMeter(.{ .name = "my-meter" });
+
+    var counter = try m.createCounter(u32, .{ .name = "my-counter" });
+    try counter.add(1, null);
+
+    try reader.collect();
+
+    const data = InMemoryExporter.Data();
+    std.debug.assert(data.len == 1);
 }
 
 pub const ExportResult = enum {
@@ -256,6 +282,7 @@ pub const ExportFn = fn (pbmetrics.MetricsData) MetricReadError!void;
 pub const MetricExporter = struct {
     const Self = @This();
     exporter: *const ExportFn,
+    hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     var exportCompleted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
@@ -266,6 +293,11 @@ pub const MetricExporter = struct {
     }
 
     pub fn exportBatch(self: Self, metrics: pbmetrics.MetricsData) ExportResult {
+        if (self.hasShutDown.load(.acquire)) {
+            // When shutdown has already been called, calling export should be a failure.
+            // https://opentelemetry.io/docs/specs/otel/metrics/sdk/#shutdown-2
+            return ExportResult.Failure;
+        }
         // Acquire the lock to ensure that forceFlush is waiting for export to complete.
         _ = exportCompleted.load(.acquire);
         defer exportCompleted.store(true, .release);
@@ -287,6 +319,10 @@ pub const MetricExporter = struct {
             } else std.time.sleep(std.time.ns_per_ms);
         }
         return MetricReadError.ForceFlushTimedOut;
+    }
+
+    pub fn shutdown(self: *Self) void {
+        self.hasShutDown.store(true, .monotonic);
     }
 };
 
