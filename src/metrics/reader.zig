@@ -252,9 +252,13 @@ const InMemoryExporter = @import("exporter.zig").ImMemoryExporter;
 test "metric reader custom temporality" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
+
+    const inMem = InMemoryExporter(std.testing.allocator);
+    defer inMem.deinit();
+
     var reader = MetricReader{
         .allocator = std.testing.allocator,
-        .exporter = InMemoryExporter.GetMetricExporter(),
+        .exporter = MetricExporter.new(inMem.exporter()),
         .temporality = deltaTemporality,
     };
     defer reader.shutdown();
@@ -268,7 +272,7 @@ test "metric reader custom temporality" {
 
     try reader.collect();
 
-    const data = InMemoryExporter.Data();
+    const data = inMem.fetch();
     std.debug.assert(data.len == 1);
 }
 
