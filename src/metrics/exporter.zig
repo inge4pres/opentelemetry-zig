@@ -8,42 +8,59 @@ const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
 const reader = @import("reader.zig");
 const MetricExporter = reader.MetricExporter;
 const MetricReadError = reader.MetricReadError;
-const ExportFn = reader.ExportFn;
 
-pub fn ImMemoryExporter(allocator: std.mem.Allocator) type {
-    return struct {
-        const Self = @This();
+/// ExporterIface is the type representing the interface for exporting metrics.
+/// Implementations can be achieved by any type by having a member field of type
+/// ExporterIface and a member function exporttBatch with the same signature.
+pub const ExporterIface = struct {
+    exportFn: *const fn (*ExporterIface, pbmetrics.MetricsData) MetricReadError!void,
 
-        var global: std.ArrayList(pbmetrics.ResourceMetrics) = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator);
+    pub fn exportBatch(self: *ExporterIface, data: pbmetrics.MetricsData) MetricReadError!void {
+        return self.exportFn(self, data);
+    }
+};
 
-        pub fn exporter() *const ExportFn {
-            return Self.exportBatch;
-        }
+pub const ImMemoryExporter = struct {
+    const Self = @This();
+    allocator: std.mem.Allocator,
+    data: std.ArrayList(pbmetrics.ResourceMetrics) = undefined,
+    // Implement the interface via @fieldParentPtr
+    exporter: ExporterIface,
 
-        fn exportBatch(metrics: pbmetrics.MetricsData) MetricReadError!void {
-            Self.global.clearRetainingCapacity();
-            Self.global.appendSlice(metrics.resource_metrics.items) catch |e| {
-                std.debug.print("error exporting to memory, allocation error: {?}", .{e});
-                return MetricReadError.ExportFailed;
-            };
-            return;
-        }
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .data = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator),
+            .exporter = ExporterIface{
+                .exportFn = exportBatch,
+            },
+        };
+    }
+    pub fn deinit(self: *Self) void {
+        self.data.deinit();
+    }
 
-        pub fn fetch() []pbmetrics.ResourceMetrics {
-            return Self.global.items;
-        }
+    fn exportBatch(iface: *ExporterIface, metrics: pbmetrics.MetricsData) MetricReadError!void {
+        const self: *Self = @fieldParentPtr("exporter", iface);
 
-        pub fn deinit() void {
-            Self.global.deinit();
-        }
-    };
-}
+        self.data.clearRetainingCapacity();
+        self.data.appendSlice(metrics.resource_metrics.items) catch |e| {
+            std.debug.print("error exporting to memory, allocation error: {?}", .{e});
+            return MetricReadError.ExportFailed;
+        };
+        return;
+    }
+
+    pub fn fetch(self: Self) []pbmetrics.ResourceMetrics {
+        return self.data.items;
+    }
+};
 
 test "in memory exporter stores data" {
-    const inMemExporter = ImMemoryExporter(std.testing.allocator);
+    var inMemExporter = ImMemoryExporter.init(std.testing.allocator);
     defer inMemExporter.deinit();
 
-    const exporter = MetricExporter.new(inMemExporter.exporter());
+    const exporter = MetricExporter.new(&inMemExporter.exporter);
 
     const howMany: usize = 2;
     const dp = try std.testing.allocator.alloc(pbmetrics.NumberDataPoint, howMany);
@@ -84,7 +101,8 @@ test "in memory exporter stores data" {
     defer metricsData.deinit();
     try metricsData.resource_metrics.append(resource);
 
-    try exporter.exporter(metricsData);
+    const result = exporter.exportBatch(metricsData);
+    std.debug.assert(result == .Success);
     const data = inMemExporter.fetch();
 
     std.debug.assert(data.len == 1);
