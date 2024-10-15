@@ -34,7 +34,7 @@ pub const MetricReader = struct {
     // Exporter is the destination of the metrics data.
     // FIXME
     // the default metric exporter should be the PeriodicExporter
-    exporter: MetricExporter = MetricExporter.new(noopExporter),
+    exporter: MetricExporter = undefined,
 
     const Self = @This();
 
@@ -212,9 +212,11 @@ test "metric reader shutdown prevents collect() to execute" {
 test "metric reader collects data from meter provider" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
+
+    var noop = Exporter{ .exportFn = noopExporter };
     var reader = MetricReader{
         .allocator = std.testing.allocator,
-        .exporter = MetricExporter.new(noopExporter),
+        .exporter = MetricExporter.new(&noop),
     };
     defer reader.shutdown();
 
@@ -252,9 +254,13 @@ const InMemoryExporter = @import("exporter.zig").ImMemoryExporter;
 test "metric reader custom temporality" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
+
+    var inMem = InMemoryExporter.init(std.testing.allocator);
+    defer inMem.deinit();
+
     var reader = MetricReader{
         .allocator = std.testing.allocator,
-        .exporter = InMemoryExporter.GetMetricExporter(),
+        .exporter = MetricExporter.new(&inMem.exporter),
         .temporality = deltaTemporality,
     };
     defer reader.shutdown();
@@ -268,7 +274,7 @@ test "metric reader custom temporality" {
 
     try reader.collect();
 
-    const data = InMemoryExporter.Data();
+    const data = inMem.fetch();
     std.debug.assert(data.len == 1);
 }
 
@@ -277,16 +283,16 @@ pub const ExportResult = enum {
     Failure,
 };
 
-pub const ExportFn = fn (pbmetrics.MetricsData) MetricReadError!void;
+const Exporter = @import("exporter.zig").ExporterIface;
 
 pub const MetricExporter = struct {
     const Self = @This();
-    exporter: *const ExportFn,
+    exporter: *Exporter,
     hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     var exportCompleted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-    pub fn new(exporter: *const ExportFn) Self {
+    pub fn new(exporter: *Exporter) Self {
         return Self{
             .exporter = exporter,
         };
@@ -303,7 +309,7 @@ pub const MetricExporter = struct {
         defer exportCompleted.store(true, .release);
 
         // Call the exporter function to process metrics data.
-        self.exporter(metrics) catch |e| {
+        self.exporter.exportBatch(metrics) catch |e| {
             std.debug.print("MetricExporter exportBatch failed: {?}\n", .{e});
             return ExportResult.Failure;
         };
@@ -327,26 +333,26 @@ pub const MetricExporter = struct {
 };
 
 // test harness to build a noop exporter.
-fn noopExporter(_: pbmetrics.MetricsData) MetricReadError!void {
+fn noopExporter(_: *Exporter, _: pbmetrics.MetricsData) MetricReadError!void {
     return;
 }
 // mocked metric exporter to assert metrics data are read once exported.
-fn mockExporter(metrics: pbmetrics.MetricsData) MetricReadError!void {
+fn mockExporter(_: *Exporter, metrics: pbmetrics.MetricsData) MetricReadError!void {
     if (metrics.resource_metrics.items.len != 1) {
         return MetricReadError.ExportFailed;
     } // only one resource metrics is expected in this mock
 }
 
 // test harness to build an exporter that times out.
-fn waiterExporter(_: pbmetrics.MetricsData) MetricReadError!void {
+fn waiterExporter(_: *Exporter, _: pbmetrics.MetricsData) MetricReadError!void {
     // Sleep for 1 second to simulate a slow exporter.
     std.time.sleep(std.time.ns_per_ms * 1000);
     return;
 }
 
 test "build no-op metric exporter" {
-    const exporter: *const ExportFn = noopExporter;
-    var me = MetricExporter.new(exporter);
+    var noop = Exporter{ .exportFn = noopExporter };
+    var me = MetricExporter.new(&noop);
 
     const metrics = pbmetrics.MetricsData{
         .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
@@ -359,7 +365,9 @@ test "build no-op metric exporter" {
 test "exported metrics by calling metric reader" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    const me = MetricExporter.new(mockExporter);
+
+    var mock = Exporter{ .exportFn = mockExporter };
+    const me = MetricExporter.new(&mock);
 
     var reader = MetricReader{ .allocator = std.testing.allocator, .exporter = me };
     defer reader.shutdown();
@@ -376,7 +384,8 @@ test "exported metrics by calling metric reader" {
 }
 
 test "metric exporter force flush succeeds" {
-    var me = MetricExporter.new(noopExporter);
+    var noop = Exporter{ .exportFn = noopExporter };
+    var me = MetricExporter.new(&noop);
 
     const metrics = pbmetrics.MetricsData{
         .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
@@ -393,7 +402,8 @@ fn backgroundRunner(me: *MetricExporter, metrics: pbmetrics.MetricsData) !void {
 }
 
 test "metric exporter force flush fails" {
-    var me = MetricExporter.new(waiterExporter);
+    var wait = Exporter{ .exportFn = waiterExporter };
+    var me = MetricExporter.new(&wait);
 
     const metrics = pbmetrics.MetricsData{
         .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
