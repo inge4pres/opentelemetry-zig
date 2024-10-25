@@ -10,6 +10,11 @@ const Instrument = instr.Instrument;
 const Kind = instr.Kind;
 const MeterProvider = @import("meter.zig").MeterProvider;
 const view = @import("view.zig");
+const exporter = @import("exporter.zig");
+const MetricExporter = exporter.MetricExporter;
+const Exporter = exporter.ExporterIface;
+const ExportResult = exporter.ExportResult;
+const InMemoryExporter = exporter.ImMemoryExporter;
 
 /// ExportError represents the failure to export data points
 /// to a destination.
@@ -32,8 +37,6 @@ pub const MetricReader = struct {
     // Signal that shutdown has been called.
     hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     // Exporter is the destination of the metrics data.
-    // FIXME
-    // the default metric exporter should be the PeriodicExporter
     exporter: MetricExporter = undefined,
 
     const Self = @This();
@@ -135,6 +138,7 @@ pub const MetricReader = struct {
                     .data_points = try histogramDataPoints(self.allocator, f64, i.data.Histogram_f64),
                     .aggregation_temporality = self.temporality(i.kind).toProto(),
                 } },
+                // TODO: add other metrics types.
                 else => unreachable,
             },
             // Metadata used for internal translations and we can discard for now.
@@ -159,7 +163,7 @@ fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Count
             // FIXME reader's temporailty is not applied here.
             .value = .{ .as_int = @intCast(measure.value_ptr.*) },
 
-            // TODO support exemplars
+            // TODO: support exemplars.
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
         };
         try dataPoints.append(dp);
@@ -213,10 +217,12 @@ test "metric reader collects data from meter provider" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
-    var noop = Exporter{ .exportFn = noopExporter };
+    var inMem = try InMemoryExporter.init(std.testing.allocator);
+    defer inMem.deinit();
+
     var reader = MetricReader{
         .allocator = std.testing.allocator,
-        .exporter = MetricExporter.new(&noop),
+        .exporter = MetricExporter.new(&inMem.exporter),
     };
     defer reader.shutdown();
 
@@ -249,13 +255,11 @@ fn deltaTemporality(_: Kind) view.Temporality {
     return view.Temporality.Delta;
 }
 
-const InMemoryExporter = @import("exporter.zig").ImMemoryExporter;
-
 test "metric reader custom temporality" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
-    var inMem = InMemoryExporter.init(std.testing.allocator);
+    var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
     var reader = MetricReader{
@@ -278,144 +282,145 @@ test "metric reader custom temporality" {
     std.debug.assert(data.len == 1);
 }
 
-pub const ExportResult = enum {
-    Success,
-    Failure,
-};
-
-const Exporter = @import("exporter.zig").ExporterIface;
-
-pub const MetricExporter = struct {
+/// A periodic exporting metric reader is a specialization of MetricReader
+/// that periodically exports metrics data to a destination.
+/// The exporter should be a push-based exporter.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#periodic-exporting-metricreader
+pub const PeriodicExportingMetricReader = struct {
     const Self = @This();
-    exporter: *Exporter,
-    hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    var exportCompleted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+    allocator: std.mem.Allocator,
+    exporter: MetricExporter,
+    exportIntervalMillis: u64,
+    exportTimeoutMillis: u64,
 
-    pub fn new(exporter: *Exporter) Self {
-        return Self{
-            .exporter = exporter,
+    // Lock helper to signal shutdown is in progress
+    shuttingDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    // This reader will collect metrics data from the MeterProvider.
+    // It is provisioned by start().
+    reader: *MetricReader = undefined,
+
+    // The intervals at which the reader should export metrics data
+    // and wait for each operation to complete.
+    // Default values are dicated by the OpenTelemetry specification.
+    const defaultExportIntervalMillis: u64 = 60000;
+    const defaultExportTimeoutMillis: u64 = 30000;
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        metricExporter: MetricExporter,
+        exportIntervalMs: ?u64,
+        exportTimeoutMs: ?u64,
+    ) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .allocator = allocator,
+            .exporter = metricExporter,
+            .exportIntervalMillis = exportIntervalMs orelse defaultExportIntervalMillis,
+            .exportTimeoutMillis = exportTimeoutMs orelse defaultExportTimeoutMillis,
         };
+        return s;
     }
 
-    pub fn exportBatch(self: Self, metrics: pbmetrics.MetricsData) ExportResult {
-        if (self.hasShutDown.load(.acquire)) {
-            // When shutdown has already been called, calling export should be a failure.
-            // https://opentelemetry.io/docs/specs/otel/metrics/sdk/#shutdown-2
-            return ExportResult.Failure;
-        }
-        // Acquire the lock to ensure that forceFlush is waiting for export to complete.
-        _ = exportCompleted.load(.acquire);
-        defer exportCompleted.store(true, .release);
+    pub fn start(self: *Self) !*MetricReader {
+        std.debug.print("start called in Periodic\n", .{});
 
-        // Call the exporter function to process metrics data.
-        self.exporter.exportBatch(metrics) catch |e| {
-            std.debug.print("MetricExporter exportBatch failed: {?}\n", .{e});
-            return ExportResult.Failure;
+        self.reader = try self.allocator.create(MetricReader);
+        self.reader.* = MetricReader{
+            .allocator = self.allocator,
+            .exporter = self.exporter,
         };
-        return ExportResult.Success;
-    }
-    // Ensure that all the data is flushed to the destination.
-    pub fn forceFlush(_: Self, timeout_ms: u64) !void {
-        const start = std.time.milliTimestamp(); // Miliseconds
-        const timeout: i64 = @intCast(timeout_ms);
-        while (std.time.milliTimestamp() < start + timeout) {
-            if (exportCompleted.load(.acquire)) {
-                return;
-            } else std.time.sleep(std.time.ns_per_ms);
-        }
-        return MetricReadError.ForceFlushTimedOut;
+        const th = try std.Thread.spawn(
+            .{},
+            collectAndExport,
+            .{self},
+        );
+        th.detach();
+        return self.reader;
     }
 
     pub fn shutdown(self: *Self) void {
-        self.hasShutDown.store(true, .monotonic);
+        self.shuttingDown.store(true, .release);
+        if (self.reader != undefined) {
+            self.reader.shutdown();
+            self.allocator.destroy(self.reader);
+        }
+        self.allocator.destroy(self);
     }
 };
 
-// test harness to build a noop exporter.
-fn noopExporter(_: *Exporter, _: pbmetrics.MetricsData) MetricReadError!void {
-    return;
-}
-// mocked metric exporter to assert metrics data are read once exported.
-fn mockExporter(_: *Exporter, metrics: pbmetrics.MetricsData) MetricReadError!void {
-    if (metrics.resource_metrics.items.len != 1) {
-        return MetricReadError.ExportFailed;
-    } // only one resource metrics is expected in this mock
-}
+// Function that collects metrics from the reader and exports it to the destination.
+// FIXME there is not a timeout for the collect operation.
+fn collectAndExport(periodicExp: *PeriodicExportingMetricReader) void {
+    std.debug.print("collectAndExport called\n", .{});
 
-// test harness to build an exporter that times out.
-fn waiterExporter(_: *Exporter, _: pbmetrics.MetricsData) MetricReadError!void {
-    // Sleep for 1 second to simulate a slow exporter.
-    std.time.sleep(std.time.ns_per_ms * 1000);
-    return;
-}
+    // The execution should continue until the reader is shutting down
+    while (periodicExp.shuttingDown.load(.acquire) == false) {
+        std.debug.print("collectAndExport lock acquired\n", .{});
 
-test "build no-op metric exporter" {
-    var noop = Exporter{ .exportFn = noopExporter };
-    var me = MetricExporter.new(&noop);
+        if (periodicExp.reader.meterProvider) |_| {
+            std.debug.print("collectAndExport in reader.meterProvider\n", .{});
+           
+            // This will also call exporter.exportBatch() every interval.
+            periodicExp.reader.collect() catch |e| {
+                std.debug.print("PeriodicExportingReader: reader collect failed: {?}\n", .{e});
+            };
 
-    const metrics = pbmetrics.MetricsData{
-        .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
-    };
-    defer metrics.deinit();
-    const result = me.exportBatch(metrics);
-    try std.testing.expectEqual(ExportResult.Success, result);
+            std.debug.print("periodicExp.reader.collect() called\n", .{});
+        } else {
+            std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{periodicExp.reader});
+        }
+        std.debug.print("collectAndExport sleeping\n", .{});
+
+        std.time.sleep(periodicExp.exportIntervalMillis * std.time.ns_per_ms);
+    }
 }
 
-test "exported metrics by calling metric reader" {
-    var mp = try MeterProvider.init(std.testing.allocator);
-    defer mp.shutdown();
+// test "e2e periodic exporting metric reader" {
+//     const mp = try MeterProvider.init(std.testing.allocator);
+//     defer mp.shutdown();
 
-    var mock = Exporter{ .exportFn = mockExporter };
-    const me = MetricExporter.new(&mock);
+//     const waiting: u64 = 10;
 
-    var reader = MetricReader{ .allocator = std.testing.allocator, .exporter = me };
-    defer reader.shutdown();
+//     var inMem = try InMemoryExporter.init(std.testing.allocator);
+//     defer inMem.deinit();
 
-    try mp.addReader(&reader);
+//     var pemr = try PeriodicExportingMetricReader.init(
+//         std.testing.allocator,
+//         MetricExporter.new(&inMem.exporter),
+//         waiting,
+//         null,
+//     );
+//     defer pemr.shutdown();
 
-    const m = try mp.getMeter(.{ .name = "my-meter" });
+//     var reader = try pemr.start();
+//     defer reader.shutdown();
 
-    // only 1 metric should be in metrics data when we use the mock exporter
-    var counter = try m.createCounter(u32, .{ .name = "my-counter" });
-    try counter.add(1, null);
+//     try mp.addReader(reader);
 
-    try reader.collect();
-}
+//     var meter = try mp.getMeter(.{ .name = "test-reader" });
+//     var counter = try meter.createCounter(u64, .{
+//         .name = "requests",
+//         .description = "a test counter",
+//     });
+//     try counter.add(10, null);
 
-test "metric exporter force flush succeeds" {
-    var noop = Exporter{ .exportFn = noopExporter };
-    var me = MetricExporter.new(&noop);
+//     var histogram = try meter.createHistogram(u64, .{
+//         .name = "latency",
+//         .description = "a test histogram",
+//         .histogramOpts = .{ .explicitBuckets = &.{
+//             1.0,
+//             10.0,
+//             100.0,
+//         } },
+//     });
+//     try histogram.record(10, null);
 
-    const metrics = pbmetrics.MetricsData{
-        .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
-    };
-    defer metrics.deinit();
-    const result = me.exportBatch(metrics);
-    try std.testing.expectEqual(ExportResult.Success, result);
+//     std.time.sleep(waiting * 4 * std.time.ns_per_ms);
 
-    try me.forceFlush(1000);
-}
-
-fn backgroundRunner(me: *MetricExporter, metrics: pbmetrics.MetricsData) !void {
-    _ = me.exportBatch(metrics);
-}
-
-test "metric exporter force flush fails" {
-    var wait = Exporter{ .exportFn = waiterExporter };
-    var me = MetricExporter.new(&wait);
-
-    const metrics = pbmetrics.MetricsData{
-        .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
-    };
-    defer metrics.deinit();
-    var bg = try std.Thread.spawn(
-        .{},
-        backgroundRunner,
-        .{ &me, metrics },
-    );
-    bg.detach();
-
-    const e = me.forceFlush(0);
-    try std.testing.expectError(MetricReadError.ForceFlushTimedOut, e);
-}
+//     const data = inMem.fetch();
+//     std.debug.assert(data.len == 1);
+//     std.debug.print("in mem data scope metrics: {any}\n", .{data[0].scope_metrics.items});
+//     std.debug.assert(data[0].scope_metrics.items[0].metrics.items.len == 1);
+// }
