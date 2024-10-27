@@ -167,7 +167,7 @@ pub const ExporterIface = struct {
 pub const ImMemoryExporter = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
-    data: std.ArrayList(pbmetrics.ResourceMetrics),
+    data: pbmetrics.MetricsData,
     // Implement the interface via @fieldParentPtr
     exporter: ExporterIface,
 
@@ -175,7 +175,7 @@ pub const ImMemoryExporter = struct {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
-            .data = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator),
+            .data = pbmetrics.MetricsData{ .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator) },
             .exporter = ExporterIface{
                 .exportFn = exportBatch,
             },
@@ -191,36 +191,19 @@ pub const ImMemoryExporter = struct {
         // Get a pointer to the instance of the struct that implements the interface.
         const self: *Self = @fieldParentPtr("exporter", iface);
 
-        self.data.clearRetainingCapacity();
-        // var rm = metrics.resource_metrics;
-        // const owned = rm.toOwnedSlice() catch |e|{
-        //     std.debug.print("error cloning to memory, allocation error: {?}", .{e});
-        //     return MetricReadError.ExportFailed;
-        // };
-        // self.data.appendSlice(owned) catch |e| {
-        //     std.debug.print("error exporting to memory, allocation error: {?}", .{e});
-        //     return MetricReadError.ExportFailed;
-        // };
-        
-        const rm = self.allocator.dupe(pbmetrics.ResourceMetrics, metrics.resource_metrics.items) catch |e| {
-                std.debug.print("error cloning to memory, allocation error: {?}", .{e});
-                return MetricReadError.ExportFailed;
+        self.data.deinit();
+        self.data = metrics.dupe(self.allocator) catch |e| {
+            std.debug.print("failed exporting to memory: allocation error: {?}", .{e});
+            return MetricReadError.ExportFailed;
         };
-        defer self.allocator.free(rm);
-        // for(rm) |i| {
-        //     self.data.append(i) catch |e| {
-        //         std.debug.print("error exporting to memory, allocation error: {?}", .{e});
-        //         return MetricReadError.ExportFailed;
-        //     };
-        // }
-        self.data.items = rm[0..];
+
         return;
     }
 
-    pub fn fetch(self: *Self) []pbmetrics.ResourceMetrics {
-        std.debug.print("when fetching, we have self.data with {any}!\n", .{self.data.items[0].scope_metrics});
-
-        return self.data.items;
+    /// Retrieve the metrics from the in memory exporter.
+    /// Ownership of the metrics stays with the exporter.
+    pub fn fetch(self: *Self) pbmetrics.MetricsData {
+        return self.data;
     }
 };
 
@@ -279,8 +262,8 @@ test "in memory exporter stores data" {
     std.debug.print("fetching from InMem exporter!\n", .{});
     const data = inMemExporter.fetch();
 
-    std.debug.assert(data.len == 1);
-    const entry = data[0];
+    std.debug.assert(data.resource_metrics.items.len == 1);
+    const entry = data.resource_metrics.items[0];
 
     std.debug.assert(entry.scope_metrics.items.len == 1);
     std.debug.assert(entry.scope_metrics.items[0].metrics.items[0].data.?.sum.data_points.items.len == 2);
