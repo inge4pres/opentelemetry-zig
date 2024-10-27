@@ -279,7 +279,7 @@ test "metric reader custom temporality" {
     try reader.collect();
 
     const data = inMem.fetch();
-    std.debug.assert(data.len == 1);
+    std.debug.assert(data.resource_metrics.items.len == 1);
 }
 
 /// A periodic exporting metric reader is a specialization of MetricReader
@@ -361,7 +361,7 @@ fn collectAndExport(periodicExp: *PeriodicExportingMetricReader) void {
 
         if (periodicExp.reader.meterProvider) |_| {
             std.debug.print("collectAndExport in reader.meterProvider\n", .{});
-           
+
             // This will also call exporter.exportBatch() every interval.
             periodicExp.reader.collect() catch |e| {
                 std.debug.print("PeriodicExportingReader: reader collect failed: {?}\n", .{e});
@@ -377,50 +377,51 @@ fn collectAndExport(periodicExp: *PeriodicExportingMetricReader) void {
     }
 }
 
-// test "e2e periodic exporting metric reader" {
-//     const mp = try MeterProvider.init(std.testing.allocator);
-//     defer mp.shutdown();
+test "e2e periodic exporting metric reader" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
 
-//     const waiting: u64 = 10;
+    const waiting: u64 = 10;
 
-//     var inMem = try InMemoryExporter.init(std.testing.allocator);
-//     defer inMem.deinit();
+    var inMem = try InMemoryExporter.init(std.testing.allocator);
+    defer inMem.deinit();
 
-//     var pemr = try PeriodicExportingMetricReader.init(
-//         std.testing.allocator,
-//         MetricExporter.new(&inMem.exporter),
-//         waiting,
-//         null,
-//     );
-//     defer pemr.shutdown();
+    var pemr = try PeriodicExportingMetricReader.init(
+        std.testing.allocator,
+        MetricExporter.new(&inMem.exporter),
+        waiting,
+        null,
+    );
+    defer pemr.shutdown();
 
-//     var reader = try pemr.start();
-//     defer reader.shutdown();
+    var reader = try pemr.start();
+    defer reader.shutdown();
 
-//     try mp.addReader(reader);
+    try mp.addReader(reader);
 
-//     var meter = try mp.getMeter(.{ .name = "test-reader" });
-//     var counter = try meter.createCounter(u64, .{
-//         .name = "requests",
-//         .description = "a test counter",
-//     });
-//     try counter.add(10, null);
+    var meter = try mp.getMeter(.{ .name = "test-reader" });
+    var counter = try meter.createCounter(u64, .{
+        .name = "requests",
+        .description = "a test counter",
+    });
+    try counter.add(10, null);
 
-//     var histogram = try meter.createHistogram(u64, .{
-//         .name = "latency",
-//         .description = "a test histogram",
-//         .histogramOpts = .{ .explicitBuckets = &.{
-//             1.0,
-//             10.0,
-//             100.0,
-//         } },
-//     });
-//     try histogram.record(10, null);
+    var histogram = try meter.createHistogram(u64, .{
+        .name = "latency",
+        .description = "a test histogram",
+        .histogramOpts = .{ .explicitBuckets = &.{
+            1.0,
+            10.0,
+            100.0,
+        } },
+    });
+    try histogram.record(10, null);
 
-//     std.time.sleep(waiting * 4 * std.time.ns_per_ms);
+    std.time.sleep(waiting * 2 * std.time.ns_per_ms);
 
-//     const data = inMem.fetch();
-//     std.debug.assert(data.len == 1);
-//     std.debug.print("in mem data scope metrics: {any}\n", .{data[0].scope_metrics.items});
-//     std.debug.assert(data[0].scope_metrics.items[0].metrics.items.len == 1);
-// }
+    const data = inMem.fetch();
+
+    std.debug.assert(data.resource_metrics.items.len == 1);
+    std.debug.print("in mem data scope metrics: {any}\n", .{data.resource_metrics.items[0].scope_metrics.items});
+    std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 1);
+}
