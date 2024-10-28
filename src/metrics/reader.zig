@@ -324,8 +324,6 @@ pub const PeriodicExportingMetricReader = struct {
     }
 
     pub fn start(self: *Self) !*MetricReader {
-        std.debug.print("start called in Periodic\n", .{});
-
         self.reader = try self.allocator.create(MetricReader);
         self.reader.* = MetricReader{
             .allocator = self.allocator,
@@ -353,25 +351,16 @@ pub const PeriodicExportingMetricReader = struct {
 // Function that collects metrics from the reader and exports it to the destination.
 // FIXME there is not a timeout for the collect operation.
 fn collectAndExport(periodicExp: *PeriodicExportingMetricReader) void {
-    std.debug.print("collectAndExport called\n", .{});
-
     // The execution should continue until the reader is shutting down
     while (periodicExp.shuttingDown.load(.acquire) == false) {
-        std.debug.print("collectAndExport lock acquired\n", .{});
-
         if (periodicExp.reader.meterProvider) |_| {
-            std.debug.print("collectAndExport in reader.meterProvider\n", .{});
-
             // This will also call exporter.exportBatch() every interval.
             periodicExp.reader.collect() catch |e| {
                 std.debug.print("PeriodicExportingReader: reader collect failed: {?}\n", .{e});
             };
-
-            std.debug.print("periodicExp.reader.collect() called\n", .{});
         } else {
             std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{periodicExp.reader});
         }
-        std.debug.print("collectAndExport sleeping\n", .{});
 
         std.time.sleep(periodicExp.exportIntervalMillis * std.time.ns_per_ms);
     }
