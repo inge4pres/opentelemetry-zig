@@ -423,5 +423,5 @@ test "e2e periodic exporting metric reader" {
 
     std.debug.assert(data.resource_metrics.items.len == 1);
     std.debug.print("in mem data scope metrics: {any}\n", .{data.resource_metrics.items[0].scope_metrics.items});
-    std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 1);
+    std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 2);
 }
