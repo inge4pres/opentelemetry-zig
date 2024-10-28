@@ -203,6 +203,7 @@ pub const ImMemoryExporter = struct {
     /// Retrieve the metrics from the in memory exporter.
     /// Ownership of the metrics stays with the exporter.
     pub fn fetch(self: *Self) pbmetrics.MetricsData {
+        // FIXME: we have an ownership issue here.
         return self.data;
     }
 };
@@ -257,9 +258,7 @@ test "in memory exporter stores data" {
     metricsData.deinit();
 
     std.debug.assert(result == .Success);
-    std.debug.print("exportBatch was successful!\n", .{});
 
-    std.debug.print("fetching from InMem exporter!\n", .{});
     const data = inMemExporter.fetch();
 
     std.debug.assert(data.resource_metrics.items.len == 1);

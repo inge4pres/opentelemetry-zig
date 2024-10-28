@@ -361,120 +361,116 @@ pub fn Gauge(comptime T: type) type {
 
 const MeterProvider = @import("meter.zig").MeterProvider;
 
-// test "meter can create counter instrument and record increase without attributes" {
-//     const mp = try MeterProvider.default();
-//     defer mp.shutdown();
-//     const meter = try mp.getMeter(.{ .name = "my-meter" });
-//     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
+test "meter can create counter instrument and record increase without attributes" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
-//     try counter.add(10, null);
-//     std.debug.assert(counter.cumulative.count() == 1);
-// }
+    try counter.add(10, null);
+    std.debug.assert(counter.cumulative.count() == 1);
+}
 
-// test "meter can create counter instrument and record increase with attributes" {
-//     const mp = try MeterProvider.default();
-//     defer mp.shutdown();
-//     const meter = try mp.getMeter(.{ .name = "my-meter" });
-//     var counter = try meter.createCounter(u32, .{
-//         .name = "a-counter",
-//         .description = "a funny counter",
-//         .unit = "KiB",
-//     });
+test "meter can create counter instrument and record increase with attributes" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createCounter(u32, .{
+        .name = "a-counter",
+        .description = "a funny counter",
+        .unit = "KiB",
+    });
 
-//     try counter.add(100, null);
-//     try counter.add(1000, null);
-//     std.debug.assert(counter.cumulative.count() == 1);
-//     std.debug.assert(counter.cumulative.get(null).? == 1100);
+    try counter.add(100, null);
+    try counter.add(1000, null);
+    std.debug.assert(counter.cumulative.count() == 1);
+    std.debug.assert(counter.cumulative.get(null).? == 1100);
 
-//     var attrs = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator);
-//     // const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", "some-value", "another-key", "another-value" });
-//     defer attrs.deinit();
-//     try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "some-key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "42" } } } });
-//     try attrs.append(pbcommon.KeyValue{ .key = .{ .Const = "another-key" }, .value = pbcommon.AnyValue{ .value = .{ .int_value = 0x123456789 } } });
+    const val1: []const u8= "some-value";
+    const val2: []const u8= "another-value";
+    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", val1, "another-key", val2});
 
-//     try counter.add(2, pbcommon.KeyValueList{ .values = attrs });
-//     std.debug.assert(counter.cumulative.count() == 2);
-// }
+    try counter.add(2, attrs);
+    std.debug.assert(counter.cumulative.count() == 2);
+}
 
-// test "meter can create histogram instrument and record value without explicit buckets" {
-//     const mp = try MeterProvider.default();
-//     defer mp.shutdown();
-//     const meter = try mp.getMeter(.{ .name = "my-meter" });
-//     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
+test "meter can create histogram instrument and record value without explicit buckets" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
 
-//     try histogram.record(1, null);
-//     try histogram.record(5, null);
-//     try histogram.record(15, null);
+    try histogram.record(1, null);
+    try histogram.record(5, null);
+    try histogram.record(15, null);
 
-//     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-//     std.debug.assert(histogram.cumulative.count() == 1);
-//     const counts = histogram.bucket_counts.get(null).?;
-//     std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
-//     const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-//     try std.testing.expectEqualSlices(usize, expected_counts, counts);
-// }
+    try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
+    std.debug.assert(histogram.cumulative.count() == 1);
+    const counts = histogram.bucket_counts.get(null).?;
+    std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
+    const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    try std.testing.expectEqualSlices(usize, expected_counts, counts);
+}
 
-// test "meter can create histogram instrument and record value with explicit buckets" {
-//     const mp = try MeterProvider.default();
-//     defer mp.shutdown();
-//     const meter = try mp.getMeter(.{ .name = "my-meter" });
-//     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+test "meter can create histogram instrument and record value with explicit buckets" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
 
-//     try histogram.record(1, null);
-//     try histogram.record(5, null);
-//     try histogram.record(15, null);
+    try histogram.record(1, null);
+    try histogram.record(5, null);
+    try histogram.record(15, null);
 
-//     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-//     std.debug.assert(histogram.cumulative.count() == 1);
-//     const counts = histogram.bucket_counts.get(null).?;
-//     std.debug.assert(counts.len == 4);
-//     const expected_counts = &[_]usize{ 1, 1, 1, 0 };
-//     try std.testing.expectEqualSlices(usize, expected_counts, counts);
-// }
+    try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
+    std.debug.assert(histogram.cumulative.count() == 1);
+    const counts = histogram.bucket_counts.get(null).?;
+    std.debug.assert(counts.len == 4);
+    const expected_counts = &[_]usize{ 1, 1, 1, 0 };
+    try std.testing.expectEqualSlices(usize, expected_counts, counts);
+}
 
-// test "meter can create gauge instrument and record value without attributes" {
-//     const mp = try MeterProvider.default();
-//     defer mp.shutdown();
-//     const meter = try mp.getMeter(.{ .name = "my-meter" });
-//     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
+test "meter can create gauge instrument and record value without attributes" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
 
-//     try gauge.record(42, null);
-//     try gauge.record(-42, null);
-//     std.debug.assert(gauge.values.count() == 1);
-//     std.debug.assert(gauge.values.get(null) == -42);
-// }
+    try gauge.record(42, null);
+    try gauge.record(-42, null);
+    std.debug.assert(gauge.values.count() == 1);
+    std.debug.assert(gauge.values.get(null) == -42);
+}
 
-// test "meter creates upDownCounter and stores value" {
-//     const mp = try MeterProvider.default();
-//     defer mp.shutdown();
-//     const meter = try mp.getMeter(.{ .name = "my-meter" });
-//     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
+test "meter creates upDownCounter and stores value" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
 
-//     try counter.add(10, null);
-//     try counter.add(-5, null);
-//     try counter.add(-4, null);
-//     std.debug.assert(counter.cumulative.count() == 1);
+    try counter.add(10, null);
+    try counter.add(-5, null);
+    try counter.add(-4, null);
+    std.debug.assert(counter.cumulative.count() == 1);
 
-//     // Validate the number stored is correct.
-//     // Null attributes produce a key hashed == 0.
-//     if (counter.cumulative.get(null)) |c| {
-//         std.debug.assert(c == 1);
-//     } else {
-//         std.debug.panic("Counter not found", .{});
-//     }
+    // Validate the number stored is correct.
+    // Null attributes produce a key hashed == 0.
+    if (counter.cumulative.get(null)) |c| {
+        std.debug.assert(c == 1);
+    } else {
+        std.debug.panic("Counter not found", .{});
+    }
 
-//     const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", @as(i64, 42) });
-//     defer attrs.values.deinit();
+    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", @as(i64, 42) });
+    try counter.add(1, attrs);
+    std.debug.assert(counter.cumulative.count() == 2);
 
-//     try counter.add(1, attrs);
-//     std.debug.assert(counter.cumulative.count() == 2);
+    var iter = counter.cumulative.valueIterator();
 
-//     var iter = counter.cumulative.valueIterator();
-
-//     while (iter.next()) |v| {
-//         std.debug.assert(v.* == 1);
-//     }
-// }
+    while (iter.next()) |v| {
+        std.debug.assert(v.* == 1);
+    }
+}
 
 test "instrument in meter and instrument in data are the same" {
     const mp = try MeterProvider.init(std.testing.allocator);
