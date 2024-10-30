@@ -152,10 +152,11 @@ fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Count
     var dataPoints = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
     var iter = c.cumulative.iterator();
     while (iter.next()) |measure| {
-        var attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
+        const attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
         // Attributes are stored as key of the hasmap.
-        if (measure.key_ptr.*) |kv| {
-            try attrs.appendSlice(kv.values.items);
+        if (measure.key_ptr.*) |_| {
+            // FIXME convert attributes to pbcommon.KeyValue
+            // try attrs.appendSlice(kv);
         }
         const dp = pbmetrics.NumberDataPoint{
             .attributes = attrs,
@@ -231,7 +232,7 @@ test "metric reader collects data from meter provider" {
     const m = try mp.getMeter(.{ .name = "my-meter" });
 
     var counter = try m.createCounter(u32, .{ .name = "my-counter" });
-    try counter.add(1, null);
+    try counter.add(1, .{});
 
     var hist = try m.createHistogram(u16, .{ .name = "my-histogram" });
     const v: []const u8 = "success";
@@ -274,7 +275,7 @@ test "metric reader custom temporality" {
     const m = try mp.getMeter(.{ .name = "my-meter" });
 
     var counter = try m.createCounter(u32, .{ .name = "my-counter" });
-    try counter.add(1, null);
+    try counter.add(1, .{});
 
     try reader.collect();
 
@@ -393,7 +394,7 @@ test "e2e periodic exporting metric reader" {
         .name = "requests",
         .description = "a test counter",
     });
-    try counter.add(10, null);
+    try counter.add(10, .{});
 
     var histogram = try meter.createHistogram(u64, .{
         .name = "latency",
