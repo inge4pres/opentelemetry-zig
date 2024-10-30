@@ -216,20 +216,22 @@ pub fn Histogram(comptime T: type) type {
         // Define a maximum number of buckets that can be used to record measurements.
         const maxBuckets = 1024;
 
+        allocator: std.mem.Allocator,
+
         options: HistogramOptions,
         // Keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, don't want allocate memory for each attribute set that comes in.
         // Store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(?pbcommon.KeyValueList, T),
+        cumulative: std.AutoHashMap(?[]Attribute, T),
 
         // Keeps track of how many values are summed for each set of attributes.
-        counts: std.AutoHashMap(?pbcommon.KeyValueList, usize),
+        counts: std.AutoHashMap(?[]Attribute, usize),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
         // buckets are used.
         // Buckets are always defined as f64.
         buckets: []const f64,
-        bucket_counts: std.AutoHashMap(?pbcommon.KeyValueList, []usize),
+        bucket_counts: std.AutoHashMap(?[]Attribute, []usize),
         min: ?T = null,
         max: ?T = null,
 
@@ -241,11 +243,12 @@ pub fn Histogram(comptime T: type) type {
             try spec.validateExplicitBuckets(buckets);
 
             return Self{
+                .allocator = allocator,
                 .options = opts,
-                .cumulative = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
-                .counts = std.AutoHashMap(?pbcommon.KeyValueList, usize).init(allocator),
+                .cumulative = std.AutoHashMap(?[]Attribute, T).init(allocator),
+                .counts = std.AutoHashMap(?[]Attribute, usize).init(allocator),
                 .buckets = buckets,
-                .bucket_counts = std.AutoHashMap(?pbcommon.KeyValueList, []usize).init(allocator),
+                .bucket_counts = std.AutoHashMap(?[]Attribute, []usize).init(allocator),
             };
         }
 
@@ -255,12 +258,12 @@ pub fn Histogram(comptime T: type) type {
                 var keyIter = self.cumulative.keyIterator();
                 while (keyIter.next()) |key1| {
                     if (key1.*) |k| {
-                        k.deinit();
+                        self.allocator.free(k);
                     }
                 }
             }
             self.cumulative.deinit();
-            // We don't need to deinit the counts or bucket_counts keys,
+            // We don't need to free the counts or bucket_counts keys,
             // because the keys are pointers to the same optional
             // KeyValueList used in cumulative.
             self.counts.deinit();
@@ -268,30 +271,32 @@ pub fn Histogram(comptime T: type) type {
         }
 
         /// Add the given value to the histogram, using the provided attributes.
-        pub fn record(self: *Self, value: T, attributes: ?pbcommon.KeyValueList) !void {
-            if (self.cumulative.getEntry(attributes)) |c| {
+        pub fn record(self: *Self, value: T, attributes: anytype) !void {
+            const attrs = try Attributes.from(self.allocator, attributes);
+
+            if (self.cumulative.getEntry(attrs)) |c| {
                 c.value_ptr.* += value;
             } else {
-                try self.cumulative.put(attributes, value);
+                try self.cumulative.put(attrs, value);
             }
             // Find the value for the bucket that the value falls in.
             // If the value is greater than the last bucket, it goes in the last bucket.
             // If the value is less than the first bucket, it goes in the first bucket.
             // Otherwise, it goes in the bucket for which the boundary is greater than or equal the value.
             const bucketIdx = self.findBucket(value);
-            if (self.bucket_counts.getEntry(attributes)) |bc| {
+            if (self.bucket_counts.getEntry(attrs)) |bc| {
                 bc.value_ptr.*[bucketIdx] += 1;
             } else {
                 var counts = [_]usize{0} ** maxBuckets;
                 counts[bucketIdx] = 1;
-                try self.bucket_counts.put(attributes, counts[0..self.buckets.len]);
+                try self.bucket_counts.put(attrs, counts[0..self.buckets.len]);
             }
 
             // Increment the count of values for the given attributes.
-            if (self.counts.getEntry(attributes)) |c| {
+            if (self.counts.getEntry(attrs)) |c| {
                 c.value_ptr.* += 1;
             } else {
-                try self.counts.put(attributes, 1);
+                try self.counts.put(attrs, 1);
             }
 
             // Update Min and Max values.
@@ -401,9 +406,9 @@ test "meter can create histogram instrument and record value without explicit bu
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
 
-    try histogram.record(1, null);
-    try histogram.record(5, null);
-    try histogram.record(15, null);
+    try histogram.record(1, .{});
+    try histogram.record(5, .{});
+    try histogram.record(15, .{});
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
     std.debug.assert(histogram.cumulative.count() == 1);
@@ -419,9 +424,9 @@ test "meter can create histogram instrument and record value with explicit bucke
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
 
-    try histogram.record(1, null);
-    try histogram.record(5, null);
-    try histogram.record(15, null);
+    try histogram.record(1, .{});
+    try histogram.record(5, .{});
+    try histogram.record(15, .{});
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
     std.debug.assert(histogram.cumulative.count() == 1);

@@ -370,13 +370,9 @@ test "meter provider end to end" {
 
     var hist = try meter.createHistogram(u16, .{ .name = "my-histogram" });
     const v: []const u8 = "success";
-    const attrs2 = try pbutils.WithAttributes(
-        std.testing.allocator,
-        .{ "amazing", v },
-    );
 
-    try hist.record(1234, null);
-    try hist.record(4567, attrs2);
+    try hist.record(1234, .{});
+    try hist.record(4567, .{ "amazing", v });
 
     std.debug.assert(meter.instruments.count() == 2);
 }

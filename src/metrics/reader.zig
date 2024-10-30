@@ -176,10 +176,11 @@ fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr
     var dataPoints = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator);
     var iter = h.cumulative.iterator();
     while (iter.next()) |measure| {
-        var attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
+        const attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
         // Attributes are stored as key of the hashmap.
-        if (measure.key_ptr.*) |kv| {
-            try attrs.appendSlice(kv.values.items);
+        if (measure.key_ptr.*) |_| {
+            // FIXME convert attributes to pbcommon.KeyValue
+            // try attrs.appendSlice(kv);
         }
         var dp = pbmetrics.HistogramDataPoint{
             .attributes = attrs,
@@ -236,18 +237,11 @@ test "metric reader collects data from meter provider" {
 
     var hist = try m.createHistogram(u16, .{ .name = "my-histogram" });
     const v: []const u8 = "success";
-    const attrs = try pbutils.WithAttributes(
-        std.testing.allocator,
-        .{ "amazing", v },
-    );
-    try hist.record(10, attrs);
 
-    const attrs2 = try pbutils.WithAttributes(
-        std.testing.allocator,
-        .{ "wonderful", v },
-    );
+    try hist.record(10, .{ "amazing", v });
+
     var histFloat = try m.createHistogram(f64, .{ .name = "my-histogram-float" });
-    try histFloat.record(10.0, attrs2);
+    try histFloat.record(10.0, .{ "wonderful", v });
 
     try reader.collect();
 }
@@ -405,7 +399,7 @@ test "e2e periodic exporting metric reader" {
             100.0,
         } },
     });
-    try histogram.record(10, null);
+    try histogram.record(10, .{});
 
     std.time.sleep(waiting * 2 * std.time.ns_per_ms);
 
