@@ -339,11 +339,13 @@ pub fn Gauge(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        values: std.AutoHashMap(?pbcommon.KeyValueList, T),
+        allocator: std.mem.Allocator,
+        values: std.AutoHashMap(?[]Attribute, T),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .values = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
+                .allocator = allocator,
+                .values = std.AutoHashMap(?[]Attribute, T).init(allocator),
             };
         }
 
@@ -352,7 +354,7 @@ pub fn Gauge(comptime T: type) type {
                 var keyIter = self.values.keyIterator();
                 while (keyIter.next()) |key| {
                     if (key.*) |k| {
-                        k.deinit();
+                        self.allocator.free(k);
                     }
                 }
             }
@@ -360,8 +362,9 @@ pub fn Gauge(comptime T: type) type {
         }
 
         /// Record the given value to the gauge, using the provided attributes.
-        pub fn record(self: *Self, value: T, attributes: ?pbcommon.KeyValueList) !void {
-            try self.values.put(attributes, value);
+        pub fn record(self: *Self, value: T, attributes: anytype) !void {
+            const attrs = try Attributes.from(self.allocator, attributes);
+            try self.values.put(attrs, value);
         }
     };
 }
@@ -442,8 +445,8 @@ test "meter can create gauge instrument and record value without attributes" {
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
 
-    try gauge.record(42, null);
-    try gauge.record(-42, null);
+    try gauge.record(42, .{});
+    try gauge.record(-42, .{});
     std.debug.assert(gauge.values.count() == 1);
     std.debug.assert(gauge.values.get(null) == -42);
 }

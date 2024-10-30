@@ -46,7 +46,7 @@ pub const Attributes = struct {
         if (args_type_info != .Struct) {
             @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
         }
-        // Then check its length.
+        // Fast path: if the length is 0, return null.
         const fields_info = args_type_info.Struct.fields;
         if (fields_info.len == 0) {
             return null;
