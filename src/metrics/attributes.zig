@@ -38,7 +38,7 @@ pub const Attribute = struct {
 /// Creates a slice of attributes from a list of key-value pairs.
 /// Caller owns the memory.
 pub const Attributes = struct {
-    pub fn from(allocator: std.mem.Allocator, keyValues: anytype) ![]Attribute {
+    pub fn from(allocator: std.mem.Allocator, keyValues: anytype) !?[]Attribute {
         // Straight copied from the zig std library: std.fmt.
         // Check if the argument is a tuple.
         const ArgsType = @TypeOf(keyValues);
@@ -49,7 +49,7 @@ pub const Attributes = struct {
         // Then check its length.
         const fields_info = args_type_info.Struct.fields;
         if (fields_info.len == 0) {
-            return &[_]Attribute{};
+            return null;
         }
         if (fields_info.len % 2 != 0) {
             @compileError("expected an even number of arguments");
@@ -82,18 +82,19 @@ test "attributes are read from list of strings" {
         "name3", @as(i64, 456),
         "name4", false,
     });
-    defer std.testing.allocator.free(attributes);
+    defer if (attributes) |a| std.testing.allocator.free(a);
 
-    try std.testing.expect(attributes.len == 4);
-    try std.testing.expectEqualStrings("name", attributes[0].name);
-    try std.testing.expectEqualStrings("value1", attributes[0].value.string);
-    try std.testing.expectEqualStrings("name2", attributes[1].name);
-    try std.testing.expectEqualStrings("value2", attributes[1].value.string);
-    try std.testing.expectEqual(@as(i64, 456), attributes[2].value.int);
-    try std.testing.expectEqual(false, attributes[3].value.bool);
+    try std.testing.expect(attributes.?.len == 4);
+    try std.testing.expectEqualStrings("name", attributes.?[0].name);
+    try std.testing.expectEqualStrings("value1", attributes.?[0].value.string);
+    try std.testing.expectEqualStrings("name2", attributes.?[1].name);
+    try std.testing.expectEqualStrings("value2", attributes.?[1].value.string);
+    try std.testing.expectEqual(@as(i64, 456), attributes.?[2].value.int);
+    try std.testing.expectEqual(false, attributes.?[3].value.bool);
 }
 
-test "attributes from null" {
+test "attributes from unit return null" {
     const attributes = try Attributes.from(std.testing.allocator, .{});
-    try std.testing.expect(attributes.len == 0);
+    defer if (attributes) |a| std.testing.allocator.free(a);
+    try std.testing.expectEqual(null, attributes);
 }

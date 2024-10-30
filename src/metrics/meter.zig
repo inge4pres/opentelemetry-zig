@@ -364,10 +364,9 @@ test "meter provider end to end" {
         .description = "lines of code written",
     });
     const meVal: []const u8 = "person@company.com";
-    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "author", meVal });
 
-    try counter.add(1000000, null);
-    try counter.add(10, attrs);
+    try counter.add(1000000, .{ "author", meVal });
+    try counter.add(10, .{ "author", meVal });
 
     var hist = try meter.createHistogram(u16, .{ .name = "my-histogram" });
     const v: []const u8 = "success";
@@ -399,7 +398,6 @@ test "meter provider with arena allocator" {
         .description = "lines of code written",
     });
     const meVal: []const u8 = "test";
-    const attrs = try pbutils.WithAttributes(arena.allocator(), .{ "author", meVal });
 
-    try counter.add(1, attrs);
+    try counter.add(1, .{ "author", meVal });
 }
