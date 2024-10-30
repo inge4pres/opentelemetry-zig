@@ -1,4 +1,7 @@
 const std = @import("std");
+const Attribute = @import("attributes.zig").Attribute;
+const Attributes = @import("attributes.zig").Attributes;
+
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
@@ -41,11 +44,8 @@ const SupportedInstrument = union(enum) {
     Gauge_f64: *Gauge(f64),
 };
 
-// TODO this should be the abstraction containing all instruments.
-// We should have a single struct that contains all the instruments.
-// The current Counter(T), Histogram(T) and Gauge(T) should be part of the instrument and
-// when the Meter wants to create a new instrument, it should call the appropriate method.
-//In this way, storing the instruments in a single hashmap also contains the concrete type of the instrument.
+/// Instrument contains all supported instruments.
+/// When the Meter wants to create a new instrument, it calls the Get() method.
 pub const Instrument = struct {
     const Self = @This();
 
@@ -174,11 +174,11 @@ pub fn Counter(comptime T: type) type {
         // We should keep track of the current value of the counter for each unique comibination of attribute.
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(?pbcommon.KeyValueList, T),
+        cumulative: std.AutoHashMap(?[]Attribute, T),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .cumulative = std.AutoHashMap(?pbcommon.KeyValueList, T).init(allocator),
+                .cumulative = std.AutoHashMap(?[]Attribute, T).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -188,7 +188,7 @@ pub fn Counter(comptime T: type) type {
                 var keyIter = self.cumulative.keyIterator();
                 while (keyIter.next()) |key| {
                     if (key.*) |k| {
-                        k.deinit();
+                        self.allocator.free(k);
                     }
                 }
             }
@@ -196,11 +196,13 @@ pub fn Counter(comptime T: type) type {
         }
 
         /// Add the given delta to the counter, using the provided attributes.
-        pub fn add(self: *Self, delta: T, attributes: ?pbcommon.KeyValueList) !void {
-            if (self.cumulative.getEntry(attributes)) |c| {
+        /// // FIXME we should use anonymous types to build the attributes.
+        pub fn add(self: *Self, delta: T, attributes: anytype) !void {
+            const attrs = try Attributes.from(self.allocator, attributes);
+            if (self.cumulative.getEntry(attrs)) |c| {
                 c.value_ptr.* += delta;
             } else {
-                try self.cumulative.put(attributes, delta);
+                try self.cumulative.put(attrs, delta);
             }
         }
     };
@@ -367,7 +369,7 @@ test "meter can create counter instrument and record increase without attributes
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
-    try counter.add(10, null);
+    try counter.add(10, .{});
     std.debug.assert(counter.cumulative.count() == 1);
 }
 
@@ -381,16 +383,15 @@ test "meter can create counter instrument and record increase with attributes" {
         .unit = "KiB",
     });
 
-    try counter.add(100, null);
-    try counter.add(1000, null);
+    try counter.add(100, .{});
+    try counter.add(1000, .{});
     std.debug.assert(counter.cumulative.count() == 1);
     std.debug.assert(counter.cumulative.get(null).? == 1100);
 
-    const val1: []const u8= "some-value";
-    const val2: []const u8= "another-value";
-    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", val1, "another-key", val2});
+    const val1: []const u8 = "some-value";
+    const val2: []const u8 = "another-value";
 
-    try counter.add(2, attrs);
+    try counter.add(2, .{ "some-key", val1, "another-key", val2 });
     std.debug.assert(counter.cumulative.count() == 2);
 }
 
@@ -448,21 +449,20 @@ test "meter creates upDownCounter and stores value" {
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
 
-    try counter.add(10, null);
-    try counter.add(-5, null);
-    try counter.add(-4, null);
+    try counter.add(10, .{});
+    try counter.add(-5, .{});
+    try counter.add(-4, .{});
     std.debug.assert(counter.cumulative.count() == 1);
 
     // Validate the number stored is correct.
-    // Null attributes produce a key hashed == 0.
+    // Empty attributes produce a null key.
     if (counter.cumulative.get(null)) |c| {
         std.debug.assert(c == 1);
     } else {
         std.debug.panic("Counter not found", .{});
     }
 
-    const attrs = try pbutils.WithAttributes(std.testing.allocator, .{ "some-key", @as(i64, 42) });
-    try counter.add(1, attrs);
+    try counter.add(1, .{ "some-key", @as(i64, 42) });
     std.debug.assert(counter.cumulative.count() == 2);
 
     var iter = counter.cumulative.valueIterator();
@@ -481,7 +481,7 @@ test "instrument in meter and instrument in data are the same" {
     const meter = try mp.getMeter(.{ .name = "test-meter" });
 
     var c = try meter.createCounter(u64, .{ .name = name });
-    try c.add(100, null);
+    try c.add(100, .{});
 
     const id = try spec.instrumentIdentifier(
         std.testing.allocator,

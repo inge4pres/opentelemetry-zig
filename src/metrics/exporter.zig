@@ -109,7 +109,7 @@ test "exported metrics by calling metric reader" {
 
     // only 1 metric should be in metrics data when we use the mock exporter
     var counter = try m.createCounter(u32, .{ .name = "my-counter" });
-    try counter.add(1, null);
+    try counter.add(1, .{});
 
     try rdr.collect();
 }
