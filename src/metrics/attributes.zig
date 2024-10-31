@@ -23,7 +23,7 @@ fn keyValue(comptime T: type) type {
     };
 }
 
-pub const AttributeValue = union {
+pub const AttributeValue = union(enum) {
     bool: bool,
     string: []const u8,
     int: i64,
@@ -36,7 +36,8 @@ pub const Attribute = struct {
 };
 
 /// Creates a slice of attributes from a list of key-value pairs.
-/// Caller owns the memory.
+/// Caller owns the returned memory and should free the slice when done
+/// through the same allocator.
 pub const Attributes = struct {
     pub fn from(allocator: std.mem.Allocator, keyValues: anytype) !?[]Attribute {
         // Straight copied from the zig std library: std.fmt.
