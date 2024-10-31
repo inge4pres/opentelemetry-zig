@@ -55,8 +55,9 @@ pub const MetricReader = struct {
             var mpIter = mp.meters.valueIterator();
             while (mpIter.next()) |meter| {
                 // Create a resourceMetric for each Meter.
+                const attrs = try attributesToKeyValueList(self.allocator, meter.attributes);
                 var rm = pbmetrics.ResourceMetrics{
-                    .resource = pbresource.Resource{ .attributes = if (meter.attributes) |a| a.values else std.ArrayList(pbcommon.KeyValue).init(self.allocator) },
+                    .resource = pbresource.Resource{ .attributes = attrs.values },
                     .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).init(self.allocator),
                 };
                 // We only use a single ScopeMetric for each ResourceMetric.
@@ -163,6 +164,18 @@ fn attributeToProto(attribute: Attribute) pbcommon.KeyValue {
             // TODO include nested Attribute values
         },
     };
+}
+
+fn attributesToKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
+    if (attributes) |attrs| {
+        var kvs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(allocator) };
+        for (attrs) |a| {
+            try kvs.values.append(attributeToProto(a));
+        }
+        return kvs;
+    } else {
+        return pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(allocator) };
+    }
 }
 
 fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {

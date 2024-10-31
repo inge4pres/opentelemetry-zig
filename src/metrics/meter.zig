@@ -1,4 +1,7 @@
 const std = @import("std");
+const Attribute = @import("attributes.zig").Attribute;
+const Attributes = @import("attributes.zig").Attributes;
+
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
@@ -83,7 +86,7 @@ pub const MeterProvider = struct {
         return meter.value_ptr;
     }
 
-    fn meterExistsWithDifferentAttributes(self: *Self, identifier: u64, attributes: ?pbcommon.KeyValueList) bool {
+    fn meterExistsWithDifferentAttributes(self: *Self, identifier: u64, attributes: ?[]Attribute) bool {
         if (self.meters.get(identifier)) |m| {
             return !std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes));
         }
@@ -103,7 +106,7 @@ pub const MeterOptions = struct {
     name: []const u8,
     version: []const u8 = defaultMeterVersion,
     schema_url: ?[]const u8 = null,
-    attributes: ?pbcommon.KeyValueList = null,
+    attributes: ?[]Attribute = null,
 };
 
 /// Meter is a named instance that is used to record measurements.
@@ -112,7 +115,7 @@ const Meter = struct {
     name: []const u8,
     version: []const u8,
     schema_url: ?[]const u8,
-    attributes: ?pbcommon.KeyValueList,
+    attributes: ?[]Attribute = null,
     instruments: std.StringHashMap(*Instrument),
     allocator: std.mem.Allocator,
 
@@ -196,7 +199,7 @@ const Meter = struct {
         // Cleanup Meters' Instruments values.
         self.instruments.deinit();
         // Cleanup the meter attributes.
-        if (self.attributes) |attrs| attrs.deinit();
+        if (self.attributes) |attrs| self.allocator.free(attrs);
     }
 };
 
@@ -231,16 +234,18 @@ test "meter can be created from custom provider" {
 test "meter can be created from default provider with schema url and attributes" {
     const meter_name = "my-meter";
     const meter_version = "my-meter";
-    const attributes = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator) };
 
     const mp = try MeterProvider.default();
     defer mp.shutdown();
 
+    const val: []const u8 = "value";
+    const attributes = try Attributes.from(mp.allocator, .{ "key", val });
+
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
-    std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
-    std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
-    std.debug.assert(std.mem.eql(u8, meter.schema_url.?, "http://foo.bar"));
-    std.debug.assert(meter.attributes.?.values.items.len == attributes.values.items.len);
+    try std.testing.expectEqual(meter.name, meter_name);
+    try std.testing.expectEqualStrings(meter.version, meter_version);
+    try std.testing.expectEqualStrings(meter.schema_url.?, "http://foo.bar");
+    std.debug.assert(std.mem.eql(u8, std.mem.asBytes(meter.attributes.?), std.mem.asBytes(attributes.?)));
 }
 
 test "meter has default version when creted with no options" {
@@ -255,16 +260,22 @@ test "getting same meter with different attributes returns an error" {
     const name = "my-meter";
     const version = "v1.2.3";
     const schema_url = "http://foo.bar";
-    var attributes = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(std.testing.allocator) };
-    defer attributes.values.deinit();
-    try attributes.values.append(pbcommon.KeyValue{ .key = .{ .Const = "key" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "value" } } } });
 
     const mp = try MeterProvider.default();
-    _ = try mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
-    // modify the attributes adding one
-    try attributes.values.append(pbcommon.KeyValue{ .key = .{ .Const = "key2" }, .value = pbcommon.AnyValue{ .value = .{ .string_value = .{ .Const = "value2" } } } });
+    defer mp.shutdown();
 
-    const r = mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
+    const val1: []const u8 = "value1";
+    const val2: []const u8 = "value2";
+    const attributes = try Attributes.from(mp.allocator, .{ "key1", val1 });
+
+    _ = try mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
+
+    // modify the attributes adding one/
+    // these attributes are not allocated with the same allocator as the meter.
+    const attributesUpdated = try Attributes.from(std.testing.allocator, .{ "key1", val1, "key2", val2 });
+    defer std.testing.allocator.free(attributesUpdated.?);
+
+    const r = mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributesUpdated });
     try std.testing.expectError(spec.ResourceError.MeterExistsWithDifferentAttributes, r);
 }
 
