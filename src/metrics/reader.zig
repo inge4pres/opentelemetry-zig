@@ -9,6 +9,7 @@ const instr = @import("instrument.zig");
 const Instrument = instr.Instrument;
 const Kind = instr.Kind;
 const MeterProvider = @import("meter.zig").MeterProvider;
+const Attribute = @import("attributes.zig").Attribute;
 const view = @import("view.zig");
 const exporter = @import("exporter.zig");
 const MetricExporter = exporter.MetricExporter;
@@ -64,7 +65,7 @@ pub const MetricReader = struct {
                 };
                 var instrIter = meter.instruments.valueIterator();
                 while (instrIter.next()) |i| {
-                    if (self.toMetric(i.*)) |metric| {
+                    if (toMetric(self.allocator, self.temporality, i.*)) |metric| {
                         try sm.metrics.append(metric);
                     } else |err| {
                         std.debug.print("MetricReader collect: failed conversion to proto Metric: {?}\n", .{err});
@@ -91,72 +92,89 @@ pub const MetricReader = struct {
         self.hasShutDown.store(true, .release);
         self.exporter.shutdown();
     }
-
-    fn toMetric(self: Self, i: *Instrument) !pbmetrics.Metric {
-        return pbmetrics.Metric{
-            .name = ManagedString.managed(i.opts.name),
-            .description = if (i.opts.description) |d| ManagedString.managed(d) else .Empty,
-            .unit = if (i.opts.unit) |u| ManagedString.managed(u) else .Empty,
-            .data = switch (i.data) {
-                .Counter_u16 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-                    .data_points = try sumDataPoints(self.allocator, u16, i.data.Counter_u16),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                    .is_monotonic = true,
-                } },
-                .Counter_u32 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-                    .data_points = try sumDataPoints(self.allocator, u32, i.data.Counter_u32),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                    .is_monotonic = true,
-                } },
-
-                .Counter_u64 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-                    .data_points = try sumDataPoints(self.allocator, u64, i.data.Counter_u64),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                    .is_monotonic = true,
-                } },
-                .Histogram_u16 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                    .data_points = try histogramDataPoints(self.allocator, u16, i.data.Histogram_u16),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                } },
-
-                .Histogram_u32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                    .data_points = try histogramDataPoints(self.allocator, u32, i.data.Histogram_u32),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                } },
-
-                .Histogram_u64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                    .data_points = try histogramDataPoints(self.allocator, u64, i.data.Histogram_u64),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                } },
-
-                .Histogram_f32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                    .data_points = try histogramDataPoints(self.allocator, f32, i.data.Histogram_f32),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                } },
-
-                .Histogram_f64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                    .data_points = try histogramDataPoints(self.allocator, f64, i.data.Histogram_f64),
-                    .aggregation_temporality = self.temporality(i.kind).toProto(),
-                } },
-                // TODO: add other metrics types.
-                else => unreachable,
-            },
-            // Metadata used for internal translations and we can discard for now.
-            // Consumers of SDK should not rely on this field.
-            .metadata = std.ArrayList(pbcommon.KeyValue).init(self.allocator),
-        };
-    }
 };
+
+fn toMetric(
+    allocator: std.mem.Allocator,
+    temporality: *const fn (Kind) view.Temporality,
+    i: *Instrument,
+) !pbmetrics.Metric {
+    return pbmetrics.Metric{
+        .name = ManagedString.managed(i.opts.name),
+        .description = if (i.opts.description) |d| ManagedString.managed(d) else .Empty,
+        .unit = if (i.opts.unit) |u| ManagedString.managed(u) else .Empty,
+        .data = switch (i.data) {
+            .Counter_u16 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
+                .data_points = try sumDataPoints(allocator, u16, i.data.Counter_u16),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+                .is_monotonic = true,
+            } },
+            .Counter_u32 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
+                .data_points = try sumDataPoints(allocator, u32, i.data.Counter_u32),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+                .is_monotonic = true,
+            } },
+
+            .Counter_u64 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
+                .data_points = try sumDataPoints(allocator, u64, i.data.Counter_u64),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+                .is_monotonic = true,
+            } },
+            .Histogram_u16 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                .data_points = try histogramDataPoints(allocator, u16, i.data.Histogram_u16),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+            } },
+
+            .Histogram_u32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                .data_points = try histogramDataPoints(allocator, u32, i.data.Histogram_u32),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+            } },
+
+            .Histogram_u64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                .data_points = try histogramDataPoints(allocator, u64, i.data.Histogram_u64),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+            } },
+
+            .Histogram_f32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                .data_points = try histogramDataPoints(allocator, f32, i.data.Histogram_f32),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+            } },
+            .Histogram_f64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
+                .data_points = try histogramDataPoints(allocator, f64, i.data.Histogram_f64),
+                .aggregation_temporality = temporality(i.kind).toProto(),
+            } },
+            // TODO: add other metrics types.
+            else => unreachable,
+        },
+        // Metadata used for internal translations and we can discard for now.
+        // Consumers of SDK should not rely on this field.
+        .metadata = std.ArrayList(pbcommon.KeyValue).init(allocator),
+    };
+}
+
+fn attributeToProto(attribute: Attribute) pbcommon.KeyValue {
+    return pbcommon.KeyValue{
+        .key = ManagedString.managed(attribute.name),
+        .value = switch (attribute.value) {
+            .bool => pbcommon.AnyValue{ .value = .{ .bool_value = attribute.value.bool } },
+            .string => pbcommon.AnyValue{ .value = .{ .string_value = ManagedString.managed(attribute.value.string) } },
+            .int => pbcommon.AnyValue{ .value = .{ .int_value = attribute.value.int } },
+            .double => pbcommon.AnyValue{ .value = .{ .double_value = attribute.value.double } },
+            // TODO include nested Attribute values
+        },
+    };
+}
 
 fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
     var dataPoints = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
     var iter = c.cumulative.iterator();
     while (iter.next()) |measure| {
-        const attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
+        var attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
         // Attributes are stored as key of the hasmap.
-        if (measure.key_ptr.*) |_| {
-            // FIXME convert attributes to pbcommon.KeyValue
-            // try attrs.appendSlice(kv);
+        if (measure.key_ptr.*) |kv| {
+            for (kv) |a| {
+                try attrs.append(attributeToProto(a));
+            }
         }
         const dp = pbmetrics.NumberDataPoint{
             .attributes = attrs,
@@ -176,11 +194,12 @@ fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr
     var dataPoints = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator);
     var iter = h.cumulative.iterator();
     while (iter.next()) |measure| {
-        const attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
+        var attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
         // Attributes are stored as key of the hashmap.
-        if (measure.key_ptr.*) |_| {
-            // FIXME convert attributes to pbcommon.KeyValue
-            // try attrs.appendSlice(kv);
+        if (measure.key_ptr.*) |kv| {
+            for (kv) |a| {
+                try attrs.append(attributeToProto(a));
+            }
         }
         var dp = pbmetrics.HistogramDataPoint{
             .attributes = attrs,
