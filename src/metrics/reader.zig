@@ -29,6 +29,9 @@ pub const MetricReadError = error{
 /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#metricreader
 pub const MetricReader = struct {
     allocator: std.mem.Allocator,
+    // Exporter is the destination of the metrics data.
+    // MetricReader takes oenwrship of the exporter.
+    exporter: *MetricExporter = undefined,
     // We can read the instruments' data points from the meters
     // stored in meterProvider.
     meterProvider: ?*MeterProvider = null,
@@ -37,10 +40,27 @@ pub const MetricReader = struct {
     aggregation: *const fn (Kind) view.Aggregation = view.DefaultAggregationFor,
     // Signal that shutdown has been called.
     hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    // Exporter is the destination of the metrics data.
-    exporter: MetricExporter = undefined,
 
     const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, metricExporter: *MetricExporter) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .allocator = allocator,
+            .exporter = metricExporter,
+        };
+        return s;
+    }
+
+    pub fn withTemporality(self: *Self, temporality: *const fn (Kind) view.Temporality) *Self {
+        self.temporality = temporality;
+        return self;
+    }
+
+    pub fn withAggregation(self: *Self, aggregation: *const fn (Kind) view.Aggregation) *Self {
+        self.aggregation = aggregation;
+        return self;
+    }
 
     pub fn collect(self: Self) !void {
         if (self.hasShutDown.load(.acquire)) {
@@ -55,7 +75,7 @@ pub const MetricReader = struct {
             var mpIter = mp.meters.valueIterator();
             while (mpIter.next()) |meter| {
                 // Create a resourceMetric for each Meter.
-                const attrs = try attributesToKeyValueList(self.allocator, meter.attributes);
+                const attrs = try attributesToProtobufKeyValueList(self.allocator, meter.attributes);
                 var rm = pbmetrics.ResourceMetrics{
                     .resource = pbresource.Resource{ .attributes = attrs.values },
                     .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).init(self.allocator),
@@ -66,7 +86,7 @@ pub const MetricReader = struct {
                 };
                 var instrIter = meter.instruments.valueIterator();
                 while (instrIter.next()) |i| {
-                    if (toMetric(self.allocator, self.temporality, i.*)) |metric| {
+                    if (toProtobufMetric(self.allocator, self.temporality, i.*)) |metric| {
                         try sm.metrics.append(metric);
                     } else |err| {
                         std.debug.print("MetricReader collect: failed conversion to proto Metric: {?}\n", .{err});
@@ -92,10 +112,11 @@ pub const MetricReader = struct {
         };
         self.hasShutDown.store(true, .release);
         self.exporter.shutdown();
+        self.allocator.destroy(self);
     }
 };
 
-fn toMetric(
+fn toProtobufMetric(
     allocator: std.mem.Allocator,
     temporality: *const fn (Kind) view.Temporality,
     i: *Instrument,
@@ -153,7 +174,7 @@ fn toMetric(
     };
 }
 
-fn attributeToProto(attribute: Attribute) pbcommon.KeyValue {
+fn attributeToProtobuf(attribute: Attribute) pbcommon.KeyValue {
     return pbcommon.KeyValue{
         .key = ManagedString.managed(attribute.name),
         .value = switch (attribute.value) {
@@ -166,11 +187,11 @@ fn attributeToProto(attribute: Attribute) pbcommon.KeyValue {
     };
 }
 
-fn attributesToKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
+fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
     if (attributes) |attrs| {
         var kvs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(allocator) };
         for (attrs) |a| {
-            try kvs.values.append(attributeToProto(a));
+            try kvs.values.append(attributeToProtobuf(a));
         }
         return kvs;
     } else {
@@ -186,7 +207,7 @@ fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Count
         // Attributes are stored as key of the hasmap.
         if (measure.key_ptr.*) |kv| {
             for (kv) |a| {
-                try attrs.append(attributeToProto(a));
+                try attrs.append(attributeToProtobuf(a));
             }
         }
         const dp = pbmetrics.NumberDataPoint{
@@ -211,7 +232,7 @@ fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr
         // Attributes are stored as key of the hashmap.
         if (measure.key_ptr.*) |kv| {
             for (kv) |a| {
-                try attrs.append(attributeToProto(a));
+                try attrs.append(attributeToProtobuf(a));
             }
         }
         var dp = pbmetrics.HistogramDataPoint{
@@ -240,11 +261,12 @@ fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr
 }
 
 test "metric reader shutdown prevents collect() to execute" {
-    var reader = MetricReader{ .allocator = std.testing.allocator };
+    var noop = exporter.ExporterIface{ .exportFn = exporter.noopExporter };
+    const me = try MetricExporter.new(std.testing.allocator, &noop);
+    var reader = try MetricReader.init(std.testing.allocator, me);
     const e = reader.collect();
     try std.testing.expectEqual(MetricReadError.CollectFailedOnMissingMeterProvider, e);
     reader.shutdown();
-    try reader.collect();
 }
 
 test "metric reader collects data from meter provider" {
@@ -254,13 +276,13 @@ test "metric reader collects data from meter provider" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
-    var reader = MetricReader{
-        .allocator = std.testing.allocator,
-        .exporter = MetricExporter.new(&inMem.exporter),
-    };
+    var reader = try MetricReader.init(
+        std.testing.allocator,
+        try MetricExporter.new(std.testing.allocator, &inMem.exporter),
+    );
     defer reader.shutdown();
 
-    try mp.addReader(&reader);
+    try mp.addReader(reader);
 
     const m = try mp.getMeter(.{ .name = "my-meter" });
 
@@ -289,14 +311,15 @@ test "metric reader custom temporality" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
-    var reader = MetricReader{
-        .allocator = std.testing.allocator,
-        .exporter = MetricExporter.new(&inMem.exporter),
-        .temporality = deltaTemporality,
-    };
+    var reader = try MetricReader.init(
+        std.testing.allocator,
+        try MetricExporter.new(std.testing.allocator, &inMem.exporter),
+    );
+    reader = reader.withTemporality(deltaTemporality);
+
     defer reader.shutdown();
 
-    try mp.addReader(&reader);
+    try mp.addReader(reader);
 
     const m = try mp.getMeter(.{ .name = "my-meter" });
 
@@ -305,8 +328,11 @@ test "metric reader custom temporality" {
 
     try reader.collect();
 
-    const data = inMem.fetch();
+    const data = try inMem.fetch();
+    defer data.deinit();
+
     std.debug.assert(data.resource_metrics.items.len == 1);
+    std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 1);
 }
 
 /// A periodic exporting metric reader is a specialization of MetricReader
@@ -317,7 +343,6 @@ pub const PeriodicExportingMetricReader = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    exporter: MetricExporter,
     exportIntervalMillis: u64,
     exportTimeoutMillis: u64,
 
@@ -325,8 +350,7 @@ pub const PeriodicExportingMetricReader = struct {
     shuttingDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     // This reader will collect metrics data from the MeterProvider.
-    // It is provisioned by start().
-    reader: *MetricReader = undefined,
+    reader: *MetricReader,
 
     // The intervals at which the reader should export metrics data
     // and wait for each operation to complete.
@@ -336,41 +360,33 @@ pub const PeriodicExportingMetricReader = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        metricExporter: MetricExporter,
+        reader: *MetricReader,
         exportIntervalMs: ?u64,
         exportTimeoutMs: ?u64,
     ) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
-            .exporter = metricExporter,
+            .reader = reader,
             .exportIntervalMillis = exportIntervalMs orelse defaultExportIntervalMillis,
             .exportTimeoutMillis = exportTimeoutMs orelse defaultExportTimeoutMillis,
         };
+        try s.start();
         return s;
     }
 
-    pub fn start(self: *Self) !*MetricReader {
-        self.reader = try self.allocator.create(MetricReader);
-        self.reader.* = MetricReader{
-            .allocator = self.allocator,
-            .exporter = self.exporter,
-        };
+    fn start(self: *Self) !void {
         const th = try std.Thread.spawn(
             .{},
             collectAndExport,
             .{self},
         );
         th.detach();
-        return self.reader;
+        return;
     }
 
     pub fn shutdown(self: *Self) void {
         self.shuttingDown.store(true, .release);
-        if (self.reader != undefined) {
-            self.reader.shutdown();
-            self.allocator.destroy(self.reader);
-        }
         self.allocator.destroy(self);
     }
 };
@@ -402,18 +418,21 @@ test "e2e periodic exporting metric reader" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
+    var reader = try MetricReader.init(
+        std.testing.allocator,
+        try MetricExporter.new(std.testing.allocator, &inMem.exporter),
+    );
+    defer reader.shutdown();
+
     var pemr = try PeriodicExportingMetricReader.init(
         std.testing.allocator,
-        MetricExporter.new(&inMem.exporter),
+        reader,
         waiting,
         null,
     );
     defer pemr.shutdown();
 
-    var reader = try pemr.start();
-    defer reader.shutdown();
-
-    try mp.addReader(reader);
+    try mp.addReader(pemr.reader);
 
     var meter = try mp.getMeter(.{ .name = "test-reader" });
     var counter = try meter.createCounter(u64, .{
@@ -435,9 +454,9 @@ test "e2e periodic exporting metric reader" {
 
     std.time.sleep(waiting * 2 * std.time.ns_per_ms);
 
-    const data = inMem.fetch();
+    const data = try inMem.fetch();
+    defer data.deinit();
 
     std.debug.assert(data.resource_metrics.items.len == 1);
-    std.debug.print("in mem data scope metrics: {any}\n", .{data.resource_metrics.items[0].scope_metrics.items});
     std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 2);
 }
