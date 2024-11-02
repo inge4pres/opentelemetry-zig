@@ -1,13 +1,8 @@
 const std = @import("std");
+
+const spec = @import("spec.zig");
 const Attribute = @import("attributes.zig").Attribute;
 const Attributes = @import("attributes.zig").Attributes;
-
-const protobuf = @import("protobuf");
-const ManagedString = protobuf.ManagedString;
-const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
-const pbmetrics = @import("../opentelemetry/proto/metrics/v1.pb.zig");
-const pbutils = @import("../pbutils.zig");
-const spec = @import("spec.zig");
 
 pub const Kind = enum {
     Counter,
@@ -25,7 +20,7 @@ pub const Kind = enum {
     }
 };
 
-const SupportedInstrument = union(enum) {
+const instrumentData = union(enum) {
     Counter_u16: *Counter(u16),
     Counter_u32: *Counter(u32),
     Counter_u64: *Counter(u64),
@@ -52,7 +47,7 @@ pub const Instrument = struct {
     allocator: std.mem.Allocator,
     kind: Kind,
     opts: InstrumentOptions,
-    data: SupportedInstrument,
+    data: instrumentData,
 
     pub fn Get(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !*Self {
         // Validate name, unit anddescription, optionally throwing an error if non conformant.
@@ -151,7 +146,7 @@ pub const InstrumentOptions = struct {
     description: ?[]const u8 = null,
     unit: ?[]const u8 = null,
     // Advisory parameters are in development, we don't support them yet, so we set to null.
-    advisory: ?pbcommon.KeyValueList = null,
+    advisory: ?[]Attribute = null,
 
     histogramOpts: ?HistogramOptions = null,
 };
