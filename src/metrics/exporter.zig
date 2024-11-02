@@ -16,20 +16,25 @@ pub const ExportResult = enum {
 
 pub const MetricExporter = struct {
     const Self = @This();
+
+    allocator: std.mem.Allocator,
     exporter: *ExporterIface,
     hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     var exportCompleted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-    pub fn new(exporter: *ExporterIface) Self {
-        return Self{
+    pub fn new(allocator: std.mem.Allocator, exporter: *ExporterIface) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .allocator = allocator,
             .exporter = exporter,
         };
+        return s;
     }
 
     /// ExportBatch exports a batch of metrics data.
     /// The passed metrics data is cleaned up by the caller, so it must be copied.
-    pub fn exportBatch(self: Self, metrics: pbmetrics.MetricsData) ExportResult {
+    pub fn exportBatch(self: *Self, metrics: pbmetrics.MetricsData) ExportResult {
         if (self.hasShutDown.load(.acquire)) {
             // When shutdown has already been called, calling export should be a failure.
             // https://opentelemetry.io/docs/specs/otel/metrics/sdk/#shutdown-2
@@ -46,6 +51,7 @@ pub const MetricExporter = struct {
         };
         return ExportResult.Success;
     }
+
     // Ensure that all the data is flushed to the destination.
     pub fn forceFlush(_: Self, timeout_ms: u64) !void {
         const start = std.time.milliTimestamp(); // Milliseconds
@@ -60,11 +66,13 @@ pub const MetricExporter = struct {
 
     pub fn shutdown(self: *Self) void {
         self.hasShutDown.store(true, .monotonic);
+        self.allocator.destroy(self);
     }
 };
 
 // test harness to build a noop exporter.
-fn noopExporter(_: *ExporterIface, _: pbmetrics.MetricsData) MetricReadError!void {
+// marked as pub only for testing purposes.
+pub fn noopExporter(_: *ExporterIface, _: pbmetrics.MetricsData) MetricReadError!void {
     return;
 }
 // mocked metric exporter to assert metrics data are read once exported.
@@ -81,9 +89,10 @@ fn waiterExporter(_: *ExporterIface, _: pbmetrics.MetricsData) MetricReadError!v
     return;
 }
 
-test "build no-op metric exporter" {
+test "metric exporter no-op" {
     var noop = ExporterIface{ .exportFn = noopExporter };
-    var me = MetricExporter.new(&noop);
+    var me = try MetricExporter.new(std.testing.allocator, &noop);
+    defer me.shutdown();
 
     const metrics = pbmetrics.MetricsData{
         .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
@@ -93,17 +102,19 @@ test "build no-op metric exporter" {
     try std.testing.expectEqual(ExportResult.Success, result);
 }
 
-test "exported metrics by calling metric reader" {
+test "metric exporter is called by metric reader" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
     var mock = ExporterIface{ .exportFn = mockExporter };
-    const me = MetricExporter.new(&mock);
 
-    var rdr = reader.MetricReader{ .allocator = std.testing.allocator, .exporter = me };
+    var rdr = try reader.MetricReader.init(
+        std.testing.allocator,
+        try MetricExporter.new(std.testing.allocator, &mock),
+    );
     defer rdr.shutdown();
 
-    try mp.addReader(&rdr);
+    try mp.addReader(rdr);
 
     const m = try mp.getMeter(.{ .name = "my-meter" });
 
@@ -116,7 +127,8 @@ test "exported metrics by calling metric reader" {
 
 test "metric exporter force flush succeeds" {
     var noop = ExporterIface{ .exportFn = noopExporter };
-    var me = MetricExporter.new(&noop);
+    var me = try MetricExporter.new(std.testing.allocator, &noop);
+    defer me.shutdown();
 
     const metrics = pbmetrics.MetricsData{
         .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
@@ -134,19 +146,22 @@ fn backgroundRunner(me: *MetricExporter, metrics: pbmetrics.MetricsData) !void {
 
 test "metric exporter force flush fails" {
     var wait = ExporterIface{ .exportFn = waiterExporter };
-    var me = MetricExporter.new(&wait);
+    var me = try MetricExporter.new(std.testing.allocator, &wait);
+    defer me.shutdown();
 
     const metrics = pbmetrics.MetricsData{
         .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(std.testing.allocator),
     };
     defer metrics.deinit();
+
     var bg = try std.Thread.spawn(
         .{},
         backgroundRunner,
-        .{ &me, metrics },
+        .{ me, metrics },
     );
     bg.detach();
 
+    std.time.sleep(10 * std.time.ns_per_ms); // sleep for 10 ms to ensure the background thread completed
     const e = me.forceFlush(0);
     try std.testing.expectError(MetricReadError.ForceFlushTimedOut, e);
 }
@@ -162,8 +177,8 @@ pub const ExporterIface = struct {
     }
 };
 
-/// ImMemoryExporter stores in memory the metrics data that is exported to it.
-/// The memory representation uses the protobuf structures as defined by OTLP.
+/// ImMemoryExporter stores in memory the metrics data to be exported.
+/// The memory representation uses the types defined in the library.
 pub const ImMemoryExporter = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
@@ -200,11 +215,10 @@ pub const ImMemoryExporter = struct {
         return;
     }
 
-    /// Retrieve the metrics from the in memory exporter.
-    /// Ownership of the metrics stays with the exporter.
-    pub fn fetch(self: *Self) pbmetrics.MetricsData {
-        // FIXME: we have an ownership issue here.
-        return self.data;
+    /// Copy the metrics from the in memory exporter.
+    /// Caller owns the memory and must call deinit() once done.
+    pub fn fetch(self: *Self) !pbmetrics.MetricsData {
+        return self.data.dupe(self.allocator);
     }
 };
 
@@ -212,7 +226,8 @@ test "in memory exporter stores data" {
     var inMemExporter = try ImMemoryExporter.init(std.testing.allocator);
     defer inMemExporter.deinit();
 
-    const exporter = MetricExporter.new(&inMemExporter.exporter);
+    const exporter = try MetricExporter.new(std.testing.allocator, &inMemExporter.exporter);
+    defer exporter.shutdown();
 
     const howMany: usize = 2;
     const dp = try std.testing.allocator.alloc(pbmetrics.NumberDataPoint, howMany);
@@ -259,7 +274,8 @@ test "in memory exporter stores data" {
 
     std.debug.assert(result == .Success);
 
-    const data = inMemExporter.fetch();
+    const data = try inMemExporter.fetch();
+    defer data.deinit();
 
     std.debug.assert(data.resource_metrics.items.len == 1);
     const entry = data.resource_metrics.items[0];
