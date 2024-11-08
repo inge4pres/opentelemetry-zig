@@ -22,3 +22,5 @@ test "measurement with attributes" {
     const m = Measurement(u32){ .value = 42, .attributes = attrs };
     try std.testing.expect(m.value == 42);
 }
+
+test "measurement lists are paired with attributes" {}

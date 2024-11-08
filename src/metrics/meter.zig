@@ -24,6 +24,12 @@ pub const MeterProvider = struct {
     const Self = @This();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
+    const defaultMeterProvider = Self{
+        .allocator = gpa.allocator(),
+        .meters = std.AutoHashMap(u64, Meter).init(gpa.allocator()),
+        .readers = std.ArrayList(*MetricReader).init(gpa.allocator()),
+    };
+
     /// Create a new custom meter provider, using the specified allocator.
     pub fn init(alloc: std.mem.Allocator) !*Self {
         const provider = try alloc.create(Self);
@@ -37,13 +43,14 @@ pub const MeterProvider = struct {
     }
 
     /// Adopt the default MeterProvider.
-    /// The GeneralPurposeAllocator is used to allocate memory for the meters.
     pub fn default() !*Self {
-        return try init(gpa.allocator());
+        const provider = try gpa.allocator().create(Self);
+        provider.* = defaultMeterProvider;
+        return provider;
     }
 
-    /// Delete the meter provider and free up the memory allocated for it.
-    /// as well as its child objects: Meters and MetricReaders.
+    /// Delete the meter provider and free up the memory allocated for it,
+    /// as well as its owned Meters.
     pub fn shutdown(self: *Self) void {
         // TODO call shutdown on all readers.
         var meters = self.meters.valueIterator();
