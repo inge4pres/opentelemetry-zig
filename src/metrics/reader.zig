@@ -62,7 +62,7 @@ pub const MetricReader = struct {
         return self;
     }
 
-    pub fn collect(self: Self) !void {
+    pub fn collect(self: *Self) !void {
         if (self.hasShutDown.load(.acquire)) {
             // When shutdown has already been called, collect is a no-op.
             return;
@@ -95,14 +95,17 @@ pub const MetricReader = struct {
                 try rm.scope_metrics.append(sm);
                 try metricsData.resource_metrics.append(rm);
             }
+            // Finally, export the metrics data through the exporter.
+            // Copy the data to the exporter's memory and each exporter should own it and free it
+            // by calling deinit() on the MetricsData once done.
+            const owned = try metricsData.dupe(self.allocator);
+            switch (self.exporter.exportBatch(owned)) {
+                ExportResult.Success => return,
+                ExportResult.Failure => return MetricReadError.ExportFailed,
+            }
         } else {
             // No meter provider to collect from.
             return MetricReadError.CollectFailedOnMissingMeterProvider;
-        }
-
-        switch (self.exporter.exportBatch(metricsData)) {
-            ExportResult.Success => return,
-            ExportResult.Failure => return MetricReadError.ExportFailed,
         }
     }
 
