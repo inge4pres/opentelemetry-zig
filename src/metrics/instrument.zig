@@ -191,7 +191,6 @@ pub fn Counter(comptime T: type) type {
         }
 
         /// Add the given delta to the counter, using the provided attributes.
-        /// // FIXME we should use anonymous types to build the attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
             if (self.cumulative.getEntry(attrs)) |c| {

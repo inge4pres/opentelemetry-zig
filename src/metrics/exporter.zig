@@ -32,8 +32,8 @@ pub const MetricExporter = struct {
         return s;
     }
 
-    /// ExportBatch exports a batch of metrics data.
-    /// The passed metrics data is cleaned up by the caller, so it must be copied.
+    /// ExportBatch exports a batch of metrics data by calling the exporter implementation.
+    /// The passed metrics data will be owned by the exporter implementation.
     pub fn exportBatch(self: *Self, metrics: pbmetrics.MetricsData) ExportResult {
         if (self.hasShutDown.load(.acquire)) {
             // When shutdown has already been called, calling export should be a failure.
@@ -72,18 +72,21 @@ pub const MetricExporter = struct {
 
 // test harness to build a noop exporter.
 // marked as pub only for testing purposes.
-pub fn noopExporter(_: *ExporterIface, _: pbmetrics.MetricsData) MetricReadError!void {
+pub fn noopExporter(_: *ExporterIface, metrics: pbmetrics.MetricsData) MetricReadError!void {
+    defer metrics.deinit();
     return;
 }
 // mocked metric exporter to assert metrics data are read once exported.
 fn mockExporter(_: *ExporterIface, metrics: pbmetrics.MetricsData) MetricReadError!void {
+    defer metrics.deinit();
     if (metrics.resource_metrics.items.len != 1) {
         return MetricReadError.ExportFailed;
     } // only one resource metrics is expected in this mock
 }
 
 // test harness to build an exporter that times out.
-fn waiterExporter(_: *ExporterIface, _: pbmetrics.MetricsData) MetricReadError!void {
+fn waiterExporter(_: *ExporterIface, metrics: pbmetrics.MetricsData) MetricReadError!void {
+    defer metrics.deinit();
     // Sleep for 1 second to simulate a slow exporter.
     std.time.sleep(std.time.ns_per_ms * 1000);
     return;
@@ -142,6 +145,7 @@ test "metric exporter force flush succeeds" {
 
 fn backgroundRunner(me: *MetricExporter, metrics: pbmetrics.MetricsData) !void {
     _ = me.exportBatch(metrics);
+    metrics.deinit();
 }
 
 test "metric exporter force flush fails" {
@@ -172,6 +176,8 @@ test "metric exporter force flush fails" {
 pub const ExporterIface = struct {
     exportFn: *const fn (*ExporterIface, pbmetrics.MetricsData) MetricReadError!void,
 
+    /// ExportBatch defines the behavior that metric exporters will implement.
+    /// Each metric exporter owns the metrics data passed to it.
     pub fn exportBatch(self: *ExporterIface, data: pbmetrics.MetricsData) MetricReadError!void {
         return self.exportFn(self, data);
     }
@@ -207,12 +213,7 @@ pub const ImMemoryExporter = struct {
         const self: *Self = @fieldParentPtr("exporter", iface);
 
         self.data.deinit();
-        self.data = metrics.dupe(self.allocator) catch |e| {
-            std.debug.print("failed exporting to memory: allocation error: {?}", .{e});
-            return MetricReadError.ExportFailed;
-        };
-
-        return;
+        self.data = metrics;
     }
 
     /// Copy the metrics from the in memory exporter.
@@ -267,10 +268,11 @@ test "in memory exporter stores data" {
     };
     try metricsData.resource_metrics.append(resource);
 
-    const result = exporter.exportBatch(metricsData);
-    // Calling immediately deinit because that's what MetricReader.collect() does
-    // after calling the exportBatch implementation.
-    metricsData.deinit();
+    // MetricReader.collect() does a copy of the metrics data, 
+    // then calls the exportBatch implementation passing it in.
+    const ownedData = try metricsData.dupe(std.testing.allocator);
+    defer metricsData.deinit();
+    const result = exporter.exportBatch(ownedData);
 
     std.debug.assert(result == .Success);
 
