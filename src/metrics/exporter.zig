@@ -268,7 +268,7 @@ test "in memory exporter stores data" {
     };
     try metricsData.resource_metrics.append(resource);
 
-    // MetricReader.collect() does a copy of the metrics data, 
+    // MetricReader.collect() does a copy of the metrics data,
     // then calls the exportBatch implementation passing it in.
     const ownedData = try metricsData.dupe(std.testing.allocator);
     defer metricsData.deinit();
