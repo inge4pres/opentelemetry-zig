@@ -3,6 +3,7 @@ const std = @import("std");
 const spec = @import("spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
+const Measurement = @import("measurement.zig").Measurement;
 
 pub const Kind = enum {
     Counter,
@@ -170,10 +171,15 @@ pub fn Counter(comptime T: type) type {
         // At the same time, we don't want to allocate memory for each attribute set that comes in.
         // So we store all the counters in a single array and keep track of the state of each counter.
         cumulative: std.AutoHashMap(?[]Attribute, T),
+        // Record the measurements for the counter.
+        // The list of measurements will be used when reading the data during a collection cycle.
+        // The list is cleared after each collection cycle.
+        measurements: std.ArrayList(Measurement(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .cumulative = std.AutoHashMap(?[]Attribute, T).init(allocator),
+                .measurements = std.ArrayList(Measurement(T)).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -188,6 +194,13 @@ pub fn Counter(comptime T: type) type {
                 }
             }
             self.cumulative.deinit();
+
+            for (self.measurements.items) |m| {
+                if (m.attributes) |attrs| {
+                    self.allocator.free(attrs);
+                }
+            }
+            self.measurements.deinit();
         }
 
         /// Add the given delta to the counter, using the provided attributes.
@@ -198,6 +211,9 @@ pub fn Counter(comptime T: type) type {
             } else {
                 try self.cumulative.put(attrs, delta);
             }
+
+            const at = try Attributes.from(self.allocator, attributes);
+            try self.measurements.append(Measurement(T){ .value = delta, .attributes = at });
         }
     };
 }
@@ -372,7 +388,7 @@ test "meter can create counter instrument and record increase without attributes
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
     try counter.add(10, .{});
-    std.debug.assert(counter.cumulative.count() == 1);
+    std.debug.assert(counter.measurements.items.len == 1);
 }
 
 test "meter can create counter instrument and record increase with attributes" {
@@ -387,14 +403,17 @@ test "meter can create counter instrument and record increase with attributes" {
 
     try counter.add(100, .{});
     try counter.add(1000, .{});
-    std.debug.assert(counter.cumulative.count() == 1);
-    std.debug.assert(counter.cumulative.get(null).? == 1100);
+
+    std.debug.assert(counter.measurements.items.len == 2);
+    std.debug.assert(counter.measurements.items[0].value == 100);
+    std.debug.assert(counter.measurements.items[1].value == 1000);
 
     const val1: []const u8 = "some-value";
     const val2: []const u8 = "another-value";
 
     try counter.add(2, .{ "some-key", val1, "another-key", val2 });
-    std.debug.assert(counter.cumulative.count() == 2);
+    std.debug.assert(counter.measurements.items.len == 3);
+    std.debug.assert(counter.measurements.items[2].value == 2);
 }
 
 test "meter can create histogram instrument and record value without explicit buckets" {
@@ -454,24 +473,19 @@ test "meter creates upDownCounter and stores value" {
     try counter.add(10, .{});
     try counter.add(-5, .{});
     try counter.add(-4, .{});
-    std.debug.assert(counter.cumulative.count() == 1);
+    std.debug.assert(counter.measurements.items.len == 3);
 
     // Validate the number stored is correct.
     // Empty attributes produce a null key.
-    if (counter.cumulative.get(null)) |c| {
-        std.debug.assert(c == 1);
-    } else {
-        std.debug.panic("Counter not found", .{});
+    var summed: i32 = 0;
+    for (counter.measurements.items) |m| {
+        summed += m.value;
     }
+    std.debug.assert(summed == 1);
 
     try counter.add(1, .{ "some-key", @as(i64, 42) });
-    std.debug.assert(counter.cumulative.count() == 2);
 
-    var iter = counter.cumulative.valueIterator();
-
-    while (iter.next()) |v| {
-        std.debug.assert(v.* == 1);
-    }
+    std.debug.assert(counter.measurements.items.len == 4);
 }
 
 test "instrument in meter and instrument in data are the same" {
@@ -497,8 +511,8 @@ test "instrument in meter and instrument in data are the same" {
     if (meter.instruments.get(id)) |instrument| {
         std.debug.assert(instrument.kind == Kind.Counter);
 
-        const counter_value = instrument.data.Counter_u64.cumulative.get(null) orelse unreachable;
-        try std.testing.expectEqual(100, counter_value);
+        const counter_value = instrument.data.Counter_u64.measurements.popOrNull() orelse unreachable;
+        try std.testing.expectEqual(100, counter_value.value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
     }

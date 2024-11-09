@@ -1,7 +1,6 @@
 const std = @import("std");
-const a = @import("../../attributes.zig");
-const Attribute = a.Attribute;
-const Attributes = a.Attributes;
+const Attribute = @import("../../attributes.zig").Attribute;
+const Attributes = @import("../../attributes.zig").Attributes;
 
 /// A measurement is a value recorded with an optional set of attributes.
 /// It represents a single data point collected from an instrument.
@@ -22,5 +21,3 @@ test "measurement with attributes" {
     const m = Measurement(u32){ .value = 42, .attributes = attrs };
     try std.testing.expect(m.value == 42);
 }
-
-test "measurement lists are paired with attributes" {}
