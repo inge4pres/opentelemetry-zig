@@ -204,20 +204,14 @@ fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[
 
 fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
     var dataPoints = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
-    var iter = c.cumulative.iterator();
-    while (iter.next()) |measure| {
-        var attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
-        // Attributes are stored as key of the hasmap.
-        if (measure.key_ptr.*) |kv| {
-            for (kv) |a| {
-                try attrs.append(attributeToProtobuf(a));
-            }
-        }
+    for (c.measurements.items) |measure| {
+        const attrs = try attributesToProtobufKeyValueList(allocator, measure.attributes);
         const dp = pbmetrics.NumberDataPoint{
-            .attributes = attrs,
+            .attributes = attrs.values,
+            // FIXME add a timestamp to Measurement in order to get it here.
             .time_unix_nano = @intCast(std.time.nanoTimestamp()),
             // FIXME reader's temporailty is not applied here.
-            .value = .{ .as_int = @intCast(measure.value_ptr.*) },
+            .value = .{ .as_int = @intCast(measure.value) },
 
             // TODO: support exemplars.
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),

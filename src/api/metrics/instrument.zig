@@ -167,10 +167,6 @@ pub fn Counter(comptime T: type) type {
         const Self = @This();
         allocator: std.mem.Allocator,
 
-        // We should keep track of the current value of the counter for each unique comibination of attribute.
-        // At the same time, we don't want to allocate memory for each attribute set that comes in.
-        // So we store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(?[]Attribute, T),
         // Record the measurements for the counter.
         // The list of measurements will be used when reading the data during a collection cycle.
         // The list is cleared after each collection cycle.
@@ -178,23 +174,12 @@ pub fn Counter(comptime T: type) type {
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .cumulative = std.AutoHashMap(?[]Attribute, T).init(allocator),
                 .measurements = std.ArrayList(Measurement(T)).init(allocator),
                 .allocator = allocator,
             };
         }
 
         fn deinit(self: *Self) void {
-            if (self.cumulative.count() > 0) {
-                var keyIter = self.cumulative.keyIterator();
-                while (keyIter.next()) |key| {
-                    if (key.*) |k| {
-                        self.allocator.free(k);
-                    }
-                }
-            }
-            self.cumulative.deinit();
-
             for (self.measurements.items) |m| {
                 if (m.attributes) |attrs| {
                     self.allocator.free(attrs);
@@ -206,14 +191,7 @@ pub fn Counter(comptime T: type) type {
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
-            if (self.cumulative.getEntry(attrs)) |c| {
-                c.value_ptr.* += delta;
-            } else {
-                try self.cumulative.put(attrs, delta);
-            }
-
-            const at = try Attributes.from(self.allocator, attributes);
-            try self.measurements.append(Measurement(T){ .value = delta, .attributes = at });
+            try self.measurements.append(Measurement(T){ .value = delta, .attributes = attrs });
         }
     };
 }
