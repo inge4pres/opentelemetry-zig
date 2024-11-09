@@ -207,10 +207,9 @@ pub fn Histogram(comptime T: type) type {
         allocator: std.mem.Allocator,
 
         options: HistogramOptions,
-        // Keep track of the current value of the counter for each unique comibination of attribute.
-        // At the same time, don't want allocate memory for each attribute set that comes in.
-        // Store all the counters in a single array and keep track of the state of each counter.
-        cumulative: std.AutoHashMap(?[]Attribute, T),
+        // Keeps track of the recorded values for each set of attributes.
+        // The measurements are cleared after each collection cycle.
+        measurements: std.ArrayList(Measurement(T)),
 
         // Keeps track of how many values are summed for each set of attributes.
         counts: std.AutoHashMap(?[]Attribute, usize),
@@ -233,7 +232,7 @@ pub fn Histogram(comptime T: type) type {
             return Self{
                 .allocator = allocator,
                 .options = opts,
-                .cumulative = std.AutoHashMap(?[]Attribute, T).init(allocator),
+                .measurements = std.ArrayList(Measurement(T)).init(allocator),
                 .counts = std.AutoHashMap(?[]Attribute, usize).init(allocator),
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(?[]Attribute, []usize).init(allocator),
@@ -241,16 +240,13 @@ pub fn Histogram(comptime T: type) type {
         }
 
         fn deinit(self: *Self) void {
-            // Cleanup the cumulative hashmap and the keys.
-            if (self.cumulative.count() > 0) {
-                var keyIter = self.cumulative.keyIterator();
-                while (keyIter.next()) |key1| {
-                    if (key1.*) |k| {
-                        self.allocator.free(k);
-                    }
+            // Cleanup the arraylist or measures and their attributes.
+            for (self.measurements.items) |m| {
+                if (m.attributes) |attrs| {
+                    self.allocator.free(attrs);
                 }
             }
-            self.cumulative.deinit();
+            self.measurements.deinit();
             // We don't need to free the counts or bucket_counts keys,
             // because the keys are pointers to the same optional
             // KeyValueList used in cumulative.
@@ -261,12 +257,8 @@ pub fn Histogram(comptime T: type) type {
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
+            try self.measurements.append(Measurement(T){ .value = value, .attributes = attrs });
 
-            if (self.cumulative.getEntry(attrs)) |c| {
-                c.value_ptr.* += value;
-            } else {
-                try self.cumulative.put(attrs, value);
-            }
             // Find the value for the bucket that the value falls in.
             // If the value is greater than the last bucket, it goes in the last bucket.
             // If the value is less than the first bucket, it goes in the first bucket.
@@ -328,31 +320,28 @@ pub fn Gauge(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        values: std.AutoHashMap(?[]Attribute, T),
+        measurements: std.ArrayList(Measurement(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .allocator = allocator,
-                .values = std.AutoHashMap(?[]Attribute, T).init(allocator),
+                .measurements = std.ArrayList(Measurement(T)).init(allocator),
             };
         }
 
         fn deinit(self: *Self) void {
-            if (self.values.count() > 0) {
-                var keyIter = self.values.keyIterator();
-                while (keyIter.next()) |key| {
-                    if (key.*) |k| {
-                        self.allocator.free(k);
-                    }
+            for (self.measurements.items) |m| {
+                if (m.attributes) |attrs| {
+                    self.allocator.free(attrs);
                 }
             }
-            self.values.deinit();
+            self.measurements.deinit();
         }
 
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
-            try self.values.put(attrs, value);
+            try self.measurements.append(Measurement(T){ .value = value, .attributes = attrs });
         }
     };
 }
@@ -405,7 +394,8 @@ test "meter can create histogram instrument and record value without explicit bu
     try histogram.record(15, .{});
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-    std.debug.assert(histogram.cumulative.count() == 1);
+    std.debug.assert(histogram.measurements.items.len == 3);
+
     const counts = histogram.bucket_counts.get(null).?;
     std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
     const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -423,7 +413,8 @@ test "meter can create histogram instrument and record value with explicit bucke
     try histogram.record(15, .{});
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-    std.debug.assert(histogram.cumulative.count() == 1);
+    std.debug.assert(histogram.measurements.items.len == 3);
+
     const counts = histogram.bucket_counts.get(null).?;
     std.debug.assert(counts.len == 4);
     const expected_counts = &[_]usize{ 1, 1, 1, 0 };
@@ -438,8 +429,8 @@ test "meter can create gauge instrument and record value without attributes" {
 
     try gauge.record(42, .{});
     try gauge.record(-42, .{});
-    std.debug.assert(gauge.values.count() == 1);
-    std.debug.assert(gauge.values.get(null) == -42);
+    std.debug.assert(gauge.measurements.items.len == 2);
+    std.debug.assert(gauge.measurements.pop().value == -42);
 }
 
 test "meter creates upDownCounter and stores value" {

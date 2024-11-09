@@ -223,23 +223,16 @@ fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Count
 
 fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr.Histogram(T)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
     var dataPoints = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator);
-    var iter = h.cumulative.iterator();
-    while (iter.next()) |measure| {
-        var attrs = std.ArrayList(pbcommon.KeyValue).init(allocator);
-        // Attributes are stored as key of the hashmap.
-        if (measure.key_ptr.*) |kv| {
-            for (kv) |a| {
-                try attrs.append(attributeToProtobuf(a));
-            }
-        }
+    for (h.measurements.items) |measure| {
+        const attrs = try attributesToProtobufKeyValueList(allocator, measure.attributes);
         var dp = pbmetrics.HistogramDataPoint{
-            .attributes = attrs,
+            .attributes = attrs.values,
             .time_unix_nano = @intCast(std.time.nanoTimestamp()),
             // FIXME reader's temporailty is not applied here.
-            .count = h.counts.get(measure.key_ptr.*) orelse 0,
+            .count = h.counts.get(measure.attributes) orelse 0,
             .sum = switch (@TypeOf(h.*)) {
-                instr.Histogram(u16), instr.Histogram(u32), instr.Histogram(u64) => @as(f64, @floatFromInt(measure.value_ptr.*)),
-                instr.Histogram(f32), instr.Histogram(f64) => @as(f64, @floatCast(measure.value_ptr.*)),
+                instr.Histogram(u16), instr.Histogram(u32), instr.Histogram(u64) => @as(f64, @floatFromInt(measure.value)),
+                instr.Histogram(f32), instr.Histogram(f64) => @as(f64, @floatCast(measure.value)),
                 else => unreachable,
             },
             .bucket_counts = std.ArrayList(u64).init(allocator),
@@ -247,7 +240,7 @@ fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr
             // TODO support exemplars
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
         };
-        if (h.bucket_counts.get(measure.key_ptr.*)) |b| {
+        if (h.bucket_counts.get(measure.attributes)) |b| {
             try dp.bucket_counts.appendSlice(b);
         }
         try dp.explicit_bounds.appendSlice(h.buckets);
