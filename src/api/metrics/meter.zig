@@ -3,6 +3,8 @@ const std = @import("std");
 const spec = @import("spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
+const Measurement = @import("measurement.zig").Measurement;
+const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
 const Instrument = @import("instrument.zig").Instrument;
 const Kind = @import("instrument.zig").Kind;
@@ -127,7 +129,7 @@ const Meter = struct {
     /// Create a new Counter instrument using the specified type as the value type.
     /// This is a monotonic counter that can only be incremented.
     pub fn createCounter(self: *Self, comptime T: type, options: InstrumentOptions) !*Counter(T) {
-        var i = try Instrument.Get(.Counter, options, self.allocator);
+        var i = try Instrument.new(.Counter, options, self.allocator);
         const c = try i.counter(T);
         errdefer self.allocator.destroy(c);
         try self.registerInstrument(i);
@@ -138,7 +140,7 @@ const Meter = struct {
     /// Create a new UpDownCounter instrument using the specified type as the value type.
     /// This is a counter that can be incremented and decremented.
     pub fn createUpDownCounter(self: *Self, comptime T: type, options: InstrumentOptions) !*Counter(T) {
-        var i = try Instrument.Get(.UpDownCounter, options, self.allocator);
+        var i = try Instrument.new(.UpDownCounter, options, self.allocator);
         const c = try i.upDownCounter(T);
         errdefer self.allocator.destroy(c);
         try self.registerInstrument(i);
@@ -149,7 +151,7 @@ const Meter = struct {
     /// Create a new Histogram instrument using the specified type as the value type.
     /// A histogram is a metric that samples observations and counts them in different buckets.
     pub fn createHistogram(self: *Self, comptime T: type, options: InstrumentOptions) !*Histogram(T) {
-        var i = try Instrument.Get(.Histogram, options, self.allocator);
+        var i = try Instrument.new(.Histogram, options, self.allocator);
         const h = try i.histogram(T);
         errdefer self.allocator.destroy(h);
         try self.registerInstrument(i);
@@ -161,7 +163,7 @@ const Meter = struct {
     /// A gauge is a metric that represents a single numerical value that can arbitrarily go up and down,
     /// and represents a point-in-time value.
     pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !*Gauge(T) {
-        var i = try Instrument.Get(.Gauge, options, self.allocator);
+        var i = try Instrument.new(.Gauge, options, self.allocator);
         const g = try i.gauge(T);
         errdefer self.allocator.destroy(g);
         try self.registerInstrument(i);
@@ -410,4 +412,166 @@ test "meter provider with arena allocator" {
     const meVal: []const u8 = "test";
 
     try counter.add(1, .{ "author", meVal });
+}
+
+const view = @import("../../sdk/metrics/view.zig");
+
+/// AggregatedMetrics is a collection of metrics that have been aggregated using the
+/// MetricReader's temporality and aggregation functions.
+pub const AggregatedMetrics = struct {
+    const Self = @This();
+
+    meterName: []const u8,
+    meterSchemaUrl: ?[]const u8,
+    shareadAttributes: ?[]Attribute,
+    temporality: view.Temporality,
+    aggregation: view.Aggregation,
+
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, m: Meter, temporality: view.Temporality, aggregation: view.Aggregation) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .meterName = m.name,
+            .meterSchemaUrl = m.schema_url,
+            .shareadAttributes = m.attributes,
+            .aggregation = aggregation,
+            .temporality = temporality,
+            .allocator = allocator,
+        };
+        return s;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.allocator.destroy(self);
+    }
+
+    fn deduplicate(self: Self, instrument: *Instrument) !MeasurementsData {
+        // This function is only called on read/export.
+        @setCold(true);
+
+        const allMeasurements: MeasurementsData = try instrument.getInstrumentsData();
+        defer allMeasurements.deinit(self.allocator);
+
+        switch (allMeasurements) {
+            .int => {
+                var deduped = std.ArrayList(Measurement(u64)).init(self.allocator);
+                var temp = std.HashMap(Attributes, u64, Attributes.HashContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+                defer temp.deinit();
+
+                for (allMeasurements.int) |measure| {
+                    switch (self.aggregation) {
+                        .Drop => return MeasurementsData{ .int = &[_]Measurement(u64){} },
+                        .Sum, .ExplicitBucketHistogram => {
+                            const key = Attributes.with(measure.attributes);
+                            const value = measure.value;
+                            if (temp.get(key)) |v| {
+                                const newValue = v + value;
+                                try temp.put(key, newValue);
+                            } else {
+                                try temp.put(key, value);
+                            }
+                        },
+                        .LastValue => {
+                            const key = Attributes.with(measure.attributes);
+                            try temp.put(key, measure.value);
+                        },
+                    }
+                }
+
+                var iter = temp.iterator();
+                while (iter.next()) |entry| {
+                    // TODO add sharedAttributes to the measurements attributes.
+                    try deduped.append(Measurement(u64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
+                }
+                return .{ .int = try deduped.toOwnedSlice() };
+            },
+            .double => {
+                var deduped = std.ArrayList(Measurement(f64)).init(self.allocator);
+                var temp = std.AutoHashMap(Attributes, f64).init(self.allocator);
+                defer temp.deinit();
+
+                for (allMeasurements.double) |measure| {
+                    switch (self.aggregation) {
+                        .Drop => return MeasurementsData{ .double = &[_]Measurement(f64){} },
+                        .Sum, .ExplicitBucketHistogram => {
+                            const key = Attributes.with(measure.attributes);
+                            const value = measure.value;
+                            if (temp.get(key)) |v| {
+                                const newValue = v + value;
+                                try temp.put(key, newValue);
+                            } else {
+                                try temp.put(key, value);
+                            }
+                        },
+                        .LastValue => {
+                            const key = Attributes.with(measure.attributes);
+                            try temp.put(key, measure.value);
+                        },
+                    }
+                }
+
+                var iter = temp.iterator();
+                while (iter.next()) |entry| {
+                    // TODO add sharedAttributes to the measurements attributes.
+                    try deduped.append(Measurement(f64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
+                }
+                return .{ .double = try deduped.toOwnedSlice() };
+            },
+        }
+    }
+};
+
+test "aggregated metrics from meter without attributes" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    try counter.add(1, .{});
+    try counter.add(3, .{});
+
+    var iter = meter.instruments.valueIterator();
+    const instrument = iter.next() orelse unreachable;
+
+    const aggregated = try AggregatedMetrics.init(std.testing.allocator, meter.*, .Cumulative, .Sum);
+    defer aggregated.deinit();
+
+    try std.testing.expectEqualStrings(meter.schema_url.?, aggregated.meterSchemaUrl.?);
+    var deduped = try aggregated.deduplicate(instrument.*);
+    defer deduped.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(Measurement(u64){ .value = 4 }, deduped.int[0]);
+}
+
+test "aggregated metrics from meter with attributes" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meterVal: []const u8 = "meter_val";
+    const meter = try mp.getMeter(.{
+        .name = "test",
+        .schema_url = "http://example.com",
+        .attributes = try Attributes.from(std.testing.allocator, .{ "meter_attr", meterVal }),
+    });
+    var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    const val: []const u8 = "test";
+    try counter.add(1, .{ "key", val });
+    try counter.add(3, .{ "key", val });
+
+    var iter = meter.instruments.valueIterator();
+    const instrument = iter.next() orelse unreachable;
+
+    const aggregated = try AggregatedMetrics.init(std.testing.allocator, meter.*, .Cumulative, .Sum);
+    defer aggregated.deinit();
+
+    var deduped = try aggregated.deduplicate(instrument.*);
+    defer deduped.deinit(std.testing.allocator);
+
+    const attrs = try Attributes.from(std.testing.allocator, .{ "key", val });
+    defer if (attrs) |a| std.testing.allocator.free(a);
+
+    try std.testing.expectEqualDeep(Measurement(u64){
+        .attributes = attrs,
+        .value = 4,
+    }, deduped.int[0]);
 }

@@ -4,6 +4,7 @@ const spec = @import("spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const Measurement = @import("measurement.zig").Measurement;
+const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
 pub const Kind = enum {
     Counter,
@@ -40,8 +41,8 @@ const instrumentData = union(enum) {
     Gauge_f64: *Gauge(f64),
 };
 
-/// Instrument contains all supported instruments.
-/// When the Meter wants to create a new instrument, it calls the Get() method.
+/// Instrument is a container of all supported instrument types.
+/// When the Meter wants to create a new instrument, it calls the new() function.
 pub const Instrument = struct {
     const Self = @This();
 
@@ -50,7 +51,7 @@ pub const Instrument = struct {
     opts: InstrumentOptions,
     data: instrumentData,
 
-    pub fn Get(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !*Self {
+    pub fn new(kind: Kind, opts: InstrumentOptions, allocator: std.mem.Allocator) !*Self {
         // Validate name, unit anddescription, optionally throwing an error if non conformant.
         // See https://opentelemetry.io/docs/specs/otel/metrics/api/#instrument-name-syntax
         try spec.validateInstrumentOptions(opts);
@@ -137,6 +138,14 @@ pub const Instrument = struct {
         }
         self.allocator.destroy(self);
     }
+
+    pub fn getInstrumentsData(self: Self) !MeasurementsData {
+        switch (self.data) {
+            inline else => |i| {
+                return i.measurementsData();
+            },
+        }
+    }
 };
 
 /// InstrumentOptions is used to configure the instrument.
@@ -167,9 +176,9 @@ pub fn Counter(comptime T: type) type {
         const Self = @This();
         allocator: std.mem.Allocator,
 
-        // Record the measurements for the counter.
-        // The list of measurements will be used when reading the data during a collection cycle.
-        // The list is cleared after each collection cycle.
+        /// Record the measurements for the counter.
+        /// The list of measurements will be used when reading the data during a collection cycle.
+        /// The list is cleared after each collection cycle.
         measurements: std.ArrayList(Measurement(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
@@ -193,6 +202,19 @@ pub fn Counter(comptime T: type) type {
             const attrs = try Attributes.from(self.allocator, attributes);
             try self.measurements.append(Measurement(T){ .value = delta, .attributes = attrs });
         }
+
+        fn measurementsData(self: Self) !MeasurementsData {
+            switch (T) {
+                u16, u32, u64, i16, i32, i64 => {
+                    var data = try self.allocator.alloc(Measurement(u64), self.measurements.items.len);
+                    for (self.measurements.items, 0..) |m, idx| {
+                        data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
+                    }
+                    return .{ .int = data };
+                },
+                else => unreachable,
+            }
+        }
     };
 }
 
@@ -207,8 +229,8 @@ pub fn Histogram(comptime T: type) type {
         allocator: std.mem.Allocator,
 
         options: HistogramOptions,
-        // Keeps track of the recorded values for each set of attributes.
-        // The measurements are cleared after each collection cycle.
+        /// Keeps track of the recorded values for each set of attributes.
+        /// The measurements are cleared after each collection cycle.
         measurements: std.ArrayList(Measurement(T)),
 
         // Keeps track of how many values are summed for each set of attributes.
@@ -312,6 +334,26 @@ pub fn Histogram(comptime T: type) type {
             // The last bucket is returned if the value is greater than it.
             return self.buckets.len - 1;
         }
+
+        fn measurementsData(self: Self) !MeasurementsData {
+            switch (T) {
+                u16, u32, u64, i16, i32, i64 => {
+                    var data = try self.allocator.alloc(Measurement(u64), self.measurements.items.len);
+                    for (self.measurements.items, 0..) |m, idx| {
+                        data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
+                    }
+                    return .{ .int = data };
+                },
+                f32, f64 => {
+                    var data = try self.allocator.alloc(Measurement(f64), self.measurements.items.len);
+                    for (self.measurements.items, 0..) |m, idx| {
+                        data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
+                    }
+                    return .{ .double = data };
+                },
+                else => unreachable,
+            }
+        }
     };
 }
 
@@ -342,6 +384,26 @@ pub fn Gauge(comptime T: type) type {
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
             try self.measurements.append(Measurement(T){ .value = value, .attributes = attrs });
+        }
+
+        fn measurementsData(self: Self) !MeasurementsData {
+            switch (T) {
+                i16, i32, i64 => {
+                    var data = try self.allocator.alloc(Measurement(u64), self.measurements.items.len);
+                    for (self.measurements.items, 0..) |m, idx| {
+                        data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
+                    }
+                    return .{ .int = data };
+                },
+                f32, f64 => {
+                    var data = try self.allocator.alloc(Measurement(f64), self.measurements.items.len);
+                    for (self.measurements.items, 0..) |m, idx| {
+                        data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
+                    }
+                    return .{ .double = data };
+                },
+                else => unreachable,
+            }
         }
     };
 }
@@ -482,6 +544,37 @@ test "instrument in meter and instrument in data are the same" {
 
         const counter_value = instrument.data.Counter_u64.measurements.popOrNull() orelse unreachable;
         try std.testing.expectEqual(100, counter_value.value);
+    } else {
+        std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
+    }
+}
+
+test "instrument fetches measurements from inner" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const name = "test-instrument";
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+
+    var c = try meter.createCounter(u64, .{ .name = name });
+    try c.add(100, .{});
+
+    const id = try spec.instrumentIdentifier(
+        std.testing.allocator,
+        name,
+        Kind.Counter.toString(),
+        "",
+        "",
+    );
+    defer std.testing.allocator.free(id);
+
+    if (meter.instruments.get(id)) |instrument| {
+        var measurements = try instrument.getInstrumentsData();
+        defer measurements.deinit(std.testing.allocator);
+
+        std.debug.assert(measurements.int.len == 1);
+        try std.testing.expectEqual(100, measurements.int[0].value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
     }

@@ -21,3 +21,15 @@ test "measurement with attributes" {
     const m = Measurement(u32){ .value = 42, .attributes = attrs };
     try std.testing.expect(m.value == 42);
 }
+
+pub const MeasurementsData = union(enum) {
+    int: []Measurement(u64),
+    double: []Measurement(f64),
+
+    pub fn deinit(self: MeasurementsData, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .int => allocator.free(self.int),
+            .double => allocator.free(self.double),
+        }
+    }
+};

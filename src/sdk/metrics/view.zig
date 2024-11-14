@@ -5,7 +5,6 @@ const Instrument = @import("../../api/metrics/instrument.zig");
 /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#aggregation
 pub const Aggregation = enum {
     Drop,
-    Default,
     Sum,
     LastValue,
     ExplicitBucketHistogram,
@@ -25,11 +24,13 @@ pub fn DefaultAggregationFor(kind: Instrument.Kind) Aggregation {
 pub const Temporality = enum {
     Cumulative,
     Delta,
+    Unspecified,
 
     pub fn toProto(self: Temporality) pbmetrics.AggregationTemporality {
         return switch (self) {
             .Cumulative => .AGGREGATION_TEMPORALITY_CUMULATIVE,
             .Delta => .AGGREGATION_TEMPORALITY_DELTA,
+            .Unspecified => .AGGREGATION_TEMPORALITY_UNSPECIFIED,
         };
     }
 };

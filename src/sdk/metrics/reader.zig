@@ -5,9 +5,9 @@ const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
 const pbresource = @import("../../opentelemetry/proto/resource/v1.pb.zig");
 const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
 const pbutils = @import("../../pbutils.zig");
-const instr = @import("../../api/metrics/instrument.zig");
-const Instrument = instr.Instrument;
-const Kind = instr.Kind;
+const instrument = @import("../../api/metrics/instrument.zig");
+const Instrument = instrument.Instrument;
+const Kind = instrument.Kind;
 const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
 const Attribute = @import("../../attributes.zig").Attribute;
 const view = @import("view.zig");
@@ -72,8 +72,8 @@ pub const MetricReader = struct {
 
         if (self.meterProvider) |mp| {
             // Collect the data from each meter provider.
-            var mpIter = mp.meters.valueIterator();
-            while (mpIter.next()) |meter| {
+            var meters = mp.meters.valueIterator();
+            while (meters.next()) |meter| {
                 // Create a resourceMetric for each Meter.
                 const attrs = try attributesToProtobufKeyValueList(self.allocator, meter.attributes);
                 var rm = pbmetrics.ResourceMetrics{
@@ -179,7 +179,7 @@ fn toProtobufMetric(
 
 fn attributeToProtobuf(attribute: Attribute) pbcommon.KeyValue {
     return pbcommon.KeyValue{
-        .key = ManagedString.managed(attribute.name),
+        .key = ManagedString.managed(attribute.key),
         .value = switch (attribute.value) {
             .bool => pbcommon.AnyValue{ .value = .{ .bool_value = attribute.value.bool } },
             .string => pbcommon.AnyValue{ .value = .{ .string_value = ManagedString.managed(attribute.value.string) } },
@@ -202,7 +202,7 @@ fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[
     }
 }
 
-fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
+fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instrument.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
     var dataPoints = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
     for (c.measurements.items) |measure| {
         const attrs = try attributesToProtobufKeyValueList(allocator, measure.attributes);
@@ -221,7 +221,7 @@ fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instr.Count
     return dataPoints;
 }
 
-fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr.Histogram(T)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
+fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instrument.Histogram(T)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
     var dataPoints = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator);
     for (h.measurements.items) |measure| {
         const attrs = try attributesToProtobufKeyValueList(allocator, measure.attributes);
@@ -231,8 +231,8 @@ fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instr
             // FIXME reader's temporailty is not applied here.
             .count = h.counts.get(measure.attributes) orelse 0,
             .sum = switch (@TypeOf(h.*)) {
-                instr.Histogram(u16), instr.Histogram(u32), instr.Histogram(u64) => @as(f64, @floatFromInt(measure.value)),
-                instr.Histogram(f32), instr.Histogram(f64) => @as(f64, @floatCast(measure.value)),
+                instrument.Histogram(u16), instrument.Histogram(u32), instrument.Histogram(u64) => @as(f64, @floatFromInt(measure.value)),
+                instrument.Histogram(f32), instrument.Histogram(f64) => @as(f64, @floatCast(measure.value)),
                 else => unreachable,
             },
             .bucket_counts = std.ArrayList(u64).init(allocator),
