@@ -139,10 +139,10 @@ pub const Instrument = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn getInstrumentsData(self: Self) !MeasurementsData {
+    pub fn getInstrumentsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
         switch (self.data) {
             inline else => |i| {
-                return i.measurementsData();
+                return i.measurementsData(allocator);
             },
         }
     }
@@ -203,10 +203,10 @@ pub fn Counter(comptime T: type) type {
             try self.measurements.append(Measurement(T){ .value = delta, .attributes = attrs });
         }
 
-        fn measurementsData(self: Self) !MeasurementsData {
+        fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try self.allocator.alloc(Measurement(u64), self.measurements.items.len);
+                    var data = try allocator.alloc(Measurement(i64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
@@ -335,17 +335,17 @@ pub fn Histogram(comptime T: type) type {
             return self.buckets.len - 1;
         }
 
-        fn measurementsData(self: Self) !MeasurementsData {
+        fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try self.allocator.alloc(Measurement(u64), self.measurements.items.len);
+                    var data = try allocator.alloc(Measurement(i64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
-                    var data = try self.allocator.alloc(Measurement(f64), self.measurements.items.len);
+                    var data = try allocator.alloc(Measurement(f64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
                     }
@@ -386,17 +386,17 @@ pub fn Gauge(comptime T: type) type {
             try self.measurements.append(Measurement(T){ .value = value, .attributes = attrs });
         }
 
-        fn measurementsData(self: Self) !MeasurementsData {
+        fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 i16, i32, i64 => {
-                    var data = try self.allocator.alloc(Measurement(u64), self.measurements.items.len);
+                    var data = try allocator.alloc(Measurement(i64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
-                    var data = try self.allocator.alloc(Measurement(f64), self.measurements.items.len);
+                    var data = try allocator.alloc(Measurement(f64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
                     }
@@ -550,7 +550,7 @@ test "instrument in meter and instrument in data are the same" {
 }
 
 test "instrument fetches measurements from inner" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const mp = try MeterProvider.default();
     defer mp.shutdown();
 
     const name = "test-instrument";
@@ -570,11 +570,11 @@ test "instrument fetches measurements from inner" {
     defer std.testing.allocator.free(id);
 
     if (meter.instruments.get(id)) |instrument| {
-        var measurements = try instrument.getInstrumentsData();
+        var measurements = try instrument.getInstrumentsData(std.testing.allocator);
         defer measurements.deinit(std.testing.allocator);
 
         std.debug.assert(measurements.int.len == 1);
-        try std.testing.expectEqual(100, measurements.int[0].value);
+        try std.testing.expectEqual(@as(i64, 100), measurements.int[0].value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
     }

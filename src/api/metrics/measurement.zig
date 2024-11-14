@@ -23,7 +23,7 @@ test "measurement with attributes" {
 }
 
 pub const MeasurementsData = union(enum) {
-    int: []Measurement(u64),
+    int: []Measurement(i64),
     double: []Measurement(f64),
 
     pub fn deinit(self: MeasurementsData, allocator: std.mem.Allocator) void {

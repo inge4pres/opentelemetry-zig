@@ -450,18 +450,18 @@ pub const AggregatedMetrics = struct {
         // This function is only called on read/export.
         @setCold(true);
 
-        const allMeasurements: MeasurementsData = try instrument.getInstrumentsData();
+        const allMeasurements: MeasurementsData = try instrument.getInstrumentsData(self.allocator);
         defer allMeasurements.deinit(self.allocator);
 
         switch (allMeasurements) {
             .int => {
-                var deduped = std.ArrayList(Measurement(u64)).init(self.allocator);
-                var temp = std.HashMap(Attributes, u64, Attributes.HashContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+                var deduped = std.ArrayList(Measurement(i64)).init(self.allocator);
+                var temp = std.HashMap(Attributes, i64, Attributes.HashContext, std.hash_map.default_max_load_percentage).init(self.allocator);
                 defer temp.deinit();
 
                 for (allMeasurements.int) |measure| {
                     switch (self.aggregation) {
-                        .Drop => return MeasurementsData{ .int = &[_]Measurement(u64){} },
+                        .Drop => return MeasurementsData{ .int = &[_]Measurement(i64){} },
                         .Sum, .ExplicitBucketHistogram => {
                             const key = Attributes.with(measure.attributes);
                             const value = measure.value;
@@ -482,7 +482,7 @@ pub const AggregatedMetrics = struct {
                 var iter = temp.iterator();
                 while (iter.next()) |entry| {
                     // TODO add sharedAttributes to the measurements attributes.
-                    try deduped.append(Measurement(u64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
+                    try deduped.append(Measurement(i64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
                 }
                 return .{ .int = try deduped.toOwnedSlice() };
             },
@@ -522,7 +522,7 @@ pub const AggregatedMetrics = struct {
     }
 };
 
-test "aggregated metrics from meter without attributes" {
+test "aggregated metrics deduplicated from meter without attributes" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
@@ -540,10 +540,10 @@ test "aggregated metrics from meter without attributes" {
     var deduped = try aggregated.deduplicate(instrument.*);
     defer deduped.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(Measurement(u64){ .value = 4 }, deduped.int[0]);
+    try std.testing.expectEqualDeep(Measurement(i64){ .value = 4 }, deduped.int[0]);
 }
 
-test "aggregated metrics from meter with attributes" {
+test "aggregated metrics deduplicated from meter with attributes" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
@@ -570,7 +570,7 @@ test "aggregated metrics from meter with attributes" {
     const attrs = try Attributes.from(std.testing.allocator, .{ "key", val });
     defer if (attrs) |a| std.testing.allocator.free(a);
 
-    try std.testing.expectEqualDeep(Measurement(u64){
+    try std.testing.expectEqualDeep(Measurement(i64){
         .attributes = attrs,
         .value = 4,
     }, deduped.int[0]);
