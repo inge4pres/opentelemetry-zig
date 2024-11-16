@@ -1,5 +1,5 @@
 const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
-const Instrument = @import("../../api/metrics/instrument.zig");
+const instrument = @import("../../api/metrics/instrument.zig");
 
 /// Defines the ways and means to compute aggregated metrics.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#aggregation
@@ -11,7 +11,7 @@ pub const Aggregation = enum {
 };
 
 /// Default aggregation for a given kind of instrument.
-pub fn DefaultAggregationFor(kind: Instrument.Kind) Aggregation {
+pub fn DefaultAggregationFor(kind: instrument.Kind) Aggregation {
     return switch (kind) {
         .Counter => Aggregation.Sum,
         .UpDownCounter => Aggregation.Sum,
@@ -20,7 +20,7 @@ pub fn DefaultAggregationFor(kind: Instrument.Kind) Aggregation {
     };
 }
 
-// Temporality
+/// Temporality describes how the value should be used.
 pub const Temporality = enum {
     Cumulative,
     Delta,
@@ -35,7 +35,7 @@ pub const Temporality = enum {
     }
 };
 
-pub fn DefaultTemporalityFor(kind: Instrument.Kind) Temporality {
+pub fn DefaultTemporalityFor(kind: instrument.Kind) Temporality {
     return switch (kind) {
         .Counter => Temporality.Cumulative,
         .UpDownCounter => Temporality.Cumulative,
@@ -43,3 +43,7 @@ pub fn DefaultTemporalityFor(kind: Instrument.Kind) Temporality {
         .Histogram => Temporality.Cumulative,
     };
 }
+
+pub const TemporalitySelector = *const fn (instrument.Kind) Temporality;
+
+pub const AggregationSelector = *const fn (instrument.Kind) Aggregation;

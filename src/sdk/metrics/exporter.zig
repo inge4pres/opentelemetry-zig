@@ -6,8 +6,8 @@ const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
 const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
 
 const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
-const reader = @import("reader.zig");
-const MetricReadError = reader.MetricReadError;
+const MetricReadError = @import("reader.zig").MetricReadError;
+const MetricReader = @import("reader.zig").MetricReader;
 
 pub const ExportResult = enum {
     Success,
@@ -111,7 +111,7 @@ test "metric exporter is called by metric reader" {
 
     var mock = ExporterIface{ .exportFn = mockExporter };
 
-    var rdr = try reader.MetricReader.init(
+    var rdr = try MetricReader.init(
         std.testing.allocator,
         try MetricExporter.new(std.testing.allocator, &mock),
     );
@@ -183,9 +183,9 @@ pub const ExporterIface = struct {
     }
 };
 
-/// ImMemoryExporter stores in memory the metrics data to be exported.
+/// InMemoryExporter stores in memory the metrics data to be exported.
 /// The memory representation uses the types defined in the library.
-pub const ImMemoryExporter = struct {
+pub const InMemoryExporter = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
     data: pbmetrics.MetricsData,
@@ -224,7 +224,7 @@ pub const ImMemoryExporter = struct {
 };
 
 test "in memory exporter stores data" {
-    var inMemExporter = try ImMemoryExporter.init(std.testing.allocator);
+    var inMemExporter = try InMemoryExporter.init(std.testing.allocator);
     defer inMemExporter.deinit();
 
     const exporter = try MetricExporter.new(std.testing.allocator, &inMemExporter.exporter);
@@ -289,4 +289,130 @@ test "in memory exporter stores data" {
     const sum: pbmetrics.Sum = entry.scope_metrics.items[0].metrics.items[0].data.?.sum;
 
     try std.testing.expectEqual(sum.data_points.items[0].value.?.as_int, 1);
+}
+
+/// A periodic exporting metric reader is a specialization of MetricReader
+/// that periodically exports metrics data to a destination.
+/// The exporter should be a push-based exporter.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#periodic-exporting-metricreader
+pub const PeriodicExportingMetricReader = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    exportIntervalMillis: u64,
+    exportTimeoutMillis: u64,
+
+    // Lock helper to signal shutdown is in progress
+    shuttingDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    // This reader will collect metrics data from the MeterProvider.
+    reader: *MetricReader,
+
+    // The intervals at which the reader should export metrics data
+    // and wait for each operation to complete.
+    // Default values are dicated by the OpenTelemetry specification.
+    const defaultExportIntervalMillis: u64 = 60000;
+    const defaultExportTimeoutMillis: u64 = 30000;
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        reader: *MetricReader,
+        exportIntervalMs: ?u64,
+        exportTimeoutMs: ?u64,
+    ) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .allocator = allocator,
+            .reader = reader,
+            .exportIntervalMillis = exportIntervalMs orelse defaultExportIntervalMillis,
+            .exportTimeoutMillis = exportTimeoutMs orelse defaultExportTimeoutMillis,
+        };
+        try s.start();
+        return s;
+    }
+
+    fn start(self: *Self) !void {
+        const th = try std.Thread.spawn(
+            .{},
+            collectAndExport,
+            .{self},
+        );
+        th.detach();
+        return;
+    }
+
+    pub fn shutdown(self: *Self) void {
+        self.shuttingDown.store(true, .release);
+        self.allocator.destroy(self);
+    }
+};
+
+// Function that collects metrics from the reader and exports it to the destination.
+// FIXME there is not a timeout for the collect operation.
+fn collectAndExport(periodicExp: *PeriodicExportingMetricReader) void {
+    // The execution should continue until the reader is shutting down
+    while (periodicExp.shuttingDown.load(.acquire) == false) {
+        if (periodicExp.reader.meterProvider) |_| {
+            // This will also call exporter.exportBatch() every interval.
+            periodicExp.reader.collect() catch |e| {
+                std.debug.print("PeriodicExportingReader: reader collect failed: {?}\n", .{e});
+            };
+        } else {
+            std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{periodicExp.reader});
+        }
+
+        std.time.sleep(periodicExp.exportIntervalMillis * std.time.ns_per_ms);
+    }
+}
+
+test "e2e periodic exporting metric reader" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const waiting: u64 = 10;
+
+    var inMem = try InMemoryExporter.init(std.testing.allocator);
+    defer inMem.deinit();
+
+    var reader = try MetricReader.init(
+        std.testing.allocator,
+        try MetricExporter.new(std.testing.allocator, &inMem.exporter),
+    );
+    defer reader.shutdown();
+
+    var pemr = try PeriodicExportingMetricReader.init(
+        std.testing.allocator,
+        reader,
+        waiting,
+        null,
+    );
+    defer pemr.shutdown();
+
+    try mp.addReader(pemr.reader);
+
+    var meter = try mp.getMeter(.{ .name = "test-reader" });
+    var counter = try meter.createCounter(u64, .{
+        .name = "requests",
+        .description = "a test counter",
+    });
+    try counter.add(10, .{});
+
+    var histogram = try meter.createHistogram(u64, .{
+        .name = "latency",
+        .description = "a test histogram",
+        .histogramOpts = .{ .explicitBuckets = &.{
+            1.0,
+            10.0,
+            100.0,
+        } },
+    });
+    try histogram.record(10, .{});
+
+    std.time.sleep(waiting * 2 * std.time.ns_per_ms);
+
+    const data = try inMem.fetch();
+    defer data.deinit();
+
+    std.debug.assert(data.resource_metrics.items.len == 1);
+    std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 2);
 }

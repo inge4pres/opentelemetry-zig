@@ -22,6 +22,8 @@ test "measurement with attributes" {
     try std.testing.expect(m.value == 42);
 }
 
+/// A union of measurements with either integer or double values.
+/// This is used to represent the data collected by a meter.
 pub const MeasurementsData = union(enum) {
     int: []Measurement(i64),
     double: []Measurement(f64),
@@ -31,5 +33,19 @@ pub const MeasurementsData = union(enum) {
             .int => allocator.free(self.int),
             .double => allocator.free(self.double),
         }
+    }
+};
+
+/// A set of measurements with a schema URL and optional attributes,
+/// representing the data collected by a meter.
+pub const MeterMeasurements = struct {
+    name: []const u8,
+    attributes: ?[]Attribute,
+    schemaUrl: ?[]const u8,
+    data: MeasurementsData,
+
+    pub fn deinit(self: *MeterMeasurements, allocator: std.mem.Allocator) void {
+        self.data.deinit(allocator);
+        allocator.destroy(self);
     }
 };
