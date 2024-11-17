@@ -23,6 +23,7 @@ fn keyValue(comptime T: type) type {
     };
 }
 
+/// Represents a value that can be stored in an Attribute.
 pub const AttributeValue = union(enum) {
     bool: bool,
     string: []const u8,
@@ -89,6 +90,7 @@ pub const AttributeValue = union(enum) {
     }
 };
 
+/// Represents a key-value pair.
 pub const Attribute = struct {
     key: []const u8,
     value: AttributeValue,
@@ -143,6 +145,8 @@ pub const Attributes = struct {
         }
     };
 
+    /// Creates a slice of attributes from a list of key-value pairs.
+    /// Caller owns the returned memory and should free the slice when done via the same allocator.
     pub fn from(allocator: std.mem.Allocator, keyValues: anytype) !?[]Attribute {
         // Straight copied from the zig std library: std.fmt.
         // Check if the argument is a tuple.

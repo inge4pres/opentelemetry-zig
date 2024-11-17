@@ -13,8 +13,17 @@ const AggregatedMetrics = @import("../../api/metrics/meter.zig").AggregatedMetri
 
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
-const Measurement = @import("../../api/metrics/measurement.zig").Measurement;
+const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 const MeasurementsData = @import("../../api/metrics/measurement.zig").MeasurementsData;
+// =======
+// const MeterProvider = @import("meter.zig").MeterProvider;
+// const AggregatedMetrics = @import("meter.zig").AggregatedMetrics;
+// const Attribute = @import("attributes.zig").Attribute;
+// const Attributes = @import("attributes.zig").Attributes;
+// const DataPoint = @import("measurement.zig").DataPoint;
+// const MeasurementsData = @import("measurement.zig").MeasurementsData;
+// const Measurements = @import("measurement.zig").Measurements;
+// >>>>>>> 92c97a2 (refactor: use internal measurements lists, isolate protobuf structs):src/metrics/reader.zig
 
 const view = @import("view.zig");
 const TemporalitySelector = view.TemporalitySelector;
@@ -39,7 +48,7 @@ pub const MetricReadError = error{
 pub const MetricReader = struct {
     allocator: std.mem.Allocator,
     // Exporter is the destination of the metrics data.
-    // MetricReader takes oenwrship of the exporter.
+    // It takes ownership of the collected metrics.
     exporter: *MetricExporter = undefined,
     // We can read the instruments' data points from the meters
     // stored in meterProvider.
@@ -76,8 +85,8 @@ pub const MetricReader = struct {
             // When shutdown has already been called, collect is a no-op.
             return;
         }
-        var metricsData = pbmetrics.MetricsData{ .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(self.allocator) };
-        defer metricsData.deinit();
+        var toBeExported = std.ArrayList(Measurements).init(self.allocator);
+        defer toBeExported.deinit();
 
         if (self.meterProvider) |mp| {
             // Collect the data from each meter provider.
@@ -85,45 +94,19 @@ pub const MetricReader = struct {
             //  MeasurementsData can be ported much more easilty to protobuf structs during export.
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
-
-                // Refactor starts
-
-                // Create a resourceMetric for each Meter.
-                const attrs = try attributesToProtobufKeyValueList(self.allocator, meter.attributes);
-                var rm = pbmetrics.ResourceMetrics{
-                    .resource = pbresource.Resource{ .attributes = attrs.values },
-                    .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).init(self.allocator),
-                };
-                // We only use a single ScopeMetric for each ResourceMetric.
-                var sm = pbmetrics.ScopeMetrics{
-                    .metrics = std.ArrayList(pbmetrics.Metric).init(self.allocator),
-                };
-                var instrIter = meter.instruments.valueIterator();
-                while (instrIter.next()) |i| {
-                    if (toProtobufMetric(self.allocator, self.temporality, i.*)) |metric| {
-                        try sm.metrics.append(metric);
-                    } else |err| {
-                        std.debug.print("MetricReader collect: failed conversion to proto Metric: {?}\n", .{err});
-                    }
-                }
-                try rm.scope_metrics.append(sm);
-                try metricsData.resource_metrics.append(rm);
-
-                // Refactor ends
-                const aggregate = try AggregatedMetrics.init(self.allocator, meter);
-                defer aggregate.deinit();
-
-                const measurements = try aggregate.fetch(meter, self.aggregation);
-                // FIXME: remove when owned by the exporter
-                defer {
-                    for (measurements) |m| m.deinit(self.allocator);
-                    self.allocator.free(measurements);
-                }
+                const measurements = try AggregatedMetrics.fetch(self.allocator, meter, self.aggregation);
+                try toBeExported.appendSlice(measurements);
             }
-            // Finally, export the metrics data through the exporter.
-            // Copy the data to the exporter's memory and each exporter should own it and free it
-            // by calling deinit() on the MetricsData once done.
-            const owned = try metricsData.dupe(self.allocator);
+
+            //TODO: apply the readers' temporality before exporting, optionally keeping the state in the reader.
+            // When .Delta temporality is used, it will report the difference between the value
+            // previsouly collected and the currently collected value.
+
+            // Export the metrics data through the exporter.
+            // The exporter will own the metrics and should free it
+            // by calling deinit() on the MeterMeasurements once done.
+            //FIXME: the exporter doen not know which allocator was used to allocate the MeterMeasurements.
+            const owned = try toBeExported.toOwnedSlice();
             switch (self.exporter.exportBatch(owned)) {
                 ExportResult.Success => return,
                 ExportResult.Failure => return MetricReadError.ExportFailed,
@@ -344,8 +327,13 @@ test "metric reader custom temporality" {
     try reader.collect();
 
     const data = try inMem.fetch();
-    defer data.deinit();
+    defer {
+        for (data) |d| {
+            var me = d;
+            me.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(data);
+    }
 
-    std.debug.assert(data.resource_metrics.items.len == 1);
-    std.debug.assert(data.resource_metrics.items[0].scope_metrics.items[0].metrics.items.len == 1);
+    std.debug.assert(data.len == 1);
 }

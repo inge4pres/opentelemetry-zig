@@ -3,7 +3,7 @@ const std = @import("std");
 const spec = @import("spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
-const Measurement = @import("measurement.zig").Measurement;
+const DataPoint = @import("measurement.zig").DataPoint;
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
 pub const Kind = enum {
@@ -179,11 +179,11 @@ pub fn Counter(comptime T: type) type {
         /// Record the measurements for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
         /// The list is cleared after each collection cycle.
-        measurements: std.ArrayList(Measurement(T)),
+        measurements: std.ArrayList(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .measurements = std.ArrayList(Measurement(T)).init(allocator),
+                .measurements = std.ArrayList(DataPoint(T)).init(allocator),
                 .allocator = allocator,
             };
         }
@@ -200,13 +200,13 @@ pub fn Counter(comptime T: type) type {
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
-            try self.measurements.append(Measurement(T){ .value = delta, .attributes = attrs });
+            try self.measurements.append(DataPoint(T){ .value = delta, .attributes = attrs });
         }
 
         fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(Measurement(i64), self.measurements.items.len);
+                    var data = try allocator.alloc(DataPoint(i64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
@@ -231,7 +231,7 @@ pub fn Histogram(comptime T: type) type {
         options: HistogramOptions,
         /// Keeps track of the recorded values for each set of attributes.
         /// The measurements are cleared after each collection cycle.
-        measurements: std.ArrayList(Measurement(T)),
+        measurements: std.ArrayList(DataPoint(T)),
 
         // Keeps track of how many values are summed for each set of attributes.
         counts: std.AutoHashMap(?[]Attribute, usize),
@@ -254,7 +254,7 @@ pub fn Histogram(comptime T: type) type {
             return Self{
                 .allocator = allocator,
                 .options = opts,
-                .measurements = std.ArrayList(Measurement(T)).init(allocator),
+                .measurements = std.ArrayList(DataPoint(T)).init(allocator),
                 .counts = std.AutoHashMap(?[]Attribute, usize).init(allocator),
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(?[]Attribute, []usize).init(allocator),
@@ -279,7 +279,7 @@ pub fn Histogram(comptime T: type) type {
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
-            try self.measurements.append(Measurement(T){ .value = value, .attributes = attrs });
+            try self.measurements.append(DataPoint(T){ .value = value, .attributes = attrs });
 
             // Find the value for the bucket that the value falls in.
             // If the value is greater than the last bucket, it goes in the last bucket.
@@ -338,14 +338,14 @@ pub fn Histogram(comptime T: type) type {
         fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(Measurement(i64), self.measurements.items.len);
+                    var data = try allocator.alloc(DataPoint(i64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
-                    var data = try allocator.alloc(Measurement(f64), self.measurements.items.len);
+                    var data = try allocator.alloc(DataPoint(f64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
                     }
@@ -362,12 +362,12 @@ pub fn Gauge(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        measurements: std.ArrayList(Measurement(T)),
+        measurements: std.ArrayList(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .allocator = allocator,
-                .measurements = std.ArrayList(Measurement(T)).init(allocator),
+                .measurements = std.ArrayList(DataPoint(T)).init(allocator),
             };
         }
 
@@ -383,20 +383,20 @@ pub fn Gauge(comptime T: type) type {
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const attrs = try Attributes.from(self.allocator, attributes);
-            try self.measurements.append(Measurement(T){ .value = value, .attributes = attrs });
+            try self.measurements.append(DataPoint(T){ .value = value, .attributes = attrs });
         }
 
         fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 i16, i32, i64 => {
-                    var data = try allocator.alloc(Measurement(i64), self.measurements.items.len);
+                    var data = try allocator.alloc(DataPoint(i64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
-                    var data = try allocator.alloc(Measurement(f64), self.measurements.items.len);
+                    var data = try allocator.alloc(DataPoint(f64), self.measurements.items.len);
                     for (self.measurements.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
                     }
