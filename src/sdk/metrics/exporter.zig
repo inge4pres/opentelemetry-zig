@@ -72,6 +72,10 @@ pub const MetricExporter = struct {
     }
 
     pub fn shutdown(self: *Self) void {
+        if (self.hasShutDown.load(.acquire)) {
+            // When shutdown has already been called, calling shutdown again is a no-op.
+            return;
+        }
         self.hasShutDown.store(true, .release);
         self.allocator.destroy(self);
     }
@@ -128,10 +132,7 @@ test "metric exporter is called by metric reader" {
 
     var mock = ExporterIface{ .exportFn = mockExporter };
 
-    var rdr = try MetricReader.init(
-        std.testing.allocator,
-        try MetricExporter.new(std.testing.allocator, &mock),
-    );
+    var rdr = try MetricReader.init(std.testing.allocator, &mock);
     defer rdr.shutdown();
 
     try mp.addReader(rdr);
@@ -306,18 +307,13 @@ test "in memory exporter stores data" {
     std.debug.assert(data.len == howMany);
 
     try std.testing.expectEqualDeep(counterMeasure[0], data[0].data.int[0]);
-
-    // try std.testing.expectEqual(pbmetrics.Sum, @TypeOf(entry.scope_metrics.items[0].metrics.items[0].data.?.sum));
-    // const sum: pbmetrics.Sum = entry.scope_metrics.items[0].metrics.items[0].data.?.sum;
-
-    // try std.testing.expectEqual(sum.data_points.items[0].value.?.as_int, 1);
 }
 
-/// A periodic exporting metric reader is a specialization of MetricReader
+/// A periodic exporting reader is a specialization of MetricReader
 /// that periodically exports metrics data to a destination.
-/// The exporter should be a push-based exporter.
+/// The exporter configured in init() should be a push-based exporter.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#periodic-exporting-metricreader
-pub const PeriodicExportingMetricReader = struct {
+pub const PeriodicExportingReader = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
@@ -338,21 +334,27 @@ pub const PeriodicExportingMetricReader = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        reader: *MetricReader,
+        mp: *MeterProvider,
+        exporter: *ExporterIface,
         exportIntervalMs: ?u64,
         exportTimeoutMs: ?u64,
     ) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
-            .reader = reader,
+            .reader = try MetricReader.init(
+                std.testing.allocator,
+                exporter,
+            ),
             .exportIntervalMillis = exportIntervalMs orelse defaultExportIntervalMillis,
             .exportTimeoutMillis = exportTimeoutMs orelse defaultExportTimeoutMillis,
         };
+        try mp.addReader(s.reader);
+
         const th = try std.Thread.spawn(
             .{},
             collectAndExport,
-            .{ reader, s.shuttingDown, s.exportIntervalMillis, s.exportTimeoutMillis },
+            .{ s.reader, &s.shuttingDown, s.exportIntervalMillis, s.exportTimeoutMillis },
         );
         th.detach();
         return s;
@@ -360,6 +362,7 @@ pub const PeriodicExportingMetricReader = struct {
 
     pub fn shutdown(self: *Self) void {
         self.shuttingDown.store(true, .release);
+        self.reader.shutdown();
         self.allocator.destroy(self);
     }
 };
@@ -368,13 +371,13 @@ pub const PeriodicExportingMetricReader = struct {
 // FIXME there is not a timeout for the collect operation.
 fn collectAndExport(
     reader: *MetricReader,
-    shuttingDown: std.atomic.Value(bool),
+    shuttingDown: *std.atomic.Value(bool),
     exportIntervalMillis: u64,
     // TODO: add a timeout for the export operation
     _: u64,
 ) void {
     // The execution should continue until the reader is shutting down
-    while (shuttingDown.load(.acquire) == false) {
+    while (!shuttingDown.*.load(.acquire)) {
         if (reader.meterProvider) |_| {
             // This will also call exporter.exportBatch() every interval.
             reader.collect() catch |e| {
@@ -397,21 +400,14 @@ test "e2e periodic exporting metric reader" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
-    var reader = try MetricReader.init(
+    var per = try PeriodicExportingReader.init(
         std.testing.allocator,
-        try MetricExporter.new(std.testing.allocator, &inMem.exporter),
-    );
-    defer reader.shutdown();
-
-    try mp.addReader(reader);
-
-    var pemr = try PeriodicExportingMetricReader.init(
-        std.testing.allocator,
-        reader,
+        mp,
+        &inMem.exporter,
         waiting,
         null,
     );
-    defer pemr.shutdown();
+    defer per.shutdown();
 
     var meter = try mp.getMeter(.{ .name = "test-reader" });
     var counter = try meter.createCounter(u64, .{
@@ -432,7 +428,7 @@ test "e2e periodic exporting metric reader" {
     try histogram.record(1.4, .{});
     try histogram.record(10.4, .{});
 
-    std.time.sleep(waiting * 2 * std.time.ns_per_ms);
+    std.time.sleep(waiting * 4 * std.time.ns_per_ms);
 
     const data = try inMem.fetch();
 
