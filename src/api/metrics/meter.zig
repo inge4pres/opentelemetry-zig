@@ -429,6 +429,7 @@ pub const AggregatedMetrics = struct {
     fn deduplicate(allocator: std.mem.Allocator, instr: *Instrument, aggregation: view.Aggregation) !MeasurementsData {
         // This function is only called on read/export
         // which is much less frequent than other SDK operations.
+        // TODO: update to @branchHint in 0.14+
         @setCold(true);
 
         const allMeasurements: MeasurementsData = try instr.getInstrumentsData(allocator);
