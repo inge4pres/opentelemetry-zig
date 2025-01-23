@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) void {
             "proto-src/opentelemetry/proto/common/v1/common.proto",
             "proto-src/opentelemetry/proto/resource/v1/resource.proto",
             "proto-src/opentelemetry/proto/metrics/v1/metrics.proto",
+            "proto-src/opentelemetry/proto/trace/v1/trace.proto",
         },
         .include_directories = &.{
             // Importsin proto files requires that the top-level directory
