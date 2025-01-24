@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const spec = @import("spec.zig");
-const Attribute = @import("attributes.zig").Attribute;
-const Attributes = @import("attributes.zig").Attributes;
+const Attribute = @import("../../attributes.zig").Attribute;
+const Attributes = @import("../../attributes.zig").Attributes;
 
 pub const Kind = enum {
     Counter,

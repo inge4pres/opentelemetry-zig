@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const spec = @import("spec.zig");
-const Attribute = @import("attributes.zig").Attribute;
-const Attributes = @import("attributes.zig").Attributes;
+const Attribute = @import("../../attributes.zig").Attribute;
+const Attributes = @import("../../attributes.zig").Attributes;
 
 const Instrument = @import("instrument.zig").Instrument;
 const Kind = @import("instrument.zig").Kind;
@@ -10,7 +10,7 @@ const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const Counter = @import("instrument.zig").Counter;
 const Histogram = @import("instrument.zig").Histogram;
 const Gauge = @import("instrument.zig").Gauge;
-const MetricReader = @import("reader.zig").MetricReader;
+const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
 
 const defaultMeterVersion = "0.1.0";
 

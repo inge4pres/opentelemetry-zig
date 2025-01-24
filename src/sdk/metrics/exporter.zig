@@ -2,10 +2,10 @@ const std = @import("std");
 
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pbmetrics = @import("../opentelemetry/proto/metrics/v1.pb.zig");
-const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
+const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
+const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
 
-const MeterProvider = @import("meter.zig").MeterProvider;
+const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
 const reader = @import("reader.zig");
 const MetricReadError = reader.MetricReadError;
 

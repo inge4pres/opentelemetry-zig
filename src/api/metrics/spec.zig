@@ -1,6 +1,6 @@
 const std = @import("std");
-const pbcommon = @import("../opentelemetry/proto/common/v1.pb.zig");
-const pbutils = @import("../pbutils.zig");
+const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
+const pbutils = @import("../../pbutils.zig");
 
 const MeterProvider = @import("meter.zig").MeterProvider;
 const MeterOptions = @import("meter.zig").MeterOptions;
