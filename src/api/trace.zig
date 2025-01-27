@@ -16,11 +16,7 @@ pub const TraceID = struct {
     }
 
     pub fn isValid(self: Self) bool {
-        return Self.isValidValue(self.value);
-    }
-
-    pub fn isValidValue(value: [16]u8) bool {
-        for (value) |item| {
+        for (self.value) |item| {
             if (item != 0) {
                 return true;
             }
@@ -42,11 +38,7 @@ pub const SpanID = struct {
     }
 
     pub fn isValid(self: Self) bool {
-        return Self.isValidValue(self.value);
-    }
-
-    pub fn isValidValue(value: [8]u8) bool {
-        for (value) |item| {
+        for (self.value) |item| {
             if (item != 0) {
                 return true;
             }

@@ -54,42 +54,49 @@ pub const RandomIDGenerator = struct {
     pub fn newIDs(ctx: *anyopaque) TraceSpanID {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        var raw_trace_id: [16]u8 = undefined;
+        var trace_span_id = TraceSpanID{
+            .trace_id = trace.TraceID.init(undefined),
+            .span_id = trace.SpanID.init(undefined),
+        };
         while (true) {
+            var raw_trace_id: [16]u8 = undefined;
             self.random.bytes(raw_trace_id[0..raw_trace_id.len]);
 
-            if (trace.TraceID.isValidValue(raw_trace_id)) {
+            const trace_id = trace.TraceID.init(raw_trace_id);
+            if (trace_id.isValid()) {
+                trace_span_id.trace_id = trace_id;
                 break;
             }
         }
-        var raw_span_id: [8]u8 = undefined;
+
         while (true) {
+            var raw_span_id: [8]u8 = undefined;
             self.random.bytes(raw_span_id[0..raw_span_id.len]);
 
-            if (trace.SpanID.isValidValue(raw_span_id)) {
+            const span_id = trace.SpanID.init(raw_span_id);
+            if (span_id.isValid()) {
+                trace_span_id.span_id = span_id;
                 break;
             }
         }
 
-        return .{
-            .trace_id = trace.TraceID.init(raw_trace_id),
-            .span_id = trace.SpanID.init(raw_span_id),
-        };
+        return trace_span_id;
     }
 
     pub fn newSpanID(ctx: *anyopaque, _: trace.TraceID) trace.SpanID {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        var raw_span_id: [8]u8 = undefined;
         while (true) {
+            var raw_span_id: [8]u8 = undefined;
             self.random.bytes(raw_span_id[0..raw_span_id.len]);
+            const span_id = trace.SpanID.init(raw_span_id);
 
-            if (trace.SpanID.isValidValue(raw_span_id)) {
-                break;
+            if (span_id.isValid()) {
+                return span_id;
             }
         }
 
-        return trace.SpanID.init(raw_span_id);
+        unreachable;
     }
 };
 
