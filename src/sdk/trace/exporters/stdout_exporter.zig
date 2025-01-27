@@ -1,6 +1,6 @@
 const std = @import("std");
-const pb = @import("../../../opentelemetry/proto/trace/v1.pb.zig");
-const protobuf = @import("protobuf");
+
+const trace = @import("../../../api/trace.zig");
 const SpanExporter = @import("../span_exporter.zig").SpanExporter;
 
 /// GenericWriterExporter is the generic SpanExporter that outputs spans to the given writer.
@@ -18,7 +18,7 @@ fn GenericWriterExporter(
             };
         }
 
-        pub fn exportSpans(ctx: *anyopaque, spans: []pb.Span) anyerror!void {
+        pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             try std.json.stringify(spans, .{}, self.writer);
         }
@@ -51,8 +51,9 @@ test "GenericWriterExporter" {
     var inmemory_exporter = InmemoryExporter.init(out_buf.writer());
     var exporter = inmemory_exporter.asSpanExporter();
 
-    var spans = [_]pb.Span{};
+    var spans = [_]trace.Span{};
     try exporter.exportSpans(spans[0..spans.len]);
 
+    std.debug.print("{s}", .{out_buf.items});
     // TODO: detailed output test
 }

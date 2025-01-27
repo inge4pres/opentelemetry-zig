@@ -1,4 +1,4 @@
-const pb = @import("../../opentelemetry/proto/trace/v1.pb.zig");
+const trace = @import("../../api/trace.zig");
 
 /// SpanExporter is the interface that provides an
 pub const SpanExporter = struct {
@@ -15,7 +15,7 @@ pub const SpanExporter = struct {
         /// but it is not defined in the OpenTelemetry specification, so for now we don't use it.
         exportSpansFn: *const fn (
             ctx: *anyopaque,
-            spans: []pb.Span,
+            spans: []trace.Span,
         ) anyerror!void,
 
         shutdownFn: *const fn (ctx: *anyopaque) anyerror!void,
@@ -23,7 +23,7 @@ pub const SpanExporter = struct {
 
     pub fn exportSpans(
         self: Self,
-        spans: []pb.Span,
+        spans: []trace.Span,
     ) anyerror!void {
         return self.vtable.exportSpansFn(self.ptr, spans);
     }
