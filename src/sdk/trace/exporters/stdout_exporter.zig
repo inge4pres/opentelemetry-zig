@@ -51,9 +51,13 @@ test "GenericWriterExporter" {
     var inmemory_exporter = InmemoryExporter.init(out_buf.writer());
     var exporter = inmemory_exporter.asSpanExporter();
 
-    var spans = [_]trace.Span{};
+    var spans = [_]trace.Span{
+        .{},
+    };
     try exporter.exportSpans(spans[0..spans.len]);
 
+    const expected = "";
+    try std.testing.expectEqualSlices(u8, expected[0..expected.len], out_buf.items);
     std.debug.print("{s}", .{out_buf.items});
     // TODO: detailed output test
 }
