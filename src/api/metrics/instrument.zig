@@ -68,6 +68,7 @@ pub const Instrument = struct {
     pub fn counter(self: *Self, comptime T: type) !*Counter(T) {
         const c = try self.allocator.create(Counter(T));
         c.* = Counter(T).init(self.allocator);
+        errdefer self.allocator.destroy(c);
         self.data = switch (T) {
             u16 => .{ .Counter_u16 = c },
             u32 => .{ .Counter_u32 = c },
@@ -83,6 +84,7 @@ pub const Instrument = struct {
     pub fn upDownCounter(self: *Self, comptime T: type) !*Counter(T) {
         const c = try self.allocator.create(Counter(T));
         c.* = Counter(T).init(self.allocator);
+        errdefer self.allocator.destroy(c);
         self.data = switch (T) {
             i16 => .{ .UpDownCounter_i16 = c },
             i32 => .{ .UpDownCounter_i32 = c },
@@ -98,6 +100,7 @@ pub const Instrument = struct {
     pub fn histogram(self: *Self, comptime T: type) !*Histogram(T) {
         const h = try self.allocator.create(Histogram(T));
         h.* = try Histogram(T).init(self.allocator, self.opts.histogramOpts);
+        errdefer self.allocator.destroy(h);
         self.data = switch (T) {
             u16 => .{ .Histogram_u16 = h },
             u32 => .{ .Histogram_u32 = h },
@@ -115,6 +118,7 @@ pub const Instrument = struct {
     pub fn gauge(self: *Self, comptime T: type) !*Gauge(T) {
         const g = try self.allocator.create(Gauge(T));
         g.* = Gauge(T).init(self.allocator);
+        errdefer self.allocator.destroy(g);
         self.data = switch (T) {
             i16 => .{ .Gauge_i16 = g },
             i32 => .{ .Gauge_i32 = g },
@@ -410,6 +414,14 @@ pub fn Gauge(comptime T: type) type {
 
 const MeterProvider = @import("meter.zig").MeterProvider;
 
+test "counter with unsupported type does not leak" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    const err = meter.createCounter(u1, .{ .name = "a-counter" });
+    try std.testing.expectError(spec.FormatError.UnsupportedValueType, err);
+}
+
 test "meter can create counter instrument and record increase without attributes" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
@@ -570,8 +582,10 @@ test "instrument fetches measurements from inner" {
     defer std.testing.allocator.free(id);
 
     if (meter.instruments.get(id)) |instrument| {
-        var measurements = try instrument.getInstrumentsData(std.testing.allocator);
-        defer measurements.deinit(std.testing.allocator);
+        const measurements = try instrument.getInstrumentsData(std.testing.allocator);
+        defer switch (measurements) {
+            inline else => |list| std.testing.allocator.free(list),
+        };
 
         std.debug.assert(measurements.int.len == 1);
         try std.testing.expectEqual(@as(i64, 100), measurements.int[0].value);

@@ -1,4 +1,6 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
+
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const Kind = @import("instrument.zig").Kind;
@@ -30,17 +32,10 @@ test "datapoint with attributes" {
 pub const MeasurementsData = union(enum) {
     int: []DataPoint(i64),
     double: []DataPoint(f64),
-
-    pub fn deinit(self: MeasurementsData, allocator: std.mem.Allocator) void {
-        switch (self) {
-            .int => allocator.free(self.int),
-            .double => allocator.free(self.double),
-        }
-    }
 };
 
 /// A set of data points with a series of metadata coming from the meter and the instrument.
-/// It holds the data collected by a single instrument inside a meter.
+/// Holds the data collected by a single instrument inside a meter.
 pub const Measurements = struct {
     meterName: []const u8,
     meterAttributes: ?[]Attribute = null,
@@ -52,6 +47,8 @@ pub const Measurements = struct {
     data: MeasurementsData,
 
     pub fn deinit(self: *Measurements, allocator: std.mem.Allocator) void {
-        self.data.deinit(allocator);
+        switch (self.data) {
+            inline else => |list| allocator.free(list),
+        }
     }
 };

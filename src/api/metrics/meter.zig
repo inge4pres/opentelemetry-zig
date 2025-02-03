@@ -428,21 +428,31 @@ const view = @import("../../sdk/metrics/view.zig");
 pub const AggregatedMetrics = struct {
     fn deduplicate(allocator: std.mem.Allocator, instr: *Instrument, aggregation: view.Aggregation) !MeasurementsData {
         // This function is only called on read/export
-        // which is much less frequent than other SDK operations.
+        // which is much less frequent than other SDK operations (e.g. counter add).
         // TODO: update to @branchHint in 0.14+
         @setCold(true);
 
         const allMeasurements: MeasurementsData = try instr.getInstrumentsData(allocator);
-        defer allMeasurements.deinit(allocator);
+        defer {
+            switch (allMeasurements) {
+                inline else => |list| allocator.free(list),
+            }
+        }
 
         switch (allMeasurements) {
             .int => {
                 var deduped = std.ArrayList(DataPoint(i64)).init(allocator);
-                defer deduped.deinit();
 
-                var temp = std.HashMap(Attributes, i64, Attributes.HashContext, std.hash_map.default_max_load_percentage).init(allocator);
+                var temp = std.HashMap(
+                    Attributes,
+                    i64,
+                    Attributes.HashContext,
+                    std.hash_map.default_max_load_percentage,
+                ).init(allocator);
                 defer temp.deinit();
 
+                // iterate over all measurements and deduplicate them by applying the aggregation function
+                // using the attributes as the key.
                 for (allMeasurements.int) |measure| {
                     switch (aggregation) {
                         .Drop => return MeasurementsData{ .int = &[_]DataPoint(i64){} },
@@ -465,14 +475,12 @@ pub const AggregatedMetrics = struct {
 
                 var iter = temp.iterator();
                 while (iter.next()) |entry| {
-                    // TODO add sharedAttributes to the measurements attributes.
                     try deduped.append(DataPoint(i64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
                 }
                 return .{ .int = try deduped.toOwnedSlice() };
             },
             .double => {
                 var deduped = std.ArrayList(DataPoint(f64)).init(allocator);
-                defer deduped.deinit();
 
                 var temp = std.AutoHashMap(Attributes, f64).init(allocator);
                 defer temp.deinit();
@@ -499,7 +507,6 @@ pub const AggregatedMetrics = struct {
 
                 var iter = temp.iterator();
                 while (iter.next()) |entry| {
-                    // TODO add sharedAttributes (the meter's attributes)to the measurements attributes.
                     try deduped.append(DataPoint(f64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
                 }
                 return .{ .double = try deduped.toOwnedSlice() };
@@ -547,7 +554,9 @@ test "aggregated metrics deduplicated from meter without attributes" {
     const instr = iter.next() orelse unreachable;
 
     const deduped = try AggregatedMetrics.deduplicate(std.testing.allocator, instr.*, .Sum);
-    defer deduped.deinit(std.testing.allocator);
+    defer switch (deduped) {
+        inline else => |m| std.testing.allocator.free(m),
+    };
 
     try std.testing.expectEqualDeep(DataPoint(i64){ .value = 4 }, deduped.int[0]);
 }
@@ -570,8 +579,10 @@ test "aggregated metrics deduplicated from meter with attributes" {
     var iter = meter.instruments.valueIterator();
     const instr = iter.next() orelse unreachable;
 
-    var deduped = try AggregatedMetrics.deduplicate(std.testing.allocator, instr.*, .Sum);
-    defer deduped.deinit(std.testing.allocator);
+    const deduped = try AggregatedMetrics.deduplicate(std.testing.allocator, instr.*, .Sum);
+    defer switch (deduped) {
+        inline else => |m| std.testing.allocator.free(m),
+    };
 
     const attrs = try Attributes.from(std.testing.allocator, .{ "key", val });
     defer if (attrs) |a| std.testing.allocator.free(a);
