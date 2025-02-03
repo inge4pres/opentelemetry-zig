@@ -49,7 +49,7 @@ pub const MetricReader = struct {
     temporality: TemporalitySelector = view.DefaultTemporalityFor,
     aggregation: AggregationSelector = view.DefaultAggregationFor,
     // Signal that shutdown has been called.
-    hasShutDown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    hasShutDown: bool = false,
     mx: std.Thread.Mutex = std.Thread.Mutex{},
 
     const Self = @This();
@@ -74,28 +74,29 @@ pub const MetricReader = struct {
     }
 
     pub fn collect(self: *Self) !void {
+        if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
+            // When shutdown has already been called, collect is a no-op.
+            return;
+        }
         if (!self.mx.tryLock()) {
             return MetricReadError.ConcurrentCollectNotAllowed;
         }
         defer self.mx.unlock();
-
-        if (self.hasShutDown.load(.acquire)) {
-            // When shutdown has already been called, collect is a no-op.
-            return;
-        }
         var toBeExported = std.ArrayList(Measurements).init(self.allocator);
         defer toBeExported.deinit();
 
         if (self.meterProvider) |mp| {
             // Collect the data from each meter provider.
-            // TODO: extract MeasurmentsData from all meters and accumulate them with Meter attributes.
-            //  MeasurementsData can be ported much more easilty to protobuf structs during export.
+            // Measurements can be ported to protobuf structs during OTLP export.
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
-                const measurements: []Measurements = try AggregatedMetrics.fetch(self.allocator, meter, self.aggregation);
-                defer self.allocator.free(measurements);
-
+                const measurements: []Measurements = AggregatedMetrics.fetch(self.allocator, meter, self.aggregation) catch |err| {
+                    std.debug.print("MetricReader: error aggregating data points from meter {s}: {?}", .{ meter.name, err });
+                    continue;
+                };
+                // this makes a copy of the measurements to the array list
                 try toBeExported.appendSlice(measurements);
+                self.allocator.free(measurements);
             }
 
             //TODO: apply temporality before exporting, optionally keeping state in the reader.
@@ -105,7 +106,7 @@ pub const MetricReader = struct {
 
             // Export the metrics data through the exporter.
             // The exporter will own the metrics and should free it
-            // by calling deinit() on the MeterMeasurements once done.
+            // by calling deinit() on the Measurements once done.
             // MetricExporter must be built with the same allocator as MetricReader
             // to ensure that the memory is managed correctly.
             const owned = try toBeExported.toOwnedSlice();
@@ -120,10 +121,10 @@ pub const MetricReader = struct {
     }
 
     pub fn shutdown(self: *Self) void {
+        @atomicStore(bool, &self.hasShutDown, true, .release);
         self.collect() catch |e| {
             std.debug.print("MetricReader shutdown: error while collecting metrics: {?}\n", .{e});
         };
-        self.hasShutDown.store(true, .release);
         self.exporter.shutdown();
         self.allocator.destroy(self);
     }
@@ -164,8 +165,7 @@ test "metric reader collects data from meter provider" {
 
     try reader.collect();
 
-    const data = try inMem.fetch();
-    defer std.testing.allocator.free(data);
+    _ = try inMem.fetch();
 }
 
 fn deltaTemporality(_: Kind) view.Temporality {
