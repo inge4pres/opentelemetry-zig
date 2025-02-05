@@ -1,5 +1,5 @@
 const std = @import("std");
-const a = @import("attributes.zig");
+const a = @import("../../attributes.zig");
 const Attribute = a.Attribute;
 const Attributes = a.Attributes;
 
