@@ -35,7 +35,7 @@ pub const AnyValue = struct {
             .double_value = fd(4, .{ .FixedInt = .I64 }),
             .array_value = fd(5, .{ .SubMessage = {} }),
             .kvlist_value = fd(6, .{ .SubMessage = {} }),
-            .bytes_value = fd(7, .String),
+            .bytes_value = fd(7, .Bytes),
         };
     };
 

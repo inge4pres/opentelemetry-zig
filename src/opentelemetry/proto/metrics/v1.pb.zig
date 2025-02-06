@@ -329,8 +329,8 @@ pub const Exemplar = struct {
     pub const _desc_table = .{
         .filtered_attributes = fd(7, .{ .List = .{ .SubMessage = {} } }),
         .time_unix_nano = fd(2, .{ .FixedInt = .I64 }),
-        .span_id = fd(4, .String),
-        .trace_id = fd(5, .String),
+        .span_id = fd(4, .Bytes),
+        .trace_id = fd(5, .Bytes),
         .value = fd(null, .{ .OneOf = value_union }),
     };
 
