@@ -6,20 +6,36 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  ZIG_VERSION: 0.13.0
+
 jobs:
+
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: mlugg/setup-zig@v1
         with:
-          version: 0.13.0
+          version: ${{ env.ZIG_VERSION }}
       - run: zig fmt --check .
+
   run_test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: mlugg/setup-zig@v1
         with:
-          version: 0.13.0
+          version: ${{ env.ZIG_VERSION }}
       - run: zig build test
+
+  build_examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - run: zig build examples
+ 
+ 
