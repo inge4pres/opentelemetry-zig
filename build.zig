@@ -43,13 +43,11 @@ pub fn build(b: *std.Build) void {
     // debug protoc generation
     protoc_step.verbose = true;
 
-    const gen_proto = b.step("gen-proto", "generates zig files from protocol buffer definitions");
+    const gen_proto = b.step("gen-proto", "Generates Zig files from protobuf definitions");
     gen_proto.dependOn(&protoc_step.step);
 
     const sdk_lib = b.addStaticLibrary(.{
         .name = "opentelemetry-sdk",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
         .root_source_file = b.path("src/sdk.zig"),
         .target = target,
         .optimize = optimize,
@@ -92,4 +90,49 @@ pub fn build(b: *std.Build) void {
 
     test_step.dependOn(&run_sdk_unit_tests.step);
     test_step.dependOn(&api_sdk_unit_tests.step);
+
+    // Examples
+    const examples_step = b.step("examples", "Build and run all examples");
+    examples_step.dependOn(&sdk_lib.step);
+
+    const metrics_examples = buildExamples(b, "examples/metrics", &sdk_lib.root_module) catch |err| {
+        std.debug.print("Error building metrics examples: {}\n", .{err});
+        return;
+    };
+    defer b.allocator.free(metrics_examples);
+    for (metrics_examples) |step| {
+        const run_metrics_example = b.addRunArtifact(step);
+        examples_step.dependOn(&run_metrics_example.step);
+    }
+}
+
+fn buildExamples(b: *std.Build, base_dir: []const u8, otel_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
+    var exes = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
+    errdefer exes.deinit();
+
+    var ex_dir = try std.fs.cwd().openDir(base_dir, .{ .iterate = true });
+    defer ex_dir.close();
+
+    var ex_dir_iter = ex_dir.iterate();
+    while (try ex_dir_iter.next()) |file| {
+        // Get the file name.
+        // If it doesn't end in 'zig' then ignore.
+        const index = std.mem.lastIndexOfScalar(u8, file.name, '.') orelse continue;
+        if (index == 0) continue; // discard dotfiles
+        if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
+
+        const name = file.name[0..index];
+        const example = b.addExecutable(.{
+            .name = name,
+            .root_source_file = b.path(try std.fs.path.join(b.allocator, &.{ base_dir, file.name })),
+            .target = otel_mod.resolved_target.?,
+            // We set the optimization level to ReleaseSafe for examples
+            // because we want to have safety checks.
+            .optimize = .ReleaseSafe,
+        });
+        example.root_module.addImport("opentelemetry-sdk", otel_mod);
+        try exes.append(example);
+    }
+
+    return exes.toOwnedSlice();
 }
