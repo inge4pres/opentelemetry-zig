@@ -18,8 +18,7 @@ pub fn main() !void {
     var in_mem = try sdk.InMemoryExporter.init(fba.allocator());
 
     // Create an exporter and a a metric reader to aggregate the metrics
-    const exporter = try sdk.MetricExporter.new(fba.allocator(), &in_mem.exporter);
-    const mr = try sdk.MetricReader.init(fba.allocator(), exporter);
+    const mr = try sdk.MetricReader.init(fba.allocator(), &in_mem.exporter);
     defer mr.shutdown();
 
     // Register the metric reader to the meter provider
@@ -40,7 +39,7 @@ pub fn main() !void {
 
     // Print the metrics
     const stored_metrics = try in_mem.fetch();
-    defer stored_metrics.deinit();
+    defer fba.allocator().free(stored_metrics);
 
     std.debug.print("metric: {any}\n", .{stored_metrics});
 }

@@ -12,7 +12,7 @@ test {
 pub const MeterProvider = @import("api/metrics/meter.zig").MeterProvider;
 pub const MetricReader = @import("sdk/metrics/reader.zig").MetricReader;
 pub const MetricExporter = @import("sdk/metrics/exporter.zig").MetricExporter;
-pub const InMemoryExporter = @import("sdk/metrics/exporter.zig").ImMemoryExporter;
+pub const InMemoryExporter = @import("sdk/metrics/exporter.zig").InMemoryExporter;
 
 pub const Counter = @import("api/metrics/instrument.zig").Counter;
 pub const UpDownCounter = @import("api/metrics/instrument.zig").Counter;
