@@ -15,15 +15,34 @@ pub fn DataPoint(comptime T: type) type {
         value: T,
         attributes: ?[]Attribute = null,
         // TODO: consider adding a timestamp field
+
+        pub fn new(allocator: std.mem.Allocator, value: T, attributes: anytype) std.mem.Allocator.Error!Self {
+            return Self{ .value = value, .attributes = try Attributes.from(allocator, attributes) };
+        }
+
+        pub fn dupe(self: Self, allocator: std.mem.Allocator) !Self {
+            const duped_attrs = try Attributes.with(self.attributes).dupe(allocator);
+            return Self{ .value = self.value, .attributes = duped_attrs };
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            if (self.attributes) |a| allocator.free(a);
+        }
     };
 }
 
-test "datapoint with attributes" {
-    const key = "name";
-    const attrs = try Attributes.from(std.testing.allocator, .{ key, true });
-    defer std.testing.allocator.free(attrs.?);
+test "datapoint without attributes" {
+    var m = try DataPoint(u32).new(std.testing.allocator, 42, .{});
+    defer m.deinit(std.testing.allocator);
 
-    const m = DataPoint(u32){ .value = 42, .attributes = attrs };
+    try std.testing.expect(m.value == 42);
+    try std.testing.expectEqual(null, m.attributes);
+}
+
+test "datapoint with attributes" {
+    const val: []const u8 = "name";
+    var m = try DataPoint(u32).new(std.testing.allocator, 42, .{ "anykey", val });
+    defer m.deinit(std.testing.allocator);
     try std.testing.expect(m.value == 42);
 }
 
@@ -48,7 +67,10 @@ pub const Measurements = struct {
 
     pub fn deinit(self: *Measurements, allocator: std.mem.Allocator) void {
         switch (self.data) {
-            inline else => |list| allocator.free(list),
+            inline else => |list| {
+                for (list) |*dp| dp.deinit(allocator);
+                allocator.free(list);
+            },
         }
     }
 };

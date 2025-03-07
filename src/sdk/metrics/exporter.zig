@@ -79,13 +79,7 @@ pub const MetricExporter = struct {
         if (@atomicRmw(bool, &self.hasShutDown, .Xchg, true, .acq_rel)) {
             return;
         }
-        // if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
-        //     // When shutdown has already been called, calling shutdown again is a no-op.
-        //     return;
-        // } else {
-        // @atomicStore(bool, &self.hasShutDown, true, .release);
         self.allocator.destroy(self);
-        // }
     }
 };
 
@@ -281,17 +275,15 @@ test "in memory exporter stores data" {
     const exporter = try MetricExporter.new(allocator, &inMemExporter.exporter);
     defer exporter.shutdown();
 
-    const howMany: usize = 2;
-
     const val = @as(u64, 42);
-    const attrs = try Attributes.from(allocator, .{ "key", val });
-    defer std.testing.allocator.free(attrs.?);
 
-    var counterMeasure = try allocator.alloc(DataPoint(i64), 1);
-    counterMeasure[0] = .{ .value = @as(i64, 1), .attributes = attrs };
+    const counter_dp = try DataPoint(i64).new(allocator, 1, .{ "key", val });
+    var counter_measures = try allocator.alloc(DataPoint(i64), 1);
+    counter_measures[0] = counter_dp;
 
-    var histMeasure = try allocator.alloc(DataPoint(f64), 1);
-    histMeasure[0] = .{ .value = @as(f64, 2.0), .attributes = attrs };
+    const hist_dp = try DataPoint(f64).new(allocator, 2.0, .{ "key", val });
+    var hist_measures = try allocator.alloc(DataPoint(f64), 1);
+    hist_measures[0] = hist_dp;
 
     var underTest = std.ArrayList(Measurements).init(allocator);
 
@@ -300,27 +292,23 @@ test "in memory exporter stores data" {
         .meterAttributes = null,
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-abc" },
-        .data = .{ .int = counterMeasure },
+        .data = .{ .int = counter_measures },
     });
     try underTest.append(Measurements{
         .meterName = "another-meter",
         .meterAttributes = null,
         .instrumentKind = .Histogram,
         .instrumentOptions = .{ .name = "histogram-abc" },
-        .data = .{ .double = histMeasure },
+        .data = .{ .double = hist_measures },
     });
 
-    // MetricReader.collect() does a copy of the metrics data,
-    // then calls the exportBatch implementation passing it in.
     const result = exporter.exportBatch(try underTest.toOwnedSlice());
-
-    std.debug.assert(result == .Success);
+    try std.testing.expect(result == .Success);
 
     const data = try inMemExporter.fetch();
 
-    std.debug.assert(data.len == howMany);
-
-    try std.testing.expectEqualDeep(counterMeasure[0], data[0].data.int[0]);
+    try std.testing.expect(data.len == 2);
+    try std.testing.expectEqualDeep(counter_dp, data[0].data.int[0]);
 }
 
 /// A periodic exporting reader is a specialization of MetricReader

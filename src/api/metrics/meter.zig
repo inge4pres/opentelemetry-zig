@@ -426,7 +426,7 @@ const view = @import("../../sdk/metrics/view.zig");
 /// AggregatedMetrics is a collection of metrics that have been aggregated using the
 /// MetricReader's temporality and aggregation functions.
 pub const AggregatedMetrics = struct {
-    fn deduplicate(allocator: std.mem.Allocator, instr: *Instrument, aggregation: view.Aggregation) !MeasurementsData {
+    fn aggregate(allocator: std.mem.Allocator, instr: *Instrument, aggregation: view.Aggregation) !MeasurementsData {
         // This function is only called on read/export
         // which is much less frequent than other SDK operations (e.g. counter add).
         // TODO: update to @branchHint in 0.14+
@@ -475,7 +475,8 @@ pub const AggregatedMetrics = struct {
 
                 var iter = temp.iterator();
                 while (iter.next()) |entry| {
-                    try deduped.append(DataPoint(i64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
+                    const dp = DataPoint(i64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* };
+                    try deduped.append(try dp.dupe(allocator));
                 }
                 return .{ .int = try deduped.toOwnedSlice() };
             },
@@ -507,7 +508,8 @@ pub const AggregatedMetrics = struct {
 
                 var iter = temp.iterator();
                 while (iter.next()) |entry| {
-                    try deduped.append(DataPoint(f64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* });
+                    const dp = DataPoint(f64){ .attributes = entry.key_ptr.*.attributes, .value = entry.value_ptr.* };
+                    try deduped.append(try dp.dupe(allocator));
                 }
                 return .{ .double = try deduped.toOwnedSlice() };
             },
@@ -517,7 +519,7 @@ pub const AggregatedMetrics = struct {
     /// Fetch the aggreagted metrics from the meter.
     /// Each instrument is an entry of the slice.
     /// Caller owns the returned memory and it should be freed using the AggregatedMetrics allocator.
-    pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, aggregation: view.AggregationSelector) ![]Measurements {
+    pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, aggregationBy: view.AggregationSelector) ![]Measurements {
         @setCold(true);
 
         meter.mx.lock();
@@ -534,7 +536,7 @@ pub const AggregatedMetrics = struct {
                 .meterAttributes = meter.attributes,
                 .instrumentKind = instr.*.kind,
                 .instrumentOptions = instr.*.opts,
-                .data = try deduplicate(allocator, instr.*, aggregation(instr.*.kind)),
+                .data = try aggregate(allocator, instr.*, aggregationBy(instr.*.kind)),
             };
             i += 1;
         }
@@ -553,7 +555,7 @@ test "aggregated metrics deduplicated from meter without attributes" {
     var iter = meter.instruments.valueIterator();
     const instr = iter.next() orelse unreachable;
 
-    const deduped = try AggregatedMetrics.deduplicate(std.testing.allocator, instr.*, .Sum);
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, instr.*, .Sum);
     defer switch (deduped) {
         inline else => |m| std.testing.allocator.free(m),
     };
@@ -579,9 +581,14 @@ test "aggregated metrics deduplicated from meter with attributes" {
     var iter = meter.instruments.valueIterator();
     const instr = iter.next() orelse unreachable;
 
-    const deduped = try AggregatedMetrics.deduplicate(std.testing.allocator, instr.*, .Sum);
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, instr.*, .Sum);
     defer switch (deduped) {
-        inline else => |m| std.testing.allocator.free(m),
+        inline else => |m| {
+            for (deduped.int) |*dp| {
+                dp.deinit(std.testing.allocator);
+            }
+            std.testing.allocator.free(m);
+        },
     };
 
     const attrs = try Attributes.from(std.testing.allocator, .{ "key", val });

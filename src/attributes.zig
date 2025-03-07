@@ -147,7 +147,7 @@ pub const Attributes = struct {
 
     /// Creates a slice of attributes from a list of key-value pairs.
     /// Caller owns the returned memory and should free the slice when done via the same allocator.
-    pub fn from(allocator: std.mem.Allocator, keyValues: anytype) !?[]Attribute {
+    pub fn from(allocator: std.mem.Allocator, keyValues: anytype) std.mem.Allocator.Error!?[]Attribute {
         // Straight copied from the zig std library: std.fmt.
         // Check if the argument is a tuple.
         const ArgsType = @TypeOf(keyValues);
@@ -179,6 +179,15 @@ pub const Attributes = struct {
             i += 1;
         }
         return attrs;
+    }
+
+    /// Copy the attributes into a new slice allocated using the provided allocator.
+    pub fn dupe(self: Self, allocator: std.mem.Allocator) !?[]Attribute {
+        if (self.attributes) |attrs| {
+            return try allocator.dupe(Attribute, attrs);
+        } else {
+            return null;
+        }
     }
 };
 
