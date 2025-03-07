@@ -183,33 +183,33 @@ pub fn Counter(comptime T: type) type {
         /// Record the measurements for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
         /// The list is cleared after each collection cycle.
-        dataPoints: std.ArrayList(DataPoint(T)),
+        data_points: std.ArrayList(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .dataPoints = std.ArrayList(DataPoint(T)).init(allocator),
+                .data_points = std.ArrayList(DataPoint(T)).init(allocator),
                 .allocator = allocator,
             };
         }
 
         fn deinit(self: *Self) void {
-            for (self.dataPoints.items) |*m| {
+            for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.dataPoints.deinit();
+            self.data_points.deinit();
         }
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
             const dp = try DataPoint(T).new(self.allocator, delta, attributes);
-            try self.dataPoints.append(dp);
+            try self.data_points.append(dp);
         }
 
         fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(DataPoint(i64), self.dataPoints.items.len);
-                    for (self.dataPoints.items, 0..) |m, idx| {
+                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
@@ -233,7 +233,7 @@ pub fn Histogram(comptime T: type) type {
         options: HistogramOptions,
         /// Keeps track of the recorded values for each set of attributes.
         /// The measurements are cleared after each collection cycle.
-        dataPoints: std.ArrayList(DataPoint(T)),
+        data_points: std.ArrayList(DataPoint(T)),
 
         // Keeps track of how many values are summed for each set of attributes.
         counts: std.AutoHashMap(?[]Attribute, usize),
@@ -256,7 +256,7 @@ pub fn Histogram(comptime T: type) type {
             return Self{
                 .allocator = allocator,
                 .options = opts,
-                .dataPoints = std.ArrayList(DataPoint(T)).init(allocator),
+                .data_points = std.ArrayList(DataPoint(T)).init(allocator),
                 .counts = std.AutoHashMap(?[]Attribute, usize).init(allocator),
                 .buckets = buckets,
                 .bucket_counts = std.AutoHashMap(?[]Attribute, []usize).init(allocator),
@@ -265,10 +265,10 @@ pub fn Histogram(comptime T: type) type {
 
         fn deinit(self: *Self) void {
             // Cleanup the arraylist or measures and their attributes.
-            for (self.dataPoints.items) |*m| {
+            for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.dataPoints.deinit();
+            self.data_points.deinit();
             // We don't need to free the counts or bucket_counts keys,
             // because the keys are pointers to the same optional
             // KeyValueList used in the dataPoints ArrayList.
@@ -279,7 +279,7 @@ pub fn Histogram(comptime T: type) type {
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
-            try self.dataPoints.append(dp);
+            try self.data_points.append(dp);
 
             // Find the value for the bucket that the value falls in.
             // If the value is greater than the last bucket, it goes in the last bucket.
@@ -338,15 +338,15 @@ pub fn Histogram(comptime T: type) type {
         fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(DataPoint(i64), self.dataPoints.items.len);
-                    for (self.dataPoints.items, 0..) |m, idx| {
+                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
-                    var data = try allocator.alloc(DataPoint(f64), self.dataPoints.items.len);
-                    for (self.dataPoints.items, 0..) |m, idx| {
+                    var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
                     }
                     return .{ .double = data };
@@ -362,40 +362,40 @@ pub fn Gauge(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        dataPoints: std.ArrayList(DataPoint(T)),
+        data_points: std.ArrayList(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .allocator = allocator,
-                .dataPoints = std.ArrayList(DataPoint(T)).init(allocator),
+                .data_points = std.ArrayList(DataPoint(T)).init(allocator),
             };
         }
 
         fn deinit(self: *Self) void {
-            for (self.dataPoints.items) |*m| {
+            for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.dataPoints.deinit();
+            self.data_points.deinit();
         }
 
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
-            try self.dataPoints.append(dp);
+            try self.data_points.append(dp);
         }
 
         fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
             switch (T) {
                 i16, i32, i64 => {
-                    var data = try allocator.alloc(DataPoint(i64), self.dataPoints.items.len);
-                    for (self.dataPoints.items, 0..) |m, idx| {
+                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
-                    var data = try allocator.alloc(DataPoint(f64), self.dataPoints.items.len);
-                    for (self.dataPoints.items, 0..) |m, idx| {
+                    var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
                         data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
                     }
                     return .{ .double = data };
@@ -423,7 +423,7 @@ test "meter can create counter instrument and record increase without attributes
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
     try counter.add(10, .{});
-    std.debug.assert(counter.dataPoints.items.len == 1);
+    std.debug.assert(counter.data_points.items.len == 1);
 }
 
 test "meter can create counter instrument and record increase with attributes" {
@@ -439,16 +439,16 @@ test "meter can create counter instrument and record increase with attributes" {
     try counter.add(100, .{});
     try counter.add(1000, .{});
 
-    std.debug.assert(counter.dataPoints.items.len == 2);
-    std.debug.assert(counter.dataPoints.items[0].value == 100);
-    std.debug.assert(counter.dataPoints.items[1].value == 1000);
+    std.debug.assert(counter.data_points.items.len == 2);
+    std.debug.assert(counter.data_points.items[0].value == 100);
+    std.debug.assert(counter.data_points.items[1].value == 1000);
 
     const val1: []const u8 = "some-value";
     const val2: []const u8 = "another-value";
 
     try counter.add(2, .{ "some-key", val1, "another-key", val2 });
-    std.debug.assert(counter.dataPoints.items.len == 3);
-    std.debug.assert(counter.dataPoints.items[2].value == 2);
+    std.debug.assert(counter.data_points.items.len == 3);
+    std.debug.assert(counter.data_points.items[2].value == 2);
 }
 
 test "meter can create histogram instrument and record value without explicit buckets" {
@@ -462,7 +462,7 @@ test "meter can create histogram instrument and record value without explicit bu
     try histogram.record(15, .{});
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-    std.debug.assert(histogram.dataPoints.items.len == 3);
+    std.debug.assert(histogram.data_points.items.len == 3);
 
     const counts = histogram.bucket_counts.get(null).?;
     std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
@@ -481,7 +481,7 @@ test "meter can create histogram instrument and record value with explicit bucke
     try histogram.record(15, .{});
 
     try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-    std.debug.assert(histogram.dataPoints.items.len == 3);
+    std.debug.assert(histogram.data_points.items.len == 3);
 
     const counts = histogram.bucket_counts.get(null).?;
     std.debug.assert(counts.len == 4);
@@ -497,8 +497,8 @@ test "meter can create gauge instrument and record value without attributes" {
 
     try gauge.record(42, .{});
     try gauge.record(-42, .{});
-    std.debug.assert(gauge.dataPoints.items.len == 2);
-    std.debug.assert(gauge.dataPoints.pop().value == -42);
+    std.debug.assert(gauge.data_points.items.len == 2);
+    std.debug.assert(gauge.data_points.pop().value == -42);
 }
 
 test "meter creates upDownCounter and stores value" {
@@ -510,19 +510,19 @@ test "meter creates upDownCounter and stores value" {
     try counter.add(10, .{});
     try counter.add(-5, .{});
     try counter.add(-4, .{});
-    std.debug.assert(counter.dataPoints.items.len == 3);
+    std.debug.assert(counter.data_points.items.len == 3);
 
     // Validate the number stored is correct.
     // Empty attributes produce a null key.
     var summed: i32 = 0;
-    for (counter.dataPoints.items) |m| {
+    for (counter.data_points.items) |m| {
         summed += m.value;
     }
     std.debug.assert(summed == 1);
 
     try counter.add(1, .{ "some-key", @as(i64, 42) });
 
-    std.debug.assert(counter.dataPoints.items.len == 4);
+    std.debug.assert(counter.data_points.items.len == 4);
 }
 
 test "instrument in meter and instrument in data are the same" {
@@ -548,7 +548,7 @@ test "instrument in meter and instrument in data are the same" {
     if (meter.instruments.get(id)) |instrument| {
         std.debug.assert(instrument.kind == Kind.Counter);
 
-        const counter_value = instrument.data.Counter_u64.dataPoints.popOrNull() orelse unreachable;
+        const counter_value = instrument.data.Counter_u64.data_points.popOrNull() orelse unreachable;
         try std.testing.expectEqual(100, counter_value.value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
