@@ -587,3 +587,69 @@ test "instrument fetches measurements from inner" {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
     }
 }
+
+test "instrument thread-safety between datapoints collection and recording" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const name = "test-instrument";
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+
+    var c = try meter.createCounter(u64, .{ .name = name });
+
+    // We use attributes to perform memory allocation,
+    // slowing down the add() call, retaining the lock
+    // for longer
+    const val: []const u8 = "test-val";
+    try c.add(1, .{ "cde", val });
+
+    const adding_job = try std.Thread.spawn(.{}, testAddingOne, .{c});
+    const fetch_compare = try std.Thread.spawn(.{}, testCollect, .{c});
+    adding_job.join();
+    fetch_compare.join();
+}
+
+fn testAddingOne(counter: *Counter(u64)) !void {
+    const val: []const u8 = "test-val";
+    try counter.add(1, .{ "abc", val });
+}
+
+fn testCollect(counter: *Counter(u64)) !void {
+    const fetched = try counter.measurementsData(std.testing.allocator);
+    defer {
+        for (fetched.int) |*m| {
+            m.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(fetched.int);
+    }
+    // Assert that we have 2 data points: the first added by the test thread,
+    // the second added by `testAddingOne` called in a separate thread.
+    try std.testing.expectEqual(2, fetched.int.len);
+    try std.testing.expectEqual(1, fetched.int[0].value);
+    try std.testing.expectEqual(1, fetched.int[1].value);
+}
+
+test "instrument cleans up internal state when datapoints are fetched" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const name = "test-instrument";
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+
+    var c = try meter.createCounter(u64, .{ .name = name });
+
+    const val: []const u8 = "test-val";
+    try c.add(1, .{ "cde", val });
+
+    const fetched = try c.measurementsData(std.testing.allocator);
+    defer {
+        for (fetched.int) |*m| {
+            m.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(fetched.int);
+    }
+    // Assert that we have 1 data point: the first added by the test thread.
+    try std.testing.expectEqual(0, c.data_points.items.len);
+}
