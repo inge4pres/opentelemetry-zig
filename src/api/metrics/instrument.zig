@@ -179,13 +179,12 @@ pub fn Counter(comptime T: type) type {
     return struct {
         const Self = @This();
         allocator: std.mem.Allocator,
+        lock: std.Thread.Mutex,
 
         /// Record data points for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
         /// The list is cleared after each collection cycle.
         data_points: std.ArrayList(DataPoint(T)),
-
-        lock: std.Thread.Mutex,
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
@@ -215,7 +214,7 @@ pub fn Counter(comptime T: type) type {
             self.lock.lock();
             defer self.lock.unlock();
             // We have to clear up the data points after we return a copy of them.
-            // this resets the state of the instrument, allowing to record mre datapoinst
+            // this resets the state of the instrument, allowing to record more datapoints
             // until the next collection cycle.
             defer {
                 for (self.data_points.items) |*m| {
@@ -246,6 +245,7 @@ pub fn Histogram(comptime T: type) type {
         const maxBuckets = 1024;
 
         allocator: std.mem.Allocator,
+        lock: std.Thread.Mutex,
 
         options: HistogramOptions,
         /// Keeps track of the recorded values for each set of attributes.
@@ -272,6 +272,7 @@ pub fn Histogram(comptime T: type) type {
 
             return Self{
                 .allocator = allocator,
+                .lock = std.Thread.Mutex{},
                 .options = opts,
                 .data_points = std.ArrayList(DataPoint(T)).init(allocator),
                 .counts = std.AutoHashMap(?[]Attribute, usize).init(allocator),
@@ -295,6 +296,9 @@ pub fn Histogram(comptime T: type) type {
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
+            self.lock.lock();
+            defer self.lock.unlock();
+
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
             try self.data_points.append(dp);
 
@@ -352,19 +356,38 @@ pub fn Histogram(comptime T: type) type {
             return self.buckets.len - 1;
         }
 
-        fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+            self.lock.lock();
+            defer self.lock.unlock();
+
+            // We have to clear up the data points after we return a copy of them.
+            // This resets the state of the instrument, allowing to record more datapoints
+            // until the next collection cycle.
+            defer {
+                for (self.data_points.items) |*dp| {
+                    dp.deinit(self.allocator);
+                }
+                self.data_points.clearRetainingCapacity();
+            }
+
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
                     var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
+                        data[idx] = .{
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                            .value = @intCast(m.value),
+                        };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
                     var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
+                        data[idx] = .{
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                            .value = @floatCast(m.value),
+                        };
                     }
                     return .{ .double = data };
                 },
@@ -379,12 +402,15 @@ pub fn Gauge(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
+        lock: std.Thread.Mutex,
+
         data_points: std.ArrayList(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .allocator = allocator,
                 .data_points = std.ArrayList(DataPoint(T)).init(allocator),
+                .lock = std.Thread.Mutex{},
             };
         }
 
@@ -397,23 +423,36 @@ pub fn Gauge(comptime T: type) type {
 
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
+            self.lock.lock();
+            defer self.lock.unlock();
+
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
             try self.data_points.append(dp);
         }
 
-        fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+            self.lock.lock();
+            defer self.lock.unlock();
+
+            defer {
+                for (self.data_points.items) |*dp| {
+                    dp.deinit(self.allocator);
+                }
+                self.data_points.clearRetainingCapacity();
+            }
+
             switch (T) {
                 i16, i32, i64 => {
                     var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
+                        data[idx] = .{ .attributes = try Attributes.with(m.attributes).dupe(allocator), .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
                     var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = m.attributes, .value = @floatCast(m.value) };
+                        data[idx] = .{ .attributes = try Attributes.with(m.attributes).dupe(allocator), .value = @floatCast(m.value) };
                     }
                     return .{ .double = data };
                 },
