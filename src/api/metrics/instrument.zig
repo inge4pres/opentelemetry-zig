@@ -180,15 +180,18 @@ pub fn Counter(comptime T: type) type {
         const Self = @This();
         allocator: std.mem.Allocator,
 
-        /// Record the measurements for the counter.
+        /// Record data points for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
         /// The list is cleared after each collection cycle.
         data_points: std.ArrayList(DataPoint(T)),
+
+        lock: std.Thread.Mutex,
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .data_points = std.ArrayList(DataPoint(T)).init(allocator),
                 .allocator = allocator,
+                .lock = std.Thread.Mutex{},
             };
         }
 
@@ -201,16 +204,30 @@ pub fn Counter(comptime T: type) type {
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
+            self.lock.lock();
+            defer self.lock.unlock();
+
             const dp = try DataPoint(T).new(self.allocator, delta, attributes);
             try self.data_points.append(dp);
         }
 
-        fn measurementsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+            self.lock.lock();
+            defer self.lock.unlock();
+            // We have to clear up the data points after we return a copy of them.
+            // this resets the state of the instrument, allowing to record mre datapoinst
+            // until the next collection cycle.
+            defer {
+                for (self.data_points.items) |*m| {
+                    m.deinit(self.allocator);
+                }
+                self.data_points.clearRetainingCapacity();
+            }
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
                     var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = m.attributes, .value = @intCast(m.value) };
+                        data[idx] = .{ .attributes = try Attributes.with(m.attributes).dupe(allocator), .value = @intCast(m.value) };
                     }
                     return .{ .int = data };
                 },

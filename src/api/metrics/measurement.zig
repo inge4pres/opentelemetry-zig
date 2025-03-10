@@ -20,11 +20,6 @@ pub fn DataPoint(comptime T: type) type {
             return Self{ .value = value, .attributes = try Attributes.from(allocator, attributes) };
         }
 
-        pub fn dupe(self: Self, allocator: std.mem.Allocator) !Self {
-            const duped_attrs = try Attributes.with(self.attributes).dupe(allocator);
-            return Self{ .value = self.value, .attributes = duped_attrs };
-        }
-
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             if (self.attributes) |a| allocator.free(a);
         }
