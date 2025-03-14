@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
     const examples_step = b.step("examples", "Build and run all examples");
     examples_step.dependOn(&sdk_lib.step);
 
-    const metrics_examples = buildExamples(b, "examples/metrics", &sdk_lib.root_module) catch |err| {
+    const metrics_examples = buildExamples(b, "examples/metrics", sdk_lib.root_module) catch |err| {
         std.debug.print("Error building metrics examples: {}\n", .{err});
         return;
     };
