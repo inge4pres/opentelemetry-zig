@@ -40,11 +40,11 @@ pub fn WithAttributes(allocator: std.mem.Allocator, args: anytype) !pbcommon.Key
     // Check if the argument is a tuple.
     const ArgsType = @TypeOf(args);
     const args_type_info = @typeInfo(ArgsType);
-    if (args_type_info != .Struct) {
+    if (args_type_info != .@"struct") {
         @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
     }
     // Then check its length.
-    const fields_info = args_type_info.Struct.fields;
+    const fields_info = args_type_info.@"struct".fields;
     if (fields_info.len % 2 != 0) {
         @compileError("expected an even number of arguments");
     }

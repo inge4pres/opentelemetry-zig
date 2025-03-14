@@ -152,11 +152,11 @@ pub const Attributes = struct {
         // Check if the argument is a tuple.
         const ArgsType = @TypeOf(keyValues);
         const args_type_info = @typeInfo(ArgsType);
-        if (args_type_info != .Struct) {
+        if (args_type_info != .@"struct") {
             @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
         }
         // Fast path: if the length is 0, return null.
-        const fields_info = args_type_info.Struct.fields;
+        const fields_info = args_type_info.@"struct".fields;
         if (fields_info.len == 0) {
             return null;
         }

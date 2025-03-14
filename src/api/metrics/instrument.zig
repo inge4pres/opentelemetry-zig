@@ -184,11 +184,11 @@ pub fn Counter(comptime T: type) type {
         /// Record data points for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
         /// The list is cleared after each collection cycle.
-        data_points: std.ArrayList(DataPoint(T)),
+        data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
-                .data_points = std.ArrayList(DataPoint(T)).init(allocator),
+                .data_points = .empty,
                 .allocator = allocator,
                 .lock = std.Thread.Mutex{},
             };
@@ -198,7 +198,7 @@ pub fn Counter(comptime T: type) type {
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.data_points.deinit();
+            self.data_points.deinit(self.allocator);
         }
 
         /// Add the given delta to the counter, using the provided attributes.
@@ -207,7 +207,7 @@ pub fn Counter(comptime T: type) type {
             defer self.lock.unlock();
 
             const dp = try DataPoint(T).new(self.allocator, delta, attributes);
-            try self.data_points.append(dp);
+            try self.data_points.append(self.allocator, dp);
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
@@ -250,16 +250,16 @@ pub fn Histogram(comptime T: type) type {
         options: HistogramOptions,
         /// Keeps track of the recorded values for each set of attributes.
         /// The measurements are cleared after each collection cycle.
-        data_points: std.ArrayList(DataPoint(T)),
+        data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
         // Keeps track of how many values are summed for each set of attributes.
-        counts: std.AutoHashMap(?[]Attribute, usize),
+        counts: std.AutoHashMapUnmanaged(?[]Attribute, usize),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
         // buckets are used.
         // Buckets are always defined as f64.
         buckets: []const f64,
-        bucket_counts: std.AutoHashMap(?[]Attribute, []usize),
+        bucket_counts: std.AutoHashMapUnmanaged(?[]Attribute, []usize),
         min: ?T = null,
         max: ?T = null,
 
@@ -274,10 +274,10 @@ pub fn Histogram(comptime T: type) type {
                 .allocator = allocator,
                 .lock = std.Thread.Mutex{},
                 .options = opts,
-                .data_points = std.ArrayList(DataPoint(T)).init(allocator),
-                .counts = std.AutoHashMap(?[]Attribute, usize).init(allocator),
+                .data_points = .empty,
+                .counts = .empty,
                 .buckets = buckets,
-                .bucket_counts = std.AutoHashMap(?[]Attribute, []usize).init(allocator),
+                .bucket_counts = .empty,
             };
         }
 
@@ -286,12 +286,12 @@ pub fn Histogram(comptime T: type) type {
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.data_points.deinit();
+            self.data_points.deinit(self.allocator);
             // We don't need to free the counts or bucket_counts keys,
             // because the keys are pointers to the same optional
             // KeyValueList used in the dataPoints ArrayList.
-            self.counts.deinit();
-            self.bucket_counts.deinit();
+            self.counts.deinit(self.allocator);
+            self.bucket_counts.deinit(self.allocator);
         }
 
         /// Add the given value to the histogram, using the provided attributes.
@@ -300,7 +300,7 @@ pub fn Histogram(comptime T: type) type {
             defer self.lock.unlock();
 
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
-            try self.data_points.append(dp);
+            try self.data_points.append(self.allocator, dp);
 
             // Find the value for the bucket that the value falls in.
             // If the value is greater than the last bucket, it goes in the last bucket.
@@ -312,14 +312,14 @@ pub fn Histogram(comptime T: type) type {
             } else {
                 var counts = [_]usize{0} ** maxBuckets;
                 counts[bucketIdx] = 1;
-                try self.bucket_counts.put(dp.attributes, counts[0..self.buckets.len]);
+                try self.bucket_counts.put(self.allocator, dp.attributes, counts[0..self.buckets.len]);
             }
 
             // Increment the count of values for the given attributes.
             if (self.counts.getEntry(dp.attributes)) |c| {
                 c.value_ptr.* += 1;
             } else {
-                try self.counts.put(dp.attributes, 1);
+                try self.counts.put(self.allocator, dp.attributes, 1);
             }
 
             // Update Min and Max values.
@@ -404,12 +404,12 @@ pub fn Gauge(comptime T: type) type {
         allocator: std.mem.Allocator,
         lock: std.Thread.Mutex,
 
-        data_points: std.ArrayList(DataPoint(T)),
+        data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
         fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .allocator = allocator,
-                .data_points = std.ArrayList(DataPoint(T)).init(allocator),
+                .data_points = .empty,
                 .lock = std.Thread.Mutex{},
             };
         }
@@ -418,7 +418,7 @@ pub fn Gauge(comptime T: type) type {
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.data_points.deinit();
+            self.data_points.deinit(self.allocator);
         }
 
         /// Record the given value to the gauge, using the provided attributes.
@@ -427,7 +427,7 @@ pub fn Gauge(comptime T: type) type {
             defer self.lock.unlock();
 
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
-            try self.data_points.append(dp);
+            try self.data_points.append(self.allocator, dp);
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
@@ -554,7 +554,7 @@ test "meter can create gauge instrument and record value without attributes" {
     try gauge.record(42, .{});
     try gauge.record(-42, .{});
     std.debug.assert(gauge.data_points.items.len == 2);
-    std.debug.assert(gauge.data_points.pop().value == -42);
+    std.debug.assert(gauge.data_points.pop().?.value == -42);
 }
 
 test "meter creates upDownCounter and stores value" {
@@ -604,7 +604,7 @@ test "instrument in meter and instrument in data are the same" {
     if (meter.instruments.get(id)) |instrument| {
         std.debug.assert(instrument.kind == Kind.Counter);
 
-        const counter_value = instrument.data.Counter_u64.data_points.popOrNull() orelse unreachable;
+        const counter_value = instrument.data.Counter_u64.data_points.pop() orelse unreachable;
         try std.testing.expectEqual(100, counter_value.value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });

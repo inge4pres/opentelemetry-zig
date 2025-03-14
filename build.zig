@@ -36,11 +36,13 @@ pub fn build(b: *std.Build) void {
 
     const sdk_lib = b.addStaticLibrary(.{
         .name = "opentelemetry-sdk",
-        .root_source_file = b.path("src/sdk.zig"),
-        .target = target,
-        .optimize = optimize,
-        .strip = false,
-        .unwind_tables = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sdk.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = false,
+            .unwind_tables = .sync,
+        }),
     });
 
     sdk_lib.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));

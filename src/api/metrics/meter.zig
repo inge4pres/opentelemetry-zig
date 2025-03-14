@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const spec = @import("spec.zig");
+const builtin = @import("builtin");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const DataPoint = @import("measurement.zig").DataPoint;
@@ -17,30 +18,24 @@ const Gauge = @import("instrument.zig").Gauge;
 const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
 
 const defaultMeterVersion = "0.1.0";
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 /// MeterProvider is responsble for creating and managing meters.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meterprovider
 pub const MeterProvider = struct {
     allocator: std.mem.Allocator,
-    meters: std.AutoHashMap(u64, Meter),
-    readers: std.ArrayList(*MetricReader),
+    meters: std.AutoHashMapUnmanaged(u64, Meter),
+    readers: std.ArrayListUnmanaged(*MetricReader),
 
     const Self = @This();
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-    const defaultMeterProvider = Self{
-        .allocator = gpa.allocator(),
-        .meters = std.AutoHashMap(u64, Meter).init(gpa.allocator()),
-        .readers = std.ArrayList(*MetricReader).init(gpa.allocator()),
-    };
 
     /// Create a new custom meter provider, using the specified allocator.
     pub fn init(alloc: std.mem.Allocator) !*Self {
         const provider = try alloc.create(Self);
         provider.* = Self{
             .allocator = alloc,
-            .meters = std.AutoHashMap(u64, Meter).init(alloc),
-            .readers = std.ArrayList(*MetricReader).init(alloc),
+            .meters = .empty,
+            .readers = .empty,
         };
 
         return provider;
@@ -48,8 +43,17 @@ pub const MeterProvider = struct {
 
     /// Adopt the default MeterProvider.
     pub fn default() !*Self {
-        const provider = try gpa.allocator().create(Self);
-        provider.* = defaultMeterProvider;
+        var gpa = switch (builtin.mode) {
+            .Debug, .ReleaseSafe => debug_allocator.allocator(),
+            .ReleaseFast, .ReleaseSmall => std.heap.smp_allocator,
+        };
+        const provider = try gpa.create(Self);
+        provider.* = Self{
+            .allocator = gpa,
+            .meters = .empty,
+            .readers = .empty,
+        };
+
         return provider;
     }
 
@@ -61,8 +65,8 @@ pub const MeterProvider = struct {
         while (meters.next()) |m| {
             m.deinit();
         }
-        self.meters.deinit();
-        self.readers.deinit();
+        self.meters.deinit(self.allocator);
+        self.readers.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -77,7 +81,7 @@ pub const MeterProvider = struct {
             .version = options.version,
             .attributes = options.attributes,
             .schema_url = options.schema_url,
-            .instruments = std.StringHashMap(*Instrument).init(self.allocator),
+            .instruments = .empty,
             .allocator = self.allocator,
         };
         // A Meter is identified uniquely by its name, version and schema_url.
@@ -88,7 +92,7 @@ pub const MeterProvider = struct {
         if (self.meterExistsWithDifferentAttributes(meterId, options.attributes)) {
             return spec.ResourceError.MeterExistsWithDifferentAttributes;
         }
-        const meter = try self.meters.getOrPutValue(meterId, i);
+        const meter = try self.meters.getOrPutValue(self.allocator, meterId, i);
 
         return meter.value_ptr;
     }
@@ -105,7 +109,7 @@ pub const MeterProvider = struct {
             return spec.ResourceError.MetricReaderAlreadyAttached;
         }
         m.meterProvider = self;
-        try self.readers.append(m);
+        try self.readers.append(self.allocator, m);
     }
 };
 
@@ -123,7 +127,7 @@ const Meter = struct {
     version: []const u8,
     schema_url: ?[]const u8,
     attributes: ?[]Attribute = null,
-    instruments: std.StringHashMap(*Instrument),
+    instruments: std.StringHashMapUnmanaged(*Instrument),
     allocator: std.mem.Allocator,
 
     mx: std.Thread.Mutex = std.Thread.Mutex{},
@@ -197,7 +201,7 @@ const Meter = struct {
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
-        return self.instruments.put(id, instrument);
+        return self.instruments.put(self.allocator, id, instrument);
     }
 
     fn deinit(self: *Self) void {
@@ -209,7 +213,7 @@ const Meter = struct {
             self.allocator.free(i.key_ptr.*);
         }
         // Cleanup Meters' Instruments values.
-        self.instruments.deinit();
+        self.instruments.deinit(self.allocator);
         // Cleanup the meter attributes.
         if (self.attributes) |attrs| self.allocator.free(attrs);
     }
@@ -257,7 +261,7 @@ test "meter can be created from default provider with schema url and attributes"
     try std.testing.expectEqual(meter.name, meter_name);
     try std.testing.expectEqualStrings(meter.version, meter_version);
     try std.testing.expectEqualStrings(meter.schema_url.?, "http://foo.bar");
-    std.debug.assert(std.mem.eql(u8, std.mem.asBytes(meter.attributes.?), std.mem.asBytes(attributes.?)));
+    std.debug.assert(std.mem.eql(u8, std.mem.sliceAsBytes(meter.attributes.?), std.mem.sliceAsBytes(attributes.?)));
 }
 
 test "meter has default version when creted with no options" {
@@ -441,7 +445,7 @@ pub const AggregatedMetrics = struct {
 
         switch (instruments_datapoints) {
             .int => {
-                var deduped = std.ArrayList(DataPoint(i64)).init(allocator);
+                var deduped: std.ArrayListUnmanaged(DataPoint(i64)) = .empty;
 
                 // Do not use AutoHashMap because the blanket implementation of HashContext
                 // is not working well for Attributes.
@@ -482,20 +486,20 @@ pub const AggregatedMetrics = struct {
                         .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
                         .value = entry.value_ptr.*,
                     };
-                    try deduped.append(dp);
+                    try deduped.append(allocator, dp);
                 }
-                return .{ .int = try deduped.toOwnedSlice() };
+                return .{ .int = try deduped.toOwnedSlice(allocator) };
             },
             .double => {
-                var deduped = std.ArrayList(DataPoint(f64)).init(allocator);
+                var deduped: std.ArrayListUnmanaged(DataPoint(f64)) = .empty;
 
-                var temp = std.HashMap(
+                var temp: std.HashMapUnmanaged(
                     Attributes,
                     f64,
                     Attributes.HashContext,
                     std.hash_map.default_max_load_percentage,
-                ).init(allocator);
-                defer temp.deinit();
+                ) = .empty;
+                defer temp.deinit(allocator);
 
                 for (instruments_datapoints.double) |measure| {
                     switch (aggregation) {
@@ -505,14 +509,14 @@ pub const AggregatedMetrics = struct {
                             const value = measure.value;
                             if (temp.get(key)) |v| {
                                 const newValue = v + value;
-                                try temp.put(key, newValue);
+                                try temp.put(allocator, key, newValue);
                             } else {
-                                try temp.put(key, value);
+                                try temp.put(allocator, key, value);
                             }
                         },
                         .LastValue => {
                             const key = Attributes.with(measure.attributes);
-                            try temp.put(key, measure.value);
+                            try temp.put(allocator, key, measure.value);
                         },
                     }
                 }
@@ -523,9 +527,9 @@ pub const AggregatedMetrics = struct {
                         .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
                         .value = entry.value_ptr.*,
                     };
-                    try deduped.append(dp);
+                    try deduped.append(allocator, dp);
                 }
-                return .{ .double = try deduped.toOwnedSlice() };
+                return .{ .double = try deduped.toOwnedSlice(allocator) };
             },
         }
     }

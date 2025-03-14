@@ -215,7 +215,7 @@ pub const ExporterIface = struct {
 pub const InMemoryExporter = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
-    data: std.ArrayList(Measurements) = undefined,
+    data: std.ArrayListUnmanaged(Measurements) = undefined,
     // Implement the interface via @fieldParentPtr
     exporter: ExporterIface,
 
@@ -225,7 +225,7 @@ pub const InMemoryExporter = struct {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
-            .data = std.ArrayList(Measurements).init(allocator),
+            .data = .empty,
             .exporter = ExporterIface{
                 .exportFn = exportBatch,
             },
@@ -237,7 +237,7 @@ pub const InMemoryExporter = struct {
         for (self.data.items) |*d| {
             d.*.deinit(self.allocator);
         }
-        self.data.deinit();
+        self.data.deinit(self.allocator);
         self.mx.unlock();
 
         self.allocator.destroy(self);
@@ -254,8 +254,8 @@ pub const InMemoryExporter = struct {
         for (self.data.items) |*d| {
             d.*.deinit(self.allocator);
         }
-        self.data.clearAndFree();
-        self.data = std.ArrayList(Measurements).fromOwnedSlice(self.allocator, metrics);
+        self.data.clearAndFree(self.allocator);
+        self.data = std.ArrayListUnmanaged(Measurements).fromOwnedSlice(metrics);
     }
 
     /// Read the metrics from the in memory exporter.
@@ -285,16 +285,16 @@ test "in memory exporter stores data" {
     var hist_measures = try allocator.alloc(DataPoint(f64), 1);
     hist_measures[0] = hist_dp;
 
-    var underTest = std.ArrayList(Measurements).init(allocator);
+    var underTest: std.ArrayListUnmanaged(Measurements) = .empty;
 
-    try underTest.append(Measurements{
+    try underTest.append(allocator, Measurements{
         .meterName = "first-meter",
         .meterAttributes = null,
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-abc" },
         .data = .{ .int = counter_measures },
     });
-    try underTest.append(Measurements{
+    try underTest.append(allocator, Measurements{
         .meterName = "another-meter",
         .meterAttributes = null,
         .instrumentKind = .Histogram,
@@ -302,7 +302,7 @@ test "in memory exporter stores data" {
         .data = .{ .double = hist_measures },
     });
 
-    const result = exporter.exportBatch(try underTest.toOwnedSlice());
+    const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator));
     try std.testing.expect(result == .Success);
 
     const data = try inMemExporter.fetch();
@@ -310,6 +310,12 @@ test "in memory exporter stores data" {
     try std.testing.expect(data.len == 2);
     try std.testing.expectEqualDeep(counter_dp, data[0].data.int[0]);
 }
+
+const ReaderShared = struct {
+    shuttingDown: bool = false,
+    cond: std.Thread.Condition = .{},
+    lock: std.Thread.Mutex = .{},
+};
 
 /// A periodic exporting reader is a specialization of MetricReader
 /// that periodically exports metrics data to a destination.
@@ -322,8 +328,8 @@ pub const PeriodicExportingReader = struct {
     exportIntervalMillis: u64,
     exportTimeoutMillis: u64,
 
-    // Lock helper to signal shutdown is in progress
-    shuttingDown: bool = false,
+    shared: ReaderShared = .{},
+    collectThread: std.Thread = undefined,
 
     // This reader will collect metrics data from the MeterProvider.
     reader: *MetricReader,
@@ -353,19 +359,23 @@ pub const PeriodicExportingReader = struct {
         };
         try mp.addReader(s.reader);
 
-        const th = try std.Thread.spawn(
+        s.collectThread = try std.Thread.spawn(
             .{},
             collectAndExport,
-            .{ s.reader, &s.shuttingDown, s.exportIntervalMillis, s.exportTimeoutMillis },
+            .{ s.reader, &s.shared, s.exportIntervalMillis, s.exportTimeoutMillis },
         );
-        th.detach();
         return s;
     }
 
     pub fn shutdown(self: *Self) void {
-        // First signal the background exporter to stop collecting, then close the reader.
-        @atomicStore(bool, &self.shuttingDown, true, .release);
+        self.shared.lock.lock();
+        self.shared.shuttingDown = true;
+        self.shared.lock.unlock();
+        self.shared.cond.signal();
+        self.collectThread.join();
+
         self.reader.shutdown();
+
         // Only when the background collector has stopped we can destroy.
         self.allocator.destroy(self);
     }
@@ -375,13 +385,15 @@ pub const PeriodicExportingReader = struct {
 // FIXME there is not a timeout for the collect operation.
 fn collectAndExport(
     reader: *MetricReader,
-    shuttingDown: *bool,
+    shared: *ReaderShared,
     exportIntervalMillis: u64,
     // TODO: add a timeout for the export operation
     _: u64,
 ) void {
+    shared.lock.lock();
+    defer shared.lock.unlock();
     // The execution should continue until the reader is shutting down
-    while (!@atomicLoad(bool, shuttingDown, .acquire)) {
+    while (!shared.shuttingDown) {
         if (reader.meterProvider) |_| {
             // This will also call exporter.exportBatch() every interval.
             reader.collect() catch |e| {
@@ -391,7 +403,7 @@ fn collectAndExport(
             std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{reader});
         }
 
-        std.time.sleep(exportIntervalMillis * std.time.ns_per_ms);
+        shared.cond.timedWait(&shared.lock, exportIntervalMillis * std.time.ns_per_ms) catch continue;
     }
 }
 
