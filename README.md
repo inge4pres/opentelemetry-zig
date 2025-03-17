@@ -17,15 +17,5 @@ The version of the specification targeted here is **1.35.0**.
 1. Provide a reference implementation of the OpenTelemetry API
 1. Provide examples on how to use the library in real-world use cases
 
-## Data types
-
-Types are generated from the official protobuf [definitions](https://github.com/open-telemetry/opentelemetry-proto/tree/main/opentelemetry/proto) using
-the code generation provided by [Arwalk/zig-protobuf](https://github.com/Arwalk/zig-protobuf) (thanks @Arwalk).
-
-Generated code is committed and can be updated by running:
-
-```
-zig build gen-proto
-```
 
 
