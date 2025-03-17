@@ -3,7 +3,8 @@ const http = std.http;
 const sdk = @import("opentelemetry-sdk");
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
     const otel = try setupTelemetry(allocator);
     defer {
@@ -19,9 +20,6 @@ pub fn main() !void {
     };
     // Create a thread that will serve one HTTP request and exit
     const worker = try std.Thread.spawn(.{}, MonitoredHTTPServer.serveRequest, .{&prod_server});
-    //TODO move to the end of the function and use worker.join()
-    // once the shutdown process is improved in #14
-    worker.detach();
 
     // Send an HTTP request to the server
     var client = http.Client{ .allocator = allocator };
@@ -30,6 +28,21 @@ pub fn main() !void {
     var req = try client.open(.GET, uri, .{ .server_header_buffer = &headers });
     defer req.deinit();
     try req.send();
+
+    worker.join();
+
+    // Manually do the actions that would be done by the SDK
+    try otel.metric_reader.collect();
+    const metrics = try otel.in_memory_exporter.fetch();
+    defer {
+        for (metrics) |*m| {
+            m.deinit(allocator);
+        }
+        allocator.free(metrics);
+    }
+
+    std.debug.assert(metrics.len == 2);
+    std.debug.assert(metrics[0].instrumentKind == .Counter);
 }
 
 const MonitoredHTTPServer = struct {
@@ -43,7 +56,6 @@ const MonitoredHTTPServer = struct {
     pub fn init(mp: *sdk.MeterProvider, ip: []const u8, port: u16) !Self {
         const addr = try std.net.Address.parseIp(ip, port);
         const meter = try mp.getMeter(.{ .name = "standard/http.server" });
-        std.debug.print("serving HTTP requests\n", .{});
         return Self{
             .net_server = try addr.listen(.{ .reuse_address = true }),
             .request_counter = try meter.createCounter(u64, .{
@@ -67,11 +79,12 @@ const MonitoredHTTPServer = struct {
         var server = http.Server.init(connection, &buf);
 
         const start = std.time.milliTimestamp();
+        defer self.response_latency.record(@floatFromInt(std.time.milliTimestamp() - start), .{}) catch unreachable;
+
         var request = server.receiveHead() catch |err| {
             try self.request_counter.add(1, .{ "error", true, "reason", @errorName(err) });
             return err;
         };
-        defer self.response_latency.record(@floatFromInt(std.time.milliTimestamp() - start), .{}) catch unreachable;
 
         try self.request_counter.add(1, .{ "method", @tagName(request.head.method) }); // success
 
@@ -83,6 +96,7 @@ const MonitoredHTTPServer = struct {
 const OTel = struct {
     meter_provider: *sdk.MeterProvider,
     metric_reader: *sdk.MetricReader,
+    in_memory_exporter: *sdk.InMemoryExporter,
 };
 
 fn setupTelemetry(allocator: std.mem.Allocator) !OTel {
@@ -96,5 +110,9 @@ fn setupTelemetry(allocator: std.mem.Allocator) !OTel {
 
     try mp.addReader(mr);
 
-    return .{ .meter_provider = mp, .metric_reader = mr };
+    return .{
+        .meter_provider = mp,
+        .metric_reader = mr,
+        .in_memory_exporter = in_mem,
+    };
 }

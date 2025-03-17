@@ -115,7 +115,7 @@ fn buildExamples(b: *std.Build, base_dir: []const u8, otel_mod: *std.Build.Modul
             .root_source_file = b.path(try std.fs.path.join(b.allocator, &.{ base_dir, file.name })),
             .target = otel_mod.resolved_target.?,
             // We set the optimization level to ReleaseSafe for examples
-            // because we want to have safety checks.
+            // because we want to have safety checks, and execute assertions.
             .optimize = .ReleaseSafe,
         });
         example.root_module.addImport("opentelemetry-sdk", otel_mod);

@@ -41,5 +41,7 @@ pub fn main() !void {
     const stored_metrics = try in_mem.fetch();
     defer fba.allocator().free(stored_metrics);
 
-    std.debug.print("metric: {any}\n", .{stored_metrics});
+    std.debug.assert(stored_metrics.len == 1);
+    const metric = stored_metrics[0];
+    std.debug.assert(metric.data.int[0].attributes == null);
 }
