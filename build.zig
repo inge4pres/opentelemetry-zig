@@ -5,6 +5,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Dependencies section
+    // Benchmarks lib
+    const benchmarks_dep = b.dependency("zbench", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Protobuf code generation from the OpenTelemetry proto files.
     const protobuf_dep = b.dependency("protobuf", .{
         .target = target,
@@ -83,6 +90,7 @@ pub fn build(b: *std.Build) void {
     const examples_step = b.step("examples", "Build and run all examples");
     examples_step.dependOn(&sdk_lib.step);
 
+    // TODO add examples for other signals
     const metrics_examples = buildExamples(b, "examples/metrics", sdk_lib.root_module) catch |err| {
         std.debug.print("Error building metrics examples: {}\n", .{err});
         return;
@@ -91,6 +99,22 @@ pub fn build(b: *std.Build) void {
     for (metrics_examples) |step| {
         const run_metrics_example = b.addRunArtifact(step);
         examples_step.dependOn(&run_metrics_example.step);
+    }
+
+    // Benchmarks
+    const benchmarks_step = b.step("benchmarks", "Build and run all benchmarks");
+    benchmarks_step.dependOn(&sdk_lib.step);
+
+    const benchmark_mod = benchmarks_dep.module("zbench");
+
+    const metrics_benchmarks = buildBenchmarks(b, "benchmarks/metrics", sdk_lib.root_module, benchmark_mod) catch |err| {
+        std.debug.print("Error building metrics benchmarks: {}\n", .{err});
+        return;
+    };
+    defer b.allocator.free(metrics_benchmarks);
+    for (metrics_benchmarks) |step| {
+        const run_metrics_benchmark = b.addRunArtifact(step);
+        benchmarks_step.dependOn(&run_metrics_benchmark.step);
     }
 }
 
@@ -123,4 +147,42 @@ fn buildExamples(b: *std.Build, base_dir: []const u8, otel_mod: *std.Build.Modul
     }
 
     return exes.toOwnedSlice();
+}
+
+fn buildBenchmarks(
+    b: *std.Build,
+    base_dir: []const u8,
+    otel_mod: *std.Build.Module,
+    benchmark_mod: *std.Build.Module,
+) ![]*std.Build.Step.Compile {
+    var bench_tests = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
+    errdefer bench_tests.deinit();
+
+    var test_dir = try std.fs.cwd().openDir(base_dir, .{ .iterate = true });
+    defer test_dir.close();
+
+    var iter = test_dir.iterate();
+    while (try iter.next()) |file| {
+        // Get the file name.
+        // If it doesn't end in 'zig' then ignore.
+        const index = std.mem.lastIndexOfScalar(u8, file.name, '.') orelse continue;
+        if (index == 0) continue; // discard dotfiles
+        if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
+
+        const name = file.name[0..index];
+        const benchmark = b.addTest(.{
+            .name = name,
+            .root_source_file = b.path(try std.fs.path.join(b.allocator, &.{ base_dir, file.name })),
+            .target = otel_mod.resolved_target.?,
+            // We set the optimization level to ReleaseFast for benchmarks
+            // because we want to have the best performance.
+            .optimize = .ReleaseFast,
+        });
+        benchmark.root_module.addImport("opentelemetry-sdk", otel_mod);
+        benchmark.root_module.addImport("benchmark", benchmark_mod);
+
+        try bench_tests.append(benchmark);
+    }
+
+    return bench_tests.toOwnedSlice();
 }
