@@ -38,4 +38,21 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - run: zig build examples
  
- 
+  # Execute bencharmks only if the PR has a specific label 'run::benchmarks'
+  benchmarks:
+    if: contains(github.event.pull_request.labels.*.name, 'run::benchmarks')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      # The optimize argument builds the SDK library with optimizations,
+      # benchmarks files are always compiled with ReleaseFast.
+      - run: |
+          zig build benchmarks -Doptimize=ReleaseFast 2> benchmarks-result.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-result
+          path: benchmarks-result.txt
+          retention-days: 60

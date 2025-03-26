@@ -100,6 +100,6 @@ test "benchmark metrics instruments" {
 
     try bench.addParam("counter.add w/o attrs", &cb.withoutAttributes(), .{ .track_allocations = false });
     try bench.addParam("counter.add with attrs", &cb.withAttributes(), .{ .track_allocations = false });
-    try bench.addParam("concurrent counter.add", &cb.concurrent(), .{ .track_allocations = false });
+    try bench.addParam("counter.add concurrent", &cb.concurrent(), .{ .track_allocations = false });
     try bench.run(bench_output);
 }
