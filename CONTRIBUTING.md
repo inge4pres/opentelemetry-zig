@@ -10,6 +10,21 @@ Unit tests are executed as part of CI pipeline, you can run them locally while d
 zig build test
 ```
 
+## Running benchmarks
+
+Benchmarks are executed as part of the pipeline on Pull Requests if the contain a label `run::benchmarks`.
+
+They can be executed locally with:
+
+```
+zig build benchmarks -Doptimize=ReleaseFast
+```
+
+> [!NOTE]
+> Currently there is no good way of comparing benchmark runs across various machines,
+> as the results do not include CPU information.
+> Benchmarks are still useful for detecting improvements or regressions during local development.
+
 ## Generating OTLP protobuf code
 
 Types for OTLP are generated from the official protobuf [definitions](https://github.com/open-telemetry/opentelemetry-proto/tree/main/opentelemetry/proto) using
