@@ -17,8 +17,10 @@ pub fn main() !void {
     // Declare an in-memory exporter
     var in_mem = try sdk.InMemoryExporter.init(fba.allocator());
 
+    const metric_exporter = try sdk.MetricExporter.new(fba.allocator(), &in_mem.exporter);
+
     // Create an exporter and a a metric reader to aggregate the metrics
-    const mr = try sdk.MetricReader.init(fba.allocator(), &in_mem.exporter);
+    const mr = try sdk.MetricReader.init(fba.allocator(), metric_exporter);
     defer mr.shutdown();
 
     // Register the metric reader to the meter provider

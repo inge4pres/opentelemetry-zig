@@ -625,7 +625,7 @@ test "aggregated metrics fetch to owned slice" {
     try counter.add(1, .{});
     try counter.add(3, .{});
 
-    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregationFor);
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
     defer {
         for (result) |m| {
             var data = m;

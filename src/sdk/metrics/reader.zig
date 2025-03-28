@@ -46,31 +46,25 @@ pub const MetricReader = struct {
     // stored in meterProvider.
     meterProvider: ?*MeterProvider = null,
 
-    temporality: TemporalitySelector = view.DefaultTemporalityFor,
-    aggregation: AggregationSelector = view.DefaultAggregationFor,
+    // Data transform configuration
+    temporality: TemporalitySelector = view.DefaultTemporality,
+    aggregation: AggregationSelector = view.DefaultAggregation,
+
     // Signal that shutdown has been called.
     hasShutDown: bool = false,
     mx: std.Thread.Mutex = std.Thread.Mutex{},
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, exporterImpl: *ExporterIface) !*Self {
+    pub fn init(allocator: std.mem.Allocator, metric_exporter: *MetricExporter) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
-            .exporter = try MetricExporter.new(allocator, exporterImpl),
+            .exporter = metric_exporter,
         };
+        if (metric_exporter.temporality) |t| s.temporality = t;
+        if (metric_exporter.aggregation) |a| s.aggregation = a;
         return s;
-    }
-
-    pub fn withTemporality(self: *Self, temporality: *const fn (Kind) view.Temporality) *Self {
-        self.temporality = temporality;
-        return self;
-    }
-
-    pub fn withAggregation(self: *Self, aggregation: *const fn (Kind) view.Aggregation) *Self {
-        self.aggregation = aggregation;
-        return self;
     }
 
     pub fn collect(self: *Self) !void {
@@ -132,10 +126,11 @@ pub const MetricReader = struct {
 
 test "metric reader shutdown prevents collect() to execute" {
     var noop = exporter.ExporterIface{ .exportFn = exporter.noopExporter };
-    var reader = try MetricReader.init(std.testing.allocator, &noop);
-    const e = reader.collect();
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, &noop);
+    var metric_reader = try MetricReader.init(std.testing.allocator, metric_exporter);
+    const e = metric_reader.collect();
     try std.testing.expectEqual(MetricReadError.CollectFailedOnMissingMeterProvider, e);
-    reader.shutdown();
+    metric_reader.shutdown();
 }
 
 test "metric reader collects data from meter provider" {
@@ -145,7 +140,9 @@ test "metric reader collects data from meter provider" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
-    var reader = try MetricReader.init(std.testing.allocator, &inMem.exporter);
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
+
+    var reader = try MetricReader.init(std.testing.allocator, metric_exporter);
     defer reader.shutdown();
 
     try mp.addReader(reader);
@@ -179,8 +176,10 @@ test "metric reader custom temporality" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
-    var reader = try MetricReader.init(std.testing.allocator, &inMem.exporter);
-    reader = reader.withTemporality(deltaTemporality);
+    var metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
+    metric_exporter.temporality = deltaTemporality;
+
+    var reader = try MetricReader.init(std.testing.allocator, metric_exporter);
 
     defer reader.shutdown();
 

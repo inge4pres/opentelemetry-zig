@@ -16,6 +16,8 @@ const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 
 const Attributes = @import("../../attributes.zig").Attributes;
 
+const view = @import("view.zig");
+
 pub const ExportResult = enum {
     Success,
     Failure,
@@ -26,6 +28,12 @@ pub const MetricExporter = struct {
 
     allocator: std.mem.Allocator,
     exporter: *ExporterIface,
+
+    // Configuration will be passed to the MetricReader.
+    // This is needed because exporters MUST provide aggregation and temporality
+    // when hooked to a MetricReader.
+    temporality: ?view.TemporalitySelector = null,
+    aggregation: ?view.AggregationSelector = null,
 
     // Lock helper to signal shutdown and/or export is in progress
     hasShutDown: bool = false,
@@ -42,6 +50,7 @@ pub const MetricExporter = struct {
 
     /// ExportBatch exports a batch of metrics data by calling the exporter implementation.
     /// The passed metrics data will be owned by the exporter implementation.
+    //TODO exportBatch MUST have a timeout
     pub fn exportBatch(self: *Self, metrics: []Measurements) ExportResult {
         if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
             // When shutdown has already been called, calling export should be a failure.
@@ -49,6 +58,7 @@ pub const MetricExporter = struct {
             return ExportResult.Failure;
         }
         // Acquire the lock to signal to forceFlush to wait for export to complete.
+        // Also, guarantee that only one export operation is in progress at any time.
         self.exportCompleted.lock();
         defer self.exportCompleted.unlock();
 
@@ -134,7 +144,9 @@ test "metric exporter is called by metric reader" {
 
     var mock = ExporterIface{ .exportFn = mockExporter };
 
-    var rdr = try MetricReader.init(std.testing.allocator, &mock);
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, &mock);
+
+    var rdr = try MetricReader.init(std.testing.allocator, metric_exporter);
     defer rdr.shutdown();
 
     try mp.addReader(rdr);
@@ -262,6 +274,8 @@ pub const InMemoryExporter = struct {
     pub fn fetch(self: *Self) ![]Measurements {
         self.mx.lock();
         defer self.mx.unlock();
+        // FIXME we should return a copy of the data, using an allocator provided as an argument,
+        // instead of the one in the struct.
         return self.data.items;
     }
 };
@@ -343,7 +357,7 @@ pub const PeriodicExportingReader = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         mp: *MeterProvider,
-        exporter: *ExporterIface,
+        exporter: *MetricExporter,
         exportIntervalMs: ?u64,
         exportTimeoutMs: ?u64,
     ) !*Self {
@@ -382,7 +396,7 @@ pub const PeriodicExportingReader = struct {
 };
 
 // Function that collects metrics from the reader and exports it to the destination.
-// FIXME there is not a timeout for the collect operation.
+// TODO add a timeout for the collect operation.
 fn collectAndExport(
     reader: *MetricReader,
     shared: *ReaderShared,
@@ -395,14 +409,17 @@ fn collectAndExport(
     // The execution should continue until the reader is shutting down
     while (!shared.shuttingDown) {
         if (reader.meterProvider) |_| {
-            // This will also call exporter.exportBatch() every interval.
+            // This will call exporter.exportBatch() every interval.
             reader.collect() catch |e| {
                 std.debug.print("PeriodicExportingReader: collecting failed on reader: {?}\n", .{e});
             };
         } else {
             std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{reader});
         }
-
+        // timedWait returns an error when the timeout is reached, so we cacth it and continue.
+        // This is a way of keeping the timer running, becaus no other wake up signal is sent other than
+        // during shutdown.
+        // When the signal is actually received, the loop will exit because shared.shuttingDown will be true.
         shared.cond.timedWait(&shared.lock, exportIntervalMillis * std.time.ns_per_ms) catch continue;
     }
 }
@@ -416,10 +433,12 @@ test "e2e periodic exporting metric reader" {
     var inMem = try InMemoryExporter.init(std.testing.allocator);
     defer inMem.deinit();
 
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
+
     var per = try PeriodicExportingReader.init(
         std.testing.allocator,
         mp,
-        &inMem.exporter,
+        metric_exporter,
         waiting,
         null,
     );
