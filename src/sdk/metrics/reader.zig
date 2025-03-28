@@ -24,7 +24,8 @@ const exporter = @import("exporter.zig");
 const MetricExporter = exporter.MetricExporter;
 const ExporterIface = exporter.ExporterIface;
 const ExportResult = exporter.ExportResult;
-const InMemoryExporter = exporter.InMemoryExporter;
+
+const InMemoryExporter = @import("exporters/in_memory.zig").InMemoryExporter;
 
 /// ExportError represents the failure to export data points
 /// to a destination.
@@ -166,10 +167,14 @@ test "metric reader collects data from meter provider" {
 }
 
 fn deltaTemporality(_: Kind) view.Temporality {
-    return view.Temporality.Delta;
+    return .Delta;
 }
 
-test "metric reader custom temporality" {
+fn dropAll(_: Kind) view.Aggregation {
+    return .Drop;
+}
+
+test "metric reader custom temporality and aggregation" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
@@ -178,10 +183,13 @@ test "metric reader custom temporality" {
 
     var metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
     metric_exporter.temporality = deltaTemporality;
+    metric_exporter.aggregation = dropAll;
 
     var reader = try MetricReader.init(std.testing.allocator, metric_exporter);
-
     defer reader.shutdown();
+
+    std.debug.assert(reader.temporality(.Counter) == .Delta);
+    std.debug.assert(reader.aggregation(.Histogram) == .Drop);
 
     try mp.addReader(reader);
 
