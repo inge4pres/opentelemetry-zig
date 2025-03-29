@@ -40,7 +40,7 @@ pub fn main() !void {
     try mr.collect();
 
     // Print the metrics
-    const stored_metrics = try in_mem.fetch();
+    const stored_metrics = try in_mem.fetch(fba.allocator());
     defer fba.allocator().free(stored_metrics);
 
     std.debug.assert(stored_metrics.len == 1);

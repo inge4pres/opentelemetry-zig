@@ -33,7 +33,7 @@ pub fn main() !void {
 
     // Manually do the actions that would be done by the SDK
     try otel.metric_reader.collect();
-    const metrics = try otel.in_memory_exporter.fetch();
+    const metrics = try otel.in_memory_exporter.fetch(allocator);
     defer {
         for (metrics) |*m| {
             m.deinit(allocator);
