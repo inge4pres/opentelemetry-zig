@@ -135,15 +135,17 @@ test "metric reader shutdown prevents collect() to execute" {
 }
 
 test "metric reader collects data from meter provider" {
-    var mp = try MeterProvider.init(std.testing.allocator);
+    const allocator = std.testing.allocator;
+
+    var mp = try MeterProvider.init(allocator);
     defer mp.shutdown();
 
-    var inMem = try InMemoryExporter.init(std.testing.allocator);
+    var inMem = try InMemoryExporter.init(allocator);
     defer inMem.deinit();
 
-    const metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
+    const metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
 
-    var reader = try MetricReader.init(std.testing.allocator, metric_exporter);
+    var reader = try MetricReader.init(allocator, metric_exporter);
     defer reader.shutdown();
 
     try mp.addReader(reader);
@@ -163,7 +165,13 @@ test "metric reader collects data from meter provider" {
 
     try reader.collect();
 
-    _ = try inMem.fetch();
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| {
+            d.*.deinit(allocator);
+        }
+        allocator.free(data);
+    }
 }
 
 fn deltaTemporality(_: Kind) view.Temporality {
@@ -175,17 +183,19 @@ fn dropAll(_: Kind) view.Aggregation {
 }
 
 test "metric reader custom temporality and aggregation" {
-    var mp = try MeterProvider.init(std.testing.allocator);
+    const allocator = std.testing.allocator;
+
+    var mp = try MeterProvider.init(allocator);
     defer mp.shutdown();
 
-    var inMem = try InMemoryExporter.init(std.testing.allocator);
+    var inMem = try InMemoryExporter.init(allocator);
     defer inMem.deinit();
 
-    var metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
+    var metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
     metric_exporter.temporality = deltaTemporality;
     metric_exporter.aggregation = dropAll;
 
-    var reader = try MetricReader.init(std.testing.allocator, metric_exporter);
+    var reader = try MetricReader.init(allocator, metric_exporter);
     defer reader.shutdown();
 
     std.debug.assert(reader.temporality(.Counter) == .Delta);
@@ -200,7 +210,13 @@ test "metric reader custom temporality and aggregation" {
 
     try reader.collect();
 
-    const data = try inMem.fetch();
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| {
+            d.*.deinit(allocator);
+        }
+        allocator.free(data);
+    }
 
     std.debug.assert(data.len == 1);
 }

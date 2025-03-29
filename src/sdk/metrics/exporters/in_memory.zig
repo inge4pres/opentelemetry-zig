@@ -8,6 +8,8 @@ const MetricReadError = @import("../reader.zig").MetricReadError;
 const DataPoint = @import("../../../api/metrics/measurement.zig").DataPoint;
 const Measurements = @import("../../../api/metrics/measurement.zig").Measurements;
 
+const Attributes = @import("../../../attributes.zig").Attributes;
+
 /// InMemoryExporter stores in memory the metrics data to be exported.
 /// The metics' representation in memory uses the types defined in the library.
 pub const InMemoryExporter = struct {
@@ -48,21 +50,20 @@ pub const InMemoryExporter = struct {
         self.mx.lock();
         defer self.mx.unlock();
 
-        // Free up the allocated data points from the previous export.
-        for (self.data.items) |*d| {
-            d.*.deinit(self.allocator);
-        }
-        self.data.clearAndFree(self.allocator);
-        self.data = std.ArrayListUnmanaged(Measurements).fromOwnedSlice(metrics);
+        // appendSlice will copy the data into the array list,
+        // so we need to free their memory after the exportBatch call.
+        self.data.appendSlice(self.allocator, metrics) catch {
+            return MetricReadError.ExportFailed;
+        };
+        self.allocator.free(metrics);
     }
 
     /// Read the metrics from the in memory exporter.
-    pub fn fetch(self: *Self) ![]Measurements {
+    pub fn fetch(self: *Self, allocator: std.mem.Allocator) ![]Measurements {
         self.mx.lock();
         defer self.mx.unlock();
-        // FIXME we should return a copy of the data, using an allocator provided as an argument,
-        // instead of the one in the struct.
-        return self.data.items;
+
+        return try self.data.toOwnedSlice(allocator);
     }
 };
 
@@ -105,8 +106,19 @@ test "in memory exporter stores data" {
     const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator));
     try std.testing.expect(result == .Success);
 
-    const data = try inMemExporter.fetch();
+    const data = try inMemExporter.fetch(allocator);
+    defer {
+        for (data) |*d| {
+            d.*.deinit(allocator);
+        }
+        allocator.free(data);
+    }
 
     try std.testing.expect(data.len == 2);
     try std.testing.expectEqualDeep(counter_dp, data[0].data.int[0]);
+
+    const expected_attrs = try Attributes.from(allocator, .{ "key", val });
+    defer allocator.free(expected_attrs.?);
+
+    try std.testing.expectEqualDeep(expected_attrs.?, data[0].data.int[0].attributes.?);
 }

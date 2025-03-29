@@ -1,13 +1,17 @@
 const std = @import("std");
-const Kind = @import("../instrument.zig").Kind;
-const Attribute = @import("../attributes.zig").Attribute;
-const instrument = @import("../instrument.zig");
+
+const Attribute = @import("../../../attributes.zig").Attribute;
+
+const instrument = @import("../../../api/metrics/instrument.zig");
 const Instrument = instrument.Instrument;
+const Kind = instrument.Kind;
+
 const view = @import("../view.zig");
+
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
-const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
+const pbcommon = @import("../../../opentelemetry/proto/common/v1.pb.zig");
+const pbmetrics = @import("../../../opentelemetry/proto/metrics/v1.pb.zig");
 
 pub fn toProtobufMetric(
     allocator: std.mem.Allocator,

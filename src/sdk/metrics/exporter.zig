@@ -330,31 +330,38 @@ fn collectAndExport(
 const InMemoryExporter = @import("./exporters/in_memory.zig").InMemoryExporter;
 
 test "e2e periodic exporting metric reader" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const allocator = std.testing.allocator;
+
+    const mp = try MeterProvider.init(allocator);
     defer mp.shutdown();
 
-    const waiting: u64 = 100;
+    const waiting_ms: u64 = 100;
 
-    var inMem = try InMemoryExporter.init(std.testing.allocator);
+    var inMem = try InMemoryExporter.init(allocator);
     defer inMem.deinit();
 
-    const metric_exporter = try MetricExporter.new(std.testing.allocator, &inMem.exporter);
+    const metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
 
     var per = try PeriodicExportingReader.init(
-        std.testing.allocator,
+        allocator,
         mp,
         metric_exporter,
-        waiting,
+        waiting_ms,
         null,
     );
     defer per.shutdown();
 
-    var meter = try mp.getMeter(.{ .name = "test-reader" });
+    var meter = try mp.getMeter(.{ .name = "test-reader", .attributes = try Attributes.from(
+        allocator,
+        .{ "wonderful", true },
+    ) });
     var counter = try meter.createCounter(u64, .{
         .name = "requests",
         .description = "a test counter",
     });
     try counter.add(10, .{});
+    const val: []const u8 = "value";
+    try counter.add(20, .{ "key", val });
 
     var histogram = try meter.createHistogram(f64, .{
         .name = "latency",
@@ -368,10 +375,29 @@ test "e2e periodic exporting metric reader" {
     try histogram.record(1.4, .{});
     try histogram.record(10.4, .{});
 
-    std.time.sleep(waiting * 4 * std.time.ns_per_ms);
+    // Need to wait for the PeriodicExportingReader to collect and export the metrics.
+    // Wait for more than 1 collection cycle to ensure that no duplication of data points occurs.
+    std.time.sleep(waiting_ms * 4 * std.time.ns_per_ms);
 
-    const data = try inMem.fetch();
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| {
+            d.*.deinit(allocator);
+        }
+        allocator.free(data);
+    }
 
-    try std.testing.expect(data.len == 2);
-    //TODO add more assertions
+    // There are 2 measurements: a counter and a histogram.
+    try std.testing.expectEqual(2, data.len);
+    // Meter attributes are added.
+    try std.testing.expectEqual("test-reader", data[0].meterName);
+
+    // Counter has 2 data points.
+    try std.testing.expectEqual(2, data[0].data.int.len);
+}
+
+// Include testing for the exporters
+test {
+    _ = @import("exporters/in_memory.zig");
+    _ = @import("exporters/otlp.zig");
 }

@@ -45,7 +45,23 @@ test "datapoint with attributes" {
 pub const MeasurementsData = union(enum) {
     int: []DataPoint(i64),
     double: []DataPoint(f64),
+
+    /// Returns true if there are no datapoints.
+    pub fn isEmpty(self: MeasurementsData) bool {
+        switch (self) {
+            .int => return self.int.len == 0,
+            .double => return self.double.len == 0,
+        }
+    }
 };
+
+test "MeasurementsData.isEmpty" {
+    var m = MeasurementsData{ .int = &.{} };
+    try std.testing.expect(m.isEmpty());
+
+    m = MeasurementsData{ .double = &.{} };
+    try std.testing.expect(m.isEmpty());
+}
 
 /// A set of data points with a series of metadata coming from the meter and the instrument.
 /// Holds the data collected by a single instrument inside a meter.

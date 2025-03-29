@@ -430,10 +430,11 @@ const view = @import("../../sdk/metrics/view.zig");
 /// AggregatedMetrics is a collection of metrics that have been aggregated using the
 /// MetricReader's temporality and aggregation functions.
 pub const AggregatedMetrics = struct {
-    fn aggregate(allocator: std.mem.Allocator, instr: *Instrument, aggregation: view.Aggregation) !MeasurementsData {
-        const instruments_datapoints: MeasurementsData = try instr.getInstrumentsData(allocator);
+    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation: view.Aggregation) !MeasurementsData {
+        // After aggreating, the original data needs to go away.
+        // The returned aggregated data copy the values and attributes from the originals.
         defer {
-            switch (instruments_datapoints) {
+            switch (data_points) {
                 inline else => |list| {
                     for (list) |*dp| {
                         dp.deinit(allocator);
@@ -442,8 +443,7 @@ pub const AggregatedMetrics = struct {
                 },
             }
         }
-
-        switch (instruments_datapoints) {
+        switch (data_points) {
             .int => {
                 var deduped: std.ArrayListUnmanaged(DataPoint(i64)) = .empty;
 
@@ -460,7 +460,7 @@ pub const AggregatedMetrics = struct {
 
                 // Iterate over all measurements and deduplicate them by applying the aggregation function
                 // using the attributes as the key.
-                for (instruments_datapoints.int) |data_point| {
+                for (data_points.int) |data_point| {
                     switch (aggregation) {
                         .Drop => return MeasurementsData{ .int = &[_]DataPoint(i64){} },
                         .Sum, .ExplicitBucketHistogram => {
@@ -501,7 +501,7 @@ pub const AggregatedMetrics = struct {
                 ) = .empty;
                 defer temp.deinit(allocator);
 
-                for (instruments_datapoints.double) |measure| {
+                for (data_points.double) |measure| {
                     switch (aggregation) {
                         .Drop => return MeasurementsData{ .double = &[_]DataPoint(f64){} },
                         .Sum, .ExplicitBucketHistogram => {
@@ -541,22 +541,26 @@ pub const AggregatedMetrics = struct {
         meter.mx.lock();
         defer meter.mx.unlock();
 
-        var result = try allocator.alloc(Measurements, meter.instruments.count());
+        var results = std.ArrayList(Measurements).init(allocator);
 
         var iter = meter.instruments.valueIterator();
-        var i: usize = 0;
         while (iter.next()) |instr| {
-            result[i] = Measurements{
-                .meterName = meter.name,
-                .meterSchemaUrl = meter.schema_url,
-                .meterAttributes = meter.attributes,
-                .instrumentKind = instr.*.kind,
-                .instrumentOptions = instr.*.opts,
-                .data = try aggregate(allocator, instr.*, aggregationBy(instr.*.kind)),
-            };
-            i += 1;
+            // Get the data points from the instrument and reset their state,
+            const data_points: MeasurementsData = try instr.*.getInstrumentsData(allocator);
+            // then fill the result with the aggregated data points
+            // only if there are data points.
+            if (!data_points.isEmpty()) {
+                try results.append(Measurements{
+                    .meterName = meter.name,
+                    .meterSchemaUrl = meter.schema_url,
+                    .meterAttributes = meter.attributes,
+                    .instrumentKind = instr.*.kind,
+                    .instrumentOptions = instr.*.opts,
+                    .data = try aggregate(allocator, data_points, aggregationBy(instr.*.kind)),
+                });
+            }
         }
-        return result;
+        return try results.toOwnedSlice();
     }
 };
 
@@ -571,7 +575,9 @@ test "aggregated metrics deduplicated from meter without attributes" {
     var iter = meter.instruments.valueIterator();
     const instr = iter.next() orelse unreachable;
 
-    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, instr.*, .Sum);
+    const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
+
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum);
     defer switch (deduped) {
         inline else => |m| std.testing.allocator.free(m),
     };
@@ -597,7 +603,9 @@ test "aggregated metrics deduplicated from meter with attributes" {
     var iter = meter.instruments.valueIterator();
     const instr = iter.next() orelse unreachable;
 
-    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, instr.*, .Sum);
+    const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
+
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum);
     defer switch (deduped) {
         inline else => |m| {
             for (deduped.int) |*dp| {
@@ -639,4 +647,34 @@ test "aggregated metrics fetch to owned slice" {
     try std.testing.expectEqualStrings(meter.schema_url.?, result[0].meterSchemaUrl.?);
     try std.testing.expectEqualStrings("test-counter", result[0].instrumentOptions.name);
     try std.testing.expectEqual(4, result[0].data.int[0].value);
+}
+
+test "aggregated metrics do not duplicate data points" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    try counter.add(1, .{});
+    try counter.add(3, .{});
+
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    defer {
+        for (result) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result);
+    }
+
+    try std.testing.expectEqual(1, result.len);
+    try std.testing.expectEqual(1, result[0].data.int.len);
+
+    const result_second = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    defer std.testing.allocator.free(result_second);
+
+    std.testing.expectEqual(0, result_second.len) catch |err| {
+        std.debug.print("Bad result from AggregatedMetrics.fetch():\n{any}\n", .{result_second[0]});
+        return err;
+    };
 }
