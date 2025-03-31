@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const MetricExporter = @import("../exporter.zig").MetricExporter;
-const ExporterIface = @import("../exporter.zig").ExporterIface;
+const ExporterImpl = @import("../exporter.zig").ExporterImpl;
 
 const MetricReadError = @import("../reader.zig").MetricReadError;
 
@@ -17,7 +17,7 @@ pub const StdoutExporter = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    exporter: ExporterIface,
+    exporter: ExporterImpl,
 
     file: std.fs.File = std.io.getStdOut(),
 
@@ -25,7 +25,7 @@ pub const StdoutExporter = struct {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
-            .exporter = ExporterIface{
+            .exporter = ExporterImpl{
                 .exportFn = exportBatch,
             },
         };
@@ -38,11 +38,11 @@ pub const StdoutExporter = struct {
 
     // Helper test function to set the output file
     // since zig build does not allow writing to stdout.
-    fn withOutputFile(self: *Self, file: std.fs.File) void {
+    pub fn withOutputFile(self: *Self, file: std.fs.File) void {
         self.file = file;
     }
 
-    fn exportBatch(iface: *ExporterIface, metrics: []Measurements) MetricReadError!void {
+    fn exportBatch(iface: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
         // Get a pointer to the instance of the struct that implements the interface.
         const self: *Self = @fieldParentPtr("exporter", iface);
         // We  need to clear the metrics after exporting them.
@@ -62,10 +62,6 @@ pub const StdoutExporter = struct {
 
             self.file.writeAll(fmt) catch |err| {
                 std.debug.print("Failed to write to stdout: {?}\n", .{err});
-                return MetricReadError.ExportFailed;
-            };
-            self.file.sync() catch |err| {
-                std.debug.print("Failed to sync file content: {?}\n", .{err});
                 return MetricReadError.ExportFailed;
             };
         }
@@ -113,9 +109,8 @@ test "exporters/stdout" {
     //
 
     var stdoutExporter = try StdoutExporter.init(allocator);
-    stdoutExporter.withOutputFile(file);
-
     defer stdoutExporter.deinit();
+    stdoutExporter.withOutputFile(file);
 
     const exporter = try MetricExporter.new(allocator, &stdoutExporter.exporter);
     defer exporter.shutdown();
@@ -123,5 +118,14 @@ test "exporters/stdout" {
     const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator));
     try std.testing.expect(result == .Success);
 
-    // TODO add assertions on the file
+    // Close the file to read the content
+    file.close();
+
+    const buf = try std.testing.allocator.alloc(u8, 1024);
+    defer std.testing.allocator.free(buf);
+
+    const read = try std.fs.cwd().readFile(filename, buf);
+
+    // first 52 bytes from the debug output are constant when using {?} in fmt.allocPrint
+    try std.testing.expectEqualStrings("api.metrics.measurement.Measurements{ .meterName = {", read[0..52]);
 }

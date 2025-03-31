@@ -22,7 +22,7 @@ const AggregationSelector = view.AggregationSelector;
 
 const exporter = @import("exporter.zig");
 const MetricExporter = exporter.MetricExporter;
-const ExporterIface = exporter.ExporterIface;
+const ExporterIface = exporter.ExporterImpl;
 const ExportResult = exporter.ExportResult;
 
 const InMemoryExporter = @import("exporters/in_memory.zig").InMemoryExporter;
@@ -62,9 +62,10 @@ pub const MetricReader = struct {
         s.* = Self{
             .allocator = allocator,
             .exporter = metric_exporter,
+            .temporality = metric_exporter.temporality orelse view.DefaultTemporality,
+            .aggregation = metric_exporter.aggregation orelse view.DefaultAggregation,
         };
-        if (metric_exporter.temporality) |t| s.temporality = t;
-        if (metric_exporter.aggregation) |a| s.aggregation = a;
+
         return s;
     }
 
@@ -126,7 +127,7 @@ pub const MetricReader = struct {
 };
 
 test "metric reader shutdown prevents collect() to execute" {
-    var noop = exporter.ExporterIface{ .exportFn = exporter.noopExporter };
+    var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter = try MetricExporter.new(std.testing.allocator, &noop);
     var metric_reader = try MetricReader.init(std.testing.allocator, metric_exporter);
     const e = metric_reader.collect();

@@ -1,11 +1,5 @@
 const std = @import("std");
 
-const protobuf = @import("protobuf");
-const ManagedString = protobuf.ManagedString;
-const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
-const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
-const spec = @import("../../api/metrics/spec.zig");
-
 const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
 const MetricReadError = @import("reader.zig").MetricReadError;
 const MetricReader = @import("reader.zig").MetricReader;
@@ -15,6 +9,9 @@ const MeasurementsData = @import("../../api/metrics/measurement.zig").Measuremen
 const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 
 const Attributes = @import("../../attributes.zig").Attributes;
+
+const InMemoryExporter = @import("./exporters/in_memory.zig").InMemoryExporter;
+const StdoutExporter = @import("./exporters/stdout.zig").StdoutExporter;
 
 const view = @import("view.zig");
 
@@ -33,7 +30,7 @@ pub const MetricExporter = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    exporter: *ExporterIface,
+    exporter: *ExporterImpl,
 
     // Configuration will be passed to the MetricReader.
     // This is needed because exporters MUST provide aggregation and temporality
@@ -46,16 +43,51 @@ pub const MetricExporter = struct {
     exportCompleted: std.Thread.Mutex = std.Thread.Mutex{},
 
     /// Creates a new MetricExporter, providing an allocator and an exporter implementation.
+    /// Use this function to plug a custom exporter implementation.
+    /// Prefer the accessory functions to create pre-defined exporters.
     //TODO we should have the option to configure the exporter with aggregation and temporality.
     // In a design where MetricExporter is the one dispatching various implementations through
     // associated tyoes, we could have a method to set the configuration.
-    pub fn new(allocator: std.mem.Allocator, exporter: *ExporterIface) !*Self {
+    pub fn new(allocator: std.mem.Allocator, exporter: *ExporterImpl) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
             .exporter = exporter,
         };
         return s;
+    }
+
+    /// InMemory exporter creates an in-memory exporter as described in the OpenTelemetry specification.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/in-memory/.
+    pub fn InMemory(
+        allocator: std.mem.Allocator,
+        temporality: ?view.TemporalitySelector,
+        aggregation: ?view.AggregationSelector,
+    ) !struct { exporter: *MetricExporter, in_memory: *InMemoryExporter } {
+        const in_mem = try InMemoryExporter.init(allocator);
+        const exporter = try MetricExporter.new(allocator, &in_mem.exporter);
+        // Default configuration
+        exporter.temporality = temporality orelse view.TemporalityCumulative;
+        exporter.aggregation = aggregation orelse view.DefaultAggregation;
+
+        return .{ .exporter = exporter, .in_memory = in_mem };
+    }
+
+    /// Stdout exporter creates an exporter that writes metrics data to the standard output.
+    /// This is useful for debugging purposes.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/stdout/.
+    pub fn Stdout(
+        allocator: std.mem.Allocator,
+        temporality: ?view.TemporalitySelector,
+        aggregation: ?view.AggregationSelector,
+    ) !struct { exporter: *MetricExporter, stdout: *StdoutExporter } {
+        const stdout = try StdoutExporter.init(allocator);
+        const exporter = try MetricExporter.new(allocator, &stdout.exporter);
+        // Default configuration
+        exporter.temporality = temporality orelse view.TemporalityCumulative;
+        exporter.aggregation = aggregation orelse view.DefaultAggregation;
+
+        return .{ .exporter = exporter, .stdout = stdout };
     }
 
     /// ExportBatch exports a batch of metrics data by calling the exporter implementation.
@@ -105,11 +137,11 @@ pub const MetricExporter = struct {
 
 // test harness to build a noop exporter.
 // marked as pub only for testing purposes.
-pub fn noopExporter(_: *ExporterIface, _: []Measurements) MetricReadError!void {
+pub fn noopExporter(_: *ExporterImpl, _: []Measurements) MetricReadError!void {
     return;
 }
 // mocked metric exporter to assert metrics data are read once exported.
-fn mockExporter(_: *ExporterIface, metrics: []Measurements) MetricReadError!void {
+fn mockExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
     defer {
         for (metrics) |m| {
             var d = m;
@@ -124,14 +156,14 @@ fn mockExporter(_: *ExporterIface, metrics: []Measurements) MetricReadError!void
 }
 
 // test harness to build an exporter that times out.
-fn waiterExporter(_: *ExporterIface, _: []Measurements) MetricReadError!void {
+fn waiterExporter(_: *ExporterImpl, _: []Measurements) MetricReadError!void {
     // Sleep for 1 second to simulate a slow exporter.
     std.time.sleep(std.time.ns_per_ms * 1000);
     return;
 }
 
 test "metric exporter no-op" {
-    var noop = ExporterIface{ .exportFn = noopExporter };
+    var noop = ExporterImpl{ .exportFn = noopExporter };
     var me = try MetricExporter.new(std.testing.allocator, &noop);
     defer me.shutdown();
 
@@ -152,7 +184,7 @@ test "metric exporter is called by metric reader" {
     var mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
-    var mock = ExporterIface{ .exportFn = mockExporter };
+    var mock = ExporterImpl{ .exportFn = mockExporter };
 
     const metric_exporter = try MetricExporter.new(std.testing.allocator, &mock);
 
@@ -171,7 +203,7 @@ test "metric exporter is called by metric reader" {
 }
 
 test "metric exporter force flush succeeds" {
-    var noop = ExporterIface{ .exportFn = noopExporter };
+    var noop = ExporterImpl{ .exportFn = noopExporter };
     var me = try MetricExporter.new(std.testing.allocator, &noop);
     defer me.shutdown();
 
@@ -195,7 +227,7 @@ fn backgroundRunner(me: *MetricExporter, metrics: []Measurements) !void {
 }
 
 test "metric exporter force flush fails" {
-    var wait = ExporterIface{ .exportFn = waiterExporter };
+    var wait = ExporterImpl{ .exportFn = waiterExporter };
     var me = try MetricExporter.new(std.testing.allocator, &wait);
     defer me.shutdown();
 
@@ -219,15 +251,76 @@ test "metric exporter force flush fails" {
     try std.testing.expectError(MetricReadError.ForceFlushTimedOut, e);
 }
 
+test "metric exporter builder in memory" {
+    var mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const metric_exporter = try MetricExporter.InMemory(
+        std.testing.allocator,
+        null,
+        null,
+    );
+
+    defer {
+        metric_exporter.in_memory.deinit();
+        metric_exporter.exporter.shutdown();
+    }
+    const metric_reader = try MetricReader.init(std.testing.allocator, metric_exporter.exporter);
+    defer metric_reader.shutdown();
+
+    try mp.addReader(metric_reader);
+
+    const m = try mp.getMeter(.{ .name = "my-meter" });
+    var g = try m.createGauge(i64, .{
+        .name = "my-gauge",
+        .description = "a test gauge",
+    });
+
+    try g.record(42, .{});
+
+    try metric_reader.collect();
+    const data = try metric_exporter.in_memory.fetch(std.testing.allocator);
+    defer {
+        for (data) |*d| {
+            d.*.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(data);
+    }
+
+    try std.testing.expectEqual(42, data[0].data.int[0].value);
+}
+
+test "metric exporter builder stdout" {
+    var mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const metric_exporter = try MetricExporter.Stdout(
+        std.testing.allocator,
+        null,
+        null,
+    );
+    defer {
+        metric_exporter.stdout.deinit();
+        metric_exporter.exporter.shutdown();
+    }
+
+    const metric_reader = try MetricReader.init(std.testing.allocator, metric_exporter.exporter);
+    defer metric_reader.shutdown();
+
+    try mp.addReader(metric_reader);
+
+    try metric_reader.collect();
+}
+
 /// ExporterIface is the interface for exporting metrics.
 /// Implementations can be satisfied by any type by having a member field of type
 /// ExporterIface and a member function exportBatch with the correct signature.
-pub const ExporterIface = struct {
-    exportFn: *const fn (*ExporterIface, []Measurements) MetricReadError!void,
+pub const ExporterImpl = struct {
+    exportFn: *const fn (*ExporterImpl, []Measurements) MetricReadError!void,
 
     /// ExportBatch defines the behavior that metric exporters will implement.
     /// Each metric exporter owns the metrics data passed to it.
-    pub fn exportBatch(self: *ExporterIface, data: []Measurements) MetricReadError!void {
+    pub fn exportBatch(self: *ExporterImpl, data: []Measurements) MetricReadError!void {
         return self.exportFn(self, data);
     }
 };
@@ -332,8 +425,6 @@ fn collectAndExport(
         shared.cond.timedWait(&shared.lock, exportIntervalMillis * std.time.ns_per_ms) catch continue;
     }
 }
-
-const InMemoryExporter = @import("./exporters/in_memory.zig").InMemoryExporter;
 
 test "e2e periodic exporting metric reader" {
     const allocator = std.testing.allocator;

@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const MetricExporter = @import("../exporter.zig").MetricExporter;
-const ExporterIface = @import("../exporter.zig").ExporterIface;
+const ExporterImpl = @import("../exporter.zig").ExporterImpl;
 
 const MetricReadError = @import("../reader.zig").MetricReadError;
 
@@ -17,7 +17,7 @@ pub const InMemoryExporter = struct {
     allocator: std.mem.Allocator,
     data: std.ArrayListUnmanaged(Measurements) = undefined,
     // Implement the interface via @fieldParentPtr
-    exporter: ExporterIface,
+    exporter: ExporterImpl,
 
     mx: std.Thread.Mutex = std.Thread.Mutex{},
 
@@ -26,7 +26,7 @@ pub const InMemoryExporter = struct {
         s.* = Self{
             .allocator = allocator,
             .data = .empty,
-            .exporter = ExporterIface{
+            .exporter = ExporterImpl{
                 .exportFn = exportBatch,
             },
         };
@@ -44,7 +44,7 @@ pub const InMemoryExporter = struct {
     }
 
     // Implements the ExportIFace interface only method.
-    fn exportBatch(iface: *ExporterIface, metrics: []Measurements) MetricReadError!void {
+    fn exportBatch(iface: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
         // Get a pointer to the instance of the struct that implements the interface.
         const self: *Self = @fieldParentPtr("exporter", iface);
         self.mx.lock();

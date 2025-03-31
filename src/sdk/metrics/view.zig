@@ -47,3 +47,7 @@ pub fn DefaultTemporality(kind: instrument.Kind) Temporality {
 pub const TemporalitySelector = *const fn (instrument.Kind) Temporality;
 
 pub const AggregationSelector = *const fn (instrument.Kind) Aggregation;
+
+pub fn TemporalityCumulative(_: instrument.Kind) Temporality {
+    return Temporality.Cumulative;
+}
