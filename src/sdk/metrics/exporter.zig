@@ -21,8 +21,14 @@ const view = @import("view.zig");
 pub const ExportResult = enum {
     Success,
     Failure,
+    // TODO: add a timeout error
 };
 
+/// MetricExporter is the container that is resposible for moving metrics out
+/// of MetricReader.
+/// Configuration for the metrics view is passed to the MetricReader.
+/// It has pluggable exporters that can be implemented by the users,
+/// and pre-defined ones that are provided by the library.
 pub const MetricExporter = struct {
     const Self = @This();
 
@@ -319,10 +325,10 @@ fn collectAndExport(
         } else {
             std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{reader});
         }
-        // timedWait returns an error when the timeout is reached, so we cacth it and continue.
+        // timedWait returns an error when the timeout is reached waiting for a signal, so we catch it and continue.
         // This is a way of keeping the timer running, becaus no other wake up signal is sent other than
         // during shutdown.
-        // When the signal is actually received, the loop will exit because shared.shuttingDown will be true.
+        // When the signal is actually received, the while loop exits because shared.shuttingDown has been set to true.
         shared.cond.timedWait(&shared.lock, exportIntervalMillis * std.time.ns_per_ms) catch continue;
     }
 }
@@ -391,7 +397,8 @@ test "e2e periodic exporting metric reader" {
     try std.testing.expectEqual(2, data.len);
     // Meter attributes are added.
     try std.testing.expectEqual("test-reader", data[0].meterName);
-
+    try std.testing.expectEqual(1, data[0].meterAttributes.?.len);
+    try std.testing.expectEqual("wonderful", data[0].meterAttributes.?[0].key);
     // Counter has 2 data points.
     try std.testing.expectEqual(2, data[0].data.int.len);
 }

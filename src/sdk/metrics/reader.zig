@@ -217,6 +217,6 @@ test "metric reader custom temporality and aggregation" {
         }
         allocator.free(data);
     }
-
-    std.debug.assert(data.len == 1);
+    // Since we are using the .Drop aggregation, no data should be collected.
+    try std.testing.expectEqual(0, data.len);
 }

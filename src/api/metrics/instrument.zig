@@ -668,10 +668,13 @@ test "instrument thread-safety between datapoints collection and recording" {
 
 fn testAddingOne(counter: *Counter(u64)) !void {
     const val: []const u8 = "test-val";
-    try counter.add(1, .{ "abc", val });
+    try counter.add(2, .{ "abc", val });
 }
 
 fn testCollect(counter: *Counter(u64)) !void {
+    while (!counter.lock.tryLock()) {}
+    counter.lock.unlock();
+
     const fetched = try counter.measurementsData(std.testing.allocator);
     defer {
         for (fetched.int) |*m| {
@@ -683,7 +686,7 @@ fn testCollect(counter: *Counter(u64)) !void {
     // the second added by `testAddingOne` called in a separate thread.
     try std.testing.expectEqual(2, fetched.int.len);
     try std.testing.expectEqual(1, fetched.int[0].value);
-    try std.testing.expectEqual(1, fetched.int[1].value);
+    try std.testing.expectEqual(2, fetched.int[1].value);
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {

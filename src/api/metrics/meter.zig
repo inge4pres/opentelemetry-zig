@@ -547,16 +547,17 @@ pub const AggregatedMetrics = struct {
         while (iter.next()) |instr| {
             // Get the data points from the instrument and reset their state,
             const data_points: MeasurementsData = try instr.*.getInstrumentsData(allocator);
+            const aggregated = try aggregate(allocator, data_points, aggregationBy(instr.*.kind));
             // then fill the result with the aggregated data points
             // only if there are data points.
-            if (!data_points.isEmpty()) {
+            if (!aggregated.isEmpty()) {
                 try results.append(Measurements{
                     .meterName = meter.name,
                     .meterSchemaUrl = meter.schema_url,
                     .meterAttributes = meter.attributes,
                     .instrumentKind = instr.*.kind,
                     .instrumentOptions = instr.*.opts,
-                    .data = try aggregate(allocator, data_points, aggregationBy(instr.*.kind)),
+                    .data = aggregated,
                 });
             }
         }
