@@ -407,4 +407,5 @@ test "e2e periodic exporting metric reader" {
 test {
     _ = @import("exporters/in_memory.zig");
     _ = @import("exporters/otlp.zig");
+    _ = @import("exporters/stdout.zig");
 }

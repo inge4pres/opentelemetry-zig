@@ -67,7 +67,7 @@ pub const InMemoryExporter = struct {
     }
 };
 
-test "in memory exporter stores data" {
+test "exporters/in_memory" {
     const allocator = std.testing.allocator;
 
     var inMemExporter = try InMemoryExporter.init(allocator);
