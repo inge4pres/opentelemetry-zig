@@ -6,6 +6,11 @@ const instrument = @import("../../../api/metrics/instrument.zig");
 const Instrument = instrument.Instrument;
 const Kind = instrument.Kind;
 
+const measure = @import("../../../api/metrics/measurement.zig");
+const Measurements = measure.Measurements;
+const DataPoint = measure.DataPoint;
+const HistogramPoint = measure.HistogramDataPoint;
+
 const view = @import("../view.zig");
 
 const protobuf = @import("protobuf");
@@ -15,54 +20,38 @@ const pbmetrics = @import("../../../opentelemetry/proto/metrics/v1.pb.zig");
 
 pub fn toProtobufMetric(
     allocator: std.mem.Allocator,
-    temporality: *const fn (Kind) view.Temporality,
-    i: *Instrument,
+    measurements: Measurements,
+    temporailty: view.TemporalitySelector,
 ) !pbmetrics.Metric {
+    const instrument_opts = measurements.instrumentOptions;
+    const kind = measurements.instrumentKind;
     return pbmetrics.Metric{
-        .name = ManagedString.managed(i.opts.name),
-        .description = if (i.opts.description) |d| ManagedString.managed(d) else .Empty,
-        .unit = if (i.opts.unit) |u| ManagedString.managed(u) else .Empty,
-        .data = switch (i.data) {
-            .Counter_u16 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-                .data_points = try sumDataPoints(allocator, u16, i.data.Counter_u16),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-                .is_monotonic = true,
-            } },
-            .Counter_u32 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-                .data_points = try sumDataPoints(allocator, u32, i.data.Counter_u32),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-                .is_monotonic = true,
-            } },
+        .name = ManagedString.managed(instrument_opts.name),
+        .description = if (instrument_opts.description) |d| ManagedString.managed(d) else .Empty,
+        .unit = if (instrument_opts.unit) |u| ManagedString.managed(u) else .Empty,
+        .data = switch (kind) {
+            .Counter, .UpDownCounter => pbmetrics.Metric.data_union{
+                .sum = pbmetrics.Sum{
+                    .data_points = try sumDataPoints(allocator, i64, measurements.data.int),
+                    .aggregation_temporality = temporailty(kind).toProto(),
+                    .is_monotonic = true,
+                },
+            },
 
-            .Counter_u64 => pbmetrics.Metric.data_union{ .sum = pbmetrics.Sum{
-                .data_points = try sumDataPoints(allocator, u64, i.data.Counter_u64),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-                .is_monotonic = true,
-            } },
-            .Histogram_u16 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                .data_points = try histogramDataPoints(allocator, u16, i.data.Histogram_u16),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-            } },
+            .Histogram => pbmetrics.Metric.data_union{
+                .histogram = pbmetrics.Histogram{
+                    .data_points = try histogramDataPoints(allocator, measurements.data.histogram),
+                    .aggregation_temporality = temporailty(kind).toProto(),
+                },
+            },
 
-            .Histogram_u32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                .data_points = try histogramDataPoints(allocator, u32, i.data.Histogram_u32),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-            } },
-
-            .Histogram_u64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                .data_points = try histogramDataPoints(allocator, u64, i.data.Histogram_u64),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-            } },
-
-            .Histogram_f32 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                .data_points = try histogramDataPoints(allocator, f32, i.data.Histogram_f32),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-            } },
-            .Histogram_f64 => pbmetrics.Metric.data_union{ .histogram = pbmetrics.Histogram{
-                .data_points = try histogramDataPoints(allocator, f64, i.data.Histogram_f64),
-                .aggregation_temporality = temporality(i.kind).toProto(),
-            } },
-            // TODO: add other metrics types.
+            .Gauge => pbmetrics.Metric.data_union{
+                .gauge = pbmetrics.Gauge{
+                    .data_points = .empty, //FIXME
+                    .aggregation_temporality = temporailty(kind).toProto(),
+                },
+            },
+            // TODO: add other instruments.
             else => unreachable,
         },
         // Metadata used for internal translations and we can discard for now.
@@ -96,50 +85,39 @@ fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[
     }
 }
 
-fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, c: *instrument.Counter(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
-    var dataPoints = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
-    for (c.measurements.items) |measure| {
-        const attrs = try attributesToProtobufKeyValueList(allocator, measure.attributes);
-        const dp = pbmetrics.NumberDataPoint{
+fn sumDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points: []DataPoint(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
+    var a = std.ArrayList(pbmetrics.NumberDataPoint).init(allocator);
+    for (data_points) |dp| {
+        const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
+        const number_dp = pbmetrics.NumberDataPoint{
             .attributes = attrs.values,
-            // FIXME add a timestamp to Measurement in order to get it here.
+            // FIXME add a timestamp to DatatPoint in order to get it here.
             .time_unix_nano = @intCast(std.time.nanoTimestamp()),
             // FIXME reader's temporailty is not applied here.
-            .value = .{ .as_int = @intCast(measure.value) },
+            .value = .{ .as_int = dp.value },
 
             // TODO: support exemplars.
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
         };
-        try dataPoints.append(dp);
+        try a.append(number_dp);
     }
-    return dataPoints;
+    return a;
 }
 
-fn histogramDataPoints(allocator: std.mem.Allocator, comptime T: type, h: *instrument.Histogram(T)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
-    var dataPoints = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator);
-    for (h.dataPoints.items) |measure| {
-        const attrs = try attributesToProtobufKeyValueList(allocator, measure.attributes);
-        var dp = pbmetrics.HistogramDataPoint{
+fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(HistogramPoint)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
+    var a = std.ArrayList(pbmetrics.HistogramDataPoint).init(allocator);
+    for (data_points) |dp| {
+        const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
+        try a.append(pbmetrics.HistogramDataPoint{
             .attributes = attrs.values,
-            .time_unix_nano = @intCast(std.time.nanoTimestamp()),
-            // FIXME reader's temporailty is not applied here.
-            .count = h.counts.get(measure.attributes) orelse 0,
-            .sum = switch (@TypeOf(h.*)) {
-                instrument.Histogram(u16), instrument.Histogram(u32), instrument.Histogram(u64) => @as(f64, @floatFromInt(measure.value)),
-                instrument.Histogram(f32), instrument.Histogram(f64) => @as(f64, @floatCast(measure.value)),
-                else => unreachable,
-            },
-            .bucket_counts = std.ArrayList(u64).init(allocator),
+            .time_unix_nano = @intCast(std.time.nanoTimestamp()), //TODO fetch from DataPoint
+            .count = dp.value.count,
+            .sum = dp.value.sum,
+            .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, dp.value.bucket_counts),
             .explicit_bounds = std.ArrayList(f64).init(allocator),
             // TODO support exemplars
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
-        };
-        if (h.bucket_counts.get(measure.attributes)) |b| {
-            try dp.bucket_counts.appendSlice(b);
-        }
-        try dp.explicit_bounds.appendSlice(h.buckets);
-
-        try dataPoints.append(dp);
+        });
     }
-    return dataPoints;
+    return a;
 }

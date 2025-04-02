@@ -57,7 +57,7 @@ pub const MetricExporter = struct {
         return s;
     }
 
-    /// InMemory exporter creates an in-memory exporter as described in the OpenTelemetry specification.
+    /// Creates an in-memory exporter as described in the OpenTelemetry specification.
     /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/in-memory/.
     pub fn InMemory(
         allocator: std.mem.Allocator,
@@ -73,7 +73,7 @@ pub const MetricExporter = struct {
         return .{ .exporter = exporter, .in_memory = in_mem };
     }
 
-    /// Stdout exporter creates an exporter that writes metrics data to the standard output.
+    /// Creates an exporter that writes metrics data to standard output.
     /// This is useful for debugging purposes.
     /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/stdout/.
     pub fn Stdout(
@@ -308,7 +308,8 @@ test "metric exporter builder stdout" {
     defer metric_reader.shutdown();
 
     try mp.addReader(metric_reader);
-
+    // We can't colect any metrics because usage of stdout is blocked by zig build.
+    // This test is only demonstrative.
     try metric_reader.collect();
 }
 

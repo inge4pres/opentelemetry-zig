@@ -16,6 +16,7 @@ pub fn DataPoint(comptime T: type) type {
         // TODO: consider adding a timestamp field
 
         pub fn new(allocator: std.mem.Allocator, value: T, attributes: anytype) std.mem.Allocator.Error!Self {
+            //TODO: consider setting the timestamp as part of creation of DataPoint
             return Self{ .value = value, .attributes = try Attributes.from(allocator, attributes) };
         }
 
@@ -83,4 +84,17 @@ pub const Measurements = struct {
             },
         }
     }
+};
+
+/// Holds the histogram measurements properties.
+// TODO: use this struct when aggregating.
+pub const HistogramDataPoint = struct {
+    // Sorted by upper_bound, last is +Inf.
+    // We need tohave them because after exporting we can't reconstruct them.
+    explicit_bounds: []const f64,
+    bucket_counts: []const u64, // Observations per bucket
+    sum: ?f64, // Total sum of observations, might not exist when observations can be negative
+    count: u64, // Total number of observations
+    min: ?f64 = null, // Optional min value
+    max: ?f64 = null, // Optional max value
 };
