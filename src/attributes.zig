@@ -14,7 +14,7 @@ fn keyValue(comptime T: type) type {
                     bool => .{ .bool = self.value },
                     []const u8, [:0]const u8, *[:0]const u8 => .{ .string = self.value },
                     []u8, [:0]u8, *const [:0]u8 => .{ .string = self.value },
-                    i16, i32, i64, u16, u32, u64 => .{ .int = @intCast(self.value) },
+                    isize, usize, i16, i32, i64, u16, u32, u64 => .{ .int = @intCast(self.value) },
                     f32, f64 => .{ .double = @floatCast(self.value) },
                     else => @compileError("unsupported value type for attribute " ++ @typeName(@TypeOf(self.value))),
                 },

@@ -103,13 +103,11 @@ fn setupTelemetry(allocator: std.mem.Allocator) !OTel {
     const mp = try sdk.MeterProvider.default();
     errdefer mp.shutdown();
 
-    var in_mem = try sdk.InMemoryExporter.init(allocator);
+    const me = try sdk.MetricExporter.InMemory(allocator, null, null);
+    var in_mem = me.in_memory;
     errdefer in_mem.deinit();
 
-    const metric_exporter = try sdk.MetricExporter.new(allocator, &in_mem.exporter);
-
-    const mr = try sdk.MetricReader.init(allocator, metric_exporter);
-
+    const mr = try sdk.MetricReader.init(allocator, me.exporter);
     try mp.addReader(mr);
 
     return .{
