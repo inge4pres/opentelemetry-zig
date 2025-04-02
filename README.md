@@ -10,7 +10,7 @@ The version of the specification targeted here is **1.35.0**.
 
 ## Goals
 
-1. Provide a Zig library implementing the _stable_ features of an OpenTelemtry SDK:
+1. Provide a Zig library implementing the _stable_ features of an OpenTelemetry SDK:
     * Metrics
     * Traces
     * Logs
