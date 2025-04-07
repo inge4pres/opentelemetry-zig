@@ -4,6 +4,8 @@ const spec = @import("spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const DataPoint = @import("measurement.zig").DataPoint;
+const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
+
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
 pub const Kind = enum {
@@ -32,6 +34,9 @@ const instrumentData = union(enum) {
     Histogram_u16: *Histogram(u16),
     Histogram_u32: *Histogram(u32),
     Histogram_u64: *Histogram(u64),
+    Histogram_i16: *Histogram(i16),
+    Histogram_i32: *Histogram(i32),
+    Histogram_i64: *Histogram(i64),
     Histogram_f32: *Histogram(f32),
     Histogram_f64: *Histogram(f64),
     Gauge_i16: *Gauge(i16),
@@ -248,36 +253,52 @@ pub fn Histogram(comptime T: type) type {
         lock: std.Thread.Mutex,
 
         options: HistogramOptions,
-        /// Keeps track of the recorded values for each set of attributes.
-        /// The measurements are cleared after each collection cycle.
-        data_points: std.ArrayListUnmanaged(DataPoint(T)),
-
-        // Keeps track of how many values are summed for each set of attributes.
-        counts: std.AutoHashMapUnmanaged(?[]Attribute, usize),
         // Holds the counts of the values falling in each bucket for the histogram.
         // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
         // buckets are used.
         // Buckets are always defined as f64.
         buckets: []const f64,
-        bucket_counts: std.AutoHashMapUnmanaged(?[]Attribute, []usize),
-        min: ?T = null,
-        max: ?T = null,
+
+        /// Keeps track of the recorded values for each set of attributes.
+        /// The measurements are cleared after each collection cycle.
+        data_points: std.ArrayListUnmanaged(DataPoint(HistogramDataPoint)),
+
+        // Internal collection of the histogram data points that are updated on record.
+        state: std.HashMap(
+            Attributes,
+            HistogramDataPoint,
+            Attributes.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ),
 
         fn init(allocator: std.mem.Allocator, options: ?HistogramOptions) !Self {
             // Use the default options if none are provided.
             const opts = options orelse HistogramOptions{};
+
+            // Buckets
+            const desired_buckets = opts.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
             // Buckets are part of the options, so we validate them from there.
-            const buckets = opts.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
-            try spec.validateExplicitBuckets(buckets);
+            try spec.validateExplicitBuckets(desired_buckets);
+            var buckets: []f64 = try allocator.alloc(f64, desired_buckets.len + 1);
+            for (desired_buckets, 0..) |b, i| {
+                buckets[i] = b;
+            }
+            // Set +Inf as last entry in the buckets.
+            // We always have to have the +Inf bucket as last for compatibility with OpenMetrics.
+            buckets[desired_buckets.len] = std.math.inf(f64);
 
             return Self{
                 .allocator = allocator,
                 .lock = std.Thread.Mutex{},
                 .options = opts,
-                .data_points = .empty,
-                .counts = .empty,
                 .buckets = buckets,
-                .bucket_counts = .empty,
+                .data_points = .empty,
+                .state = std.HashMap(
+                    Attributes,
+                    HistogramDataPoint,
+                    Attributes.HashContext,
+                    std.hash_map.default_max_load_percentage,
+                ).init(allocator),
             };
         }
 
@@ -286,12 +307,14 @@ pub fn Histogram(comptime T: type) type {
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
+            self.allocator.free(self.buckets);
             self.data_points.deinit(self.allocator);
-            // We don't need to free the counts or bucket_counts keys,
-            // because the keys are pointers to the same optional
-            // KeyValueList used in the dataPoints ArrayList.
-            self.counts.deinit(self.allocator);
-            self.bucket_counts.deinit(self.allocator);
+            var state_iter = self.state.iterator();
+            while (state_iter.next()) |v| {
+                if (v.key_ptr.attributes) |attrs| self.allocator.free(attrs);
+                self.allocator.free(v.value_ptr.bucket_counts);
+            }
+            self.state.deinit();
         }
 
         /// Add the given value to the histogram, using the provided attributes.
@@ -299,61 +322,80 @@ pub fn Histogram(comptime T: type) type {
             self.lock.lock();
             defer self.lock.unlock();
 
-            const dp = try DataPoint(T).new(self.allocator, value, attributes);
-            try self.data_points.append(self.allocator, dp);
+            const recorded_attributes = Attributes.with(try Attributes.from(self.allocator, attributes));
 
+            //TODO build the key/value using getOrPut and fill in the "value" for the HistogramValue
+
+            const result = try self.state.getOrPut(recorded_attributes);
+            if (!result.found_existing) {
+                // Create a new entry in the state for these attributes:
+                // - bucket counts are allocated and initialized to 0.
+                // - all other fields are set to null or empty.
+                var buckets = try self.allocator.alloc(u64, self.buckets.len);
+                for (0..self.buckets.len) |i| {
+                    buckets[i] = 0;
+                }
+                result.value_ptr.* = HistogramDataPoint{
+                    .explicit_bounds = self.buckets,
+                    .bucket_counts = buckets,
+                    .sum = null,
+                    .count = 0,
+                    .min = null,
+                    .max = null,
+                };
+            } else {
+                // When the key exists, we need to clear up the attributes allocate previously.
+                if (recorded_attributes.attributes) |a| self.allocator.free(a);
+            }
+
+            // Now update the value.
+            var state_entry = result.value_ptr;
+
+            const f64_val: f64 = switch (T) {
+                u16, u32, u64, i16, i32, i64 => @as(f64, @floatFromInt(value)),
+                f32, f64 => @as(f64, value),
+                // Other compile-time checks ensure we don't get here.
+                else => unreachable,
+            };
+            // addition will fail in (the unlikely) case of overflow
+            // sum
+            state_entry.sum = switch (T) {
+                // we don't set sum when the value can be negative
+                i16, i32, i64 => null,
+                u16, u32, u64, f32, f64 => if (state_entry.sum) |curr| curr + f64_val else f64_val,
+                else => unreachable,
+            };
+            // total count of observations
+            state_entry.count = try std.math.add(u64, state_entry.count, 1);
+            // min and max
+            if (self.options.recordMinMax) {
+                state_entry.min = if (state_entry.min) |curr| @min(curr, f64_val) else f64_val;
+                state_entry.max = if (state_entry.max) |curr| @max(curr, f64_val) else f64_val;
+            }
             // Find the value for the bucket that the value falls in.
             // If the value is greater than the last bucket, it goes in the last bucket.
             // If the value is less than the first bucket, it goes in the first bucket.
-            // Otherwise, it goes in the bucket for which the boundary is greater than or equal the value.
-            const bucketIdx = self.findBucket(value);
-            if (self.bucket_counts.getEntry(dp.attributes)) |bc| {
-                bc.value_ptr.*[bucketIdx] += 1;
-            } else {
-                var counts = [_]usize{0} ** maxBuckets;
-                counts[bucketIdx] = 1;
-                try self.bucket_counts.put(self.allocator, dp.attributes, counts[0..self.buckets.len]);
-            }
-
-            // Increment the count of values for the given attributes.
-            if (self.counts.getEntry(dp.attributes)) |c| {
-                c.value_ptr.* += 1;
-            } else {
-                try self.counts.put(self.allocator, dp.attributes, 1);
-            }
-
-            // Update Min and Max values.
-            if (self.options.recordMinMax) {
-                if (self.max) |max| {
-                    if (value > max) {
-                        self.max = value;
-                    }
-                } else {
-                    self.max = value;
-                }
-                if (self.min) |min| {
-                    if (value < min) {
-                        self.min = value;
-                    }
-                } else {
-                    self.min = value;
+            // Otherwise, it goes in each bucket for which the boundary is greater than or equal the value.
+            for (self.buckets, 0..) |boundary, i| {
+                if (f64_val <= boundary) {
+                    state_entry.bucket_counts[i] += 1;
                 }
             }
-        }
 
-        fn findBucket(self: Self, value: T) usize {
-            const vf64: f64 = switch (T) {
-                u16, u32, u64 => @as(f64, @floatFromInt(value)),
-                f32, f64 => @as(f64, value),
-                else => unreachable,
+            var bcounts = try self.allocator.alloc(u64, self.buckets.len);
+            for (state_entry.bucket_counts, 0..) |b, i| {
+                bcounts[i] = b;
+            }
+            const val = HistogramDataPoint{
+                .bucket_counts = bcounts[0..],
+                .explicit_bounds = state_entry.explicit_bounds,
+                .sum = state_entry.sum,
+                .count = state_entry.count,
+                .min = state_entry.min,
+                .max = state_entry.max,
             };
-            for (self.buckets, 0..) |b, i| {
-                if (b >= vf64) {
-                    return i;
-                }
-            }
-            // The last bucket is returned if the value is greater than it.
-            return self.buckets.len - 1;
+            const dp = try DataPoint(HistogramDataPoint).new(self.allocator, val, attributes);
+            try self.data_points.append(self.allocator, dp);
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
@@ -361,7 +403,7 @@ pub fn Histogram(comptime T: type) type {
             defer self.lock.unlock();
 
             // We have to clear up the data points after we return a copy of them.
-            // This resets the state of the instrument, allowing to record more datapoints
+            // This resets the collected measurments, allowing to record more datapoints
             // until the next collection cycle.
             defer {
                 for (self.data_points.items) |*dp| {
@@ -370,29 +412,11 @@ pub fn Histogram(comptime T: type) type {
                 self.data_points.clearRetainingCapacity();
             }
 
-            switch (T) {
-                u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
-                    for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{
-                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
-                            .value = @intCast(m.value),
-                        };
-                    }
-                    return .{ .int = data };
-                },
-                f32, f64 => {
-                    var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
-                    for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{
-                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
-                            .value = @floatCast(m.value),
-                        };
-                    }
-                    return .{ .double = data };
-                },
-                else => unreachable,
+            var data_points = try allocator.alloc(DataPoint(HistogramDataPoint), self.data_points.items.len);
+            for (self.data_points.items, 0..) |m, idx| {
+                data_points[idx] = try m.deepCopy(allocator);
             }
+            return .{ .histogram = data_points };
         }
     };
 }
@@ -507,7 +531,7 @@ test "meter can create counter instrument and record increase with attributes" {
     std.debug.assert(counter.data_points.items[2].value == 2);
 }
 
-test "meter can create histogram instrument and record value without explicit buckets" {
+test "histogram records value without explicit buckets" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -517,16 +541,13 @@ test "meter can create histogram instrument and record value without explicit bu
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-    std.debug.assert(histogram.data_points.items.len == 3);
-
-    const counts = histogram.bucket_counts.get(null).?;
-    std.debug.assert(counts.len == spec.defaultHistogramBucketBoundaries.len);
-    const expected_counts = &[_]usize{ 0, 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    try std.testing.expectEqualSlices(usize, expected_counts, counts);
+    const last_datapoint = histogram.data_points.items[2];
+    std.debug.assert(last_datapoint.value.bucket_counts.len == spec.defaultHistogramBucketBoundaries.len + 1);
+    const expected_counts = &[_]u64{ 0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3 };
+    try std.testing.expectEqualSlices(u64, expected_counts, last_datapoint.value.bucket_counts);
 }
 
-test "meter can create histogram instrument and record value with explicit buckets" {
+test "histogram records value with explicit buckets" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -536,16 +557,68 @@ test "meter can create histogram instrument and record value with explicit bucke
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    try std.testing.expectEqual(.{ 1, 15 }, .{ histogram.min.?, histogram.max.? });
-    std.debug.assert(histogram.data_points.items.len == 3);
+    try std.testing.expectEqual(3, histogram.data_points.items.len);
 
-    const counts = histogram.bucket_counts.get(null).?;
-    std.debug.assert(counts.len == 4);
-    const expected_counts = &[_]usize{ 1, 1, 1, 0 };
-    try std.testing.expectEqualSlices(usize, expected_counts, counts);
+    const datapoint0 = histogram.data_points.items[0];
+    const counts0 = datapoint0.value.bucket_counts;
+    std.debug.assert(counts0.len == 5);
+    const expected_counts = &[_]usize{ 1, 1, 1, 1, 1 };
+    try std.testing.expectEqualSlices(usize, expected_counts, counts0);
+
+    const counts_2 = histogram.data_points.items[2].value.bucket_counts;
+    std.debug.assert(counts0.len == 5);
+    const expected_counts_2 = &[_]usize{ 1, 2, 3, 3, 3 };
+    try std.testing.expectEqualSlices(usize, expected_counts_2, counts_2);
 }
 
-test "meter can create gauge instrument and record value without attributes" {
+test "histogram keeps track of bucket counts by attribute" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+
+    const val: []const u8 = "some-value";
+    try histogram.record(1, .{ "some-key", val });
+    try histogram.record(1000, .{ "other-key", val });
+
+    try std.testing.expectEqual(2, histogram.state.count());
+    try std.testing.expectEqual(2, histogram.data_points.items.len);
+
+    // First data point
+    const expected_counts = &[_]usize{ 1, 1, 1, 1, 1 };
+    try std.testing.expectEqualSlices(usize, expected_counts, histogram.data_points.items[0].value.bucket_counts);
+    // Second data point
+    const expected_counts1 = &[_]usize{ 0, 0, 0, 1, 1 };
+    try std.testing.expectEqualSlices(usize, expected_counts1, histogram.data_points.items[1].value.bucket_counts);
+}
+
+test "histogram keeps track of count, sum and min/max by attribute" {
+    const mp = try MeterProvider.default();
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+
+    const val: []const u8 = "some-val";
+    try histogram.record(1, .{});
+    try histogram.record(5, .{ "key", val });
+    try histogram.record(15, .{ "key", val });
+
+    std.debug.assert(histogram.data_points.items.len == 3);
+    // min/max
+    try std.testing.expectEqual(.{ 1, 1 }, .{ histogram.data_points.items[0].value.min.?, histogram.data_points.items[0].value.max.? });
+    try std.testing.expectEqual(.{ 5, 15 }, .{ histogram.data_points.items[2].value.min.?, histogram.data_points.items[2].value.max.? });
+
+    // sum
+    try std.testing.expectEqual(1, histogram.data_points.items[0].value.sum.?);
+    try std.testing.expectEqual(5, histogram.data_points.items[1].value.sum.?);
+    try std.testing.expectEqual(20, histogram.data_points.items[2].value.sum.?);
+
+    // count
+    try std.testing.expectEqual(1, histogram.data_points.items[0].value.count);
+    try std.testing.expectEqual(2, histogram.data_points.items[2].value.count);
+}
+
+test "gauge instrument and record value without attributes" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -557,7 +630,7 @@ test "meter can create gauge instrument and record value without attributes" {
     std.debug.assert(gauge.data_points.pop().?.value == -42);
 }
 
-test "meter creates upDownCounter and stores value" {
+test "upDownCounter and stores value" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -644,7 +717,7 @@ test "instrument fetches measurements from inner" {
     }
 }
 
-test "instrument thread-safety between datapoints collection and recording" {
+test "counter thread-safety between datapoints collection and recording" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
@@ -660,19 +733,22 @@ test "instrument thread-safety between datapoints collection and recording" {
     const val: []const u8 = "test-val";
     try c.add(1, .{ "cde", val });
 
-    const adding_job = try std.Thread.spawn(.{}, testAddingOne, .{c});
-    const fetch_compare = try std.Thread.spawn(.{}, testCollect, .{c});
+    const adding_job = try std.Thread.spawn(.{}, testCounterAddingOne, .{c});
+    const fetch_compare = try std.Thread.spawn(.{}, testCounterCollect, .{c});
     adding_job.join();
     fetch_compare.join();
 }
 
-fn testAddingOne(counter: *Counter(u64)) !void {
+fn testCounterAddingOne(counter: *Counter(u64)) !void {
     const val: []const u8 = "test-val";
     try counter.add(2, .{ "abc", val });
 }
 
-fn testCollect(counter: *Counter(u64)) !void {
-    while (!counter.lock.tryLock()) {}
+fn testCounterCollect(counter: *Counter(u64)) !void {
+    // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
+    while (!counter.lock.tryLock()) {
+        std.time.sleep(100);
+    }
     counter.lock.unlock();
 
     const fetched = try counter.measurementsData(std.testing.allocator);
@@ -687,6 +763,52 @@ fn testCollect(counter: *Counter(u64)) !void {
     try std.testing.expectEqual(2, fetched.int.len);
     try std.testing.expectEqual(1, fetched.int[0].value);
     try std.testing.expectEqual(2, fetched.int[1].value);
+}
+
+test "histogram thread-safety" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const name = "test-instrument";
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+
+    var h = try meter.createHistogram(u64, .{ .name = name, .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+
+    const val: []const u8 = "same-val";
+    try h.record(20, .{ "same-key", val });
+
+    const adding_job = try std.Thread.spawn(.{}, testHistogramRecordOne, .{h});
+    const fetch_compare = try std.Thread.spawn(.{}, testHistogramCollect, .{h});
+    adding_job.join();
+    fetch_compare.join();
+}
+
+fn testHistogramRecordOne(histogram: *Histogram(u64)) !void {
+    const val: []const u8 = "same-val";
+    try histogram.record(1, .{ "same-key", val });
+}
+
+fn testHistogramCollect(histogram: *Histogram(u64)) !void {
+    // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
+    while (!histogram.lock.tryLock()) {
+        std.time.sleep(100);
+    }
+    histogram.lock.unlock();
+
+    const fetched = try histogram.measurementsData(std.testing.allocator);
+    defer {
+        for (fetched.histogram) |*m| {
+            m.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(fetched.histogram);
+    }
+    // Assert that we have 2 data points: the first added by the test thread,
+    // the second added by `testAddingOne` called in a separate thread.
+    try std.testing.expectEqual(2, fetched.histogram.len);
+
+    try std.testing.expectEqualSlices(u64, &.{ 0, 0, 1, 1, 1 }, fetched.histogram[0].value.bucket_counts);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 1, 2, 2, 2 }, fetched.histogram[1].value.bucket_counts);
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {

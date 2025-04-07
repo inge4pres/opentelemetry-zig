@@ -21,7 +21,28 @@ pub fn DataPoint(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            switch (T) {
+                HistogramDataPoint => allocator.free(self.value.bucket_counts),
+                else => {},
+            }
             if (self.attributes) |a| allocator.free(a);
+        }
+
+        pub fn deepCopy(self: Self, allocator: std.mem.Allocator) !Self {
+            return Self{
+                .value = switch (T) {
+                    HistogramDataPoint => HistogramDataPoint{
+                        .bucket_counts = try allocator.dupe(u64, self.value.bucket_counts),
+                        .explicit_bounds = self.value.explicit_bounds,
+                        .sum = self.value.sum,
+                        .count = self.value.count,
+                        .min = self.value.min,
+                        .max = self.value.max,
+                    },
+                    else => self.value,
+                },
+                .attributes = try Attributes.with(self.attributes).dupe(allocator),
+            };
         }
     };
 }
@@ -46,12 +67,12 @@ test "datapoint with attributes" {
 pub const MeasurementsData = union(enum) {
     int: []DataPoint(i64),
     double: []DataPoint(f64),
+    histogram: []DataPoint(HistogramDataPoint),
 
     /// Returns true if there are no datapoints.
     pub fn isEmpty(self: MeasurementsData) bool {
         switch (self) {
-            .int => return self.int.len == 0,
-            .double => return self.double.len == 0,
+            inline else => |list| return list.len == 0,
         }
     }
 };
@@ -92,7 +113,7 @@ pub const HistogramDataPoint = struct {
     // Sorted by upper_bound, last is +Inf.
     // We need tohave them because after exporting we can't reconstruct them.
     explicit_bounds: []const f64,
-    bucket_counts: []const u64, // Observations per bucket
+    bucket_counts: []u64, // Observations per bucket
     sum: ?f64, // Total sum of observations, might not exist when observations can be negative
     count: u64, // Total number of observations
     min: ?f64 = null, // Optional min value

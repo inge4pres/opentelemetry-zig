@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const DataPoint = @import("measurement.zig").DataPoint;
+const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
 
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 const Measurements = @import("measurement.zig").Measurements;
@@ -430,7 +431,64 @@ const view = @import("../../sdk/metrics/view.zig");
 /// AggregatedMetrics is a collection of metrics that have been aggregated using the
 /// MetricReader's temporality and aggregation functions.
 pub const AggregatedMetrics = struct {
-    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation: view.Aggregation) !MeasurementsData {
+    fn sum(comptime T: type, data_points: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
+        var deduped = try std.ArrayListUnmanaged(DataPoint(T)).initCapacity(allocator, data_points.len);
+        var temp = std.HashMap(
+            Attributes,
+            T,
+            Attributes.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ).init(allocator);
+        // No need to cleanup the keys, they are the same Attribute slices from instruments_datapoints.
+        defer temp.deinit();
+
+        for (data_points) |dp| {
+            const key = Attributes.with(dp.attributes);
+            const value = dp.value;
+            const gop = try temp.getOrPut(key);
+            if (!gop.found_existing) gop.value_ptr.* = value else gop.value_ptr.* += value;
+        }
+        var iter = temp.iterator();
+        while (iter.next()) |entry| {
+            const dp = DataPoint(T){
+                .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
+                .value = entry.value_ptr.*,
+            };
+            try deduped.append(allocator, dp);
+        }
+        return try deduped.toOwnedSlice(allocator);
+    }
+
+    fn lastValue(comptime T: type, data_points: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
+        var deduped = try std.ArrayListUnmanaged(DataPoint(T)).initCapacity(allocator, data_points.len);
+        var temp = std.HashMap(
+            Attributes,
+            T,
+            Attributes.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ).init(allocator);
+        // No need to cleanup the keys, they are the same Attribute slices from instruments_datapoints.
+        defer temp.deinit();
+
+        for (data_points) |dp| {
+            const key = Attributes.with(dp.attributes);
+            try temp.put(key, dp.value);
+        }
+        var iter = temp.iterator();
+        while (iter.next()) |entry| {
+            const dp = DataPoint(T){
+                .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
+                .value = entry.value_ptr.*,
+            };
+            try deduped.append(allocator, dp);
+        }
+        return try deduped.toOwnedSlice(allocator);
+    }
+
+    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation: view.Aggregation) !?MeasurementsData {
+        // If there are no data points, we can return early.
+        if (data_points.isEmpty()) return null;
+
         // After aggreating, the original data needs to go away.
         // The returned aggregated data copy the values and attributes from the originals.
         defer {
@@ -443,95 +501,40 @@ pub const AggregatedMetrics = struct {
                 },
             }
         }
-        switch (data_points) {
-            .int => {
-                var deduped: std.ArrayListUnmanaged(DataPoint(i64)) = .empty;
 
-                // Do not use AutoHashMap because the blanket implementation of HashContext
-                // is not working well for Attributes.
-                var temp = std.HashMap(
-                    Attributes,
-                    i64,
-                    Attributes.HashContext,
-                    std.hash_map.default_max_load_percentage,
-                ).init(allocator);
-                // No need to cleanup the keys, they are the same Attribute slices from instruments_datapoints.
-                defer temp.deinit();
-
-                // Iterate over all measurements and deduplicate them by applying the aggregation function
-                // using the attributes as the key.
-                for (data_points.int) |data_point| {
-                    switch (aggregation) {
-                        .Drop => return MeasurementsData{ .int = &[_]DataPoint(i64){} },
-                        .Sum, .ExplicitBucketHistogram => {
-                            const key = Attributes.with(data_point.attributes);
-                            const value = data_point.value;
-                            if (temp.get(key)) |v| {
-                                const newValue = v + value;
-                                try temp.put(key, newValue);
-                            } else {
-                                try temp.put(key, value);
-                            }
-                        },
-                        .LastValue => {
-                            const key = Attributes.with(data_point.attributes);
-                            try temp.put(key, data_point.value);
-                        },
-                    }
-                }
-
-                var iter = temp.iterator();
-                while (iter.next()) |entry| {
-                    const dp = DataPoint(i64){
-                        .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
-                        .value = entry.value_ptr.*,
-                    };
-                    try deduped.append(allocator, dp);
-                }
-                return .{ .int = try deduped.toOwnedSlice(allocator) };
+        // Processing pipeline is split by aggregation type
+        const aggregated: ?MeasurementsData = switch (aggregation) {
+            .Drop => null,
+            .Sum => switch (data_points) {
+                .int => MeasurementsData{ .int = try sum(i64, data_points.int, allocator) },
+                .double => MeasurementsData{ .double = try sum(f64, data_points.double, allocator) },
+                // Sum aggregation is not supported for histograms data points.
+                // FIXME we should probably return an error here.
+                // Specification does not seem to be clear...
+                .histogram => null,
             },
-            .double => {
-                var deduped: std.ArrayListUnmanaged(DataPoint(f64)) = .empty;
-
-                var temp: std.HashMapUnmanaged(
-                    Attributes,
-                    f64,
-                    Attributes.HashContext,
-                    std.hash_map.default_max_load_percentage,
-                ) = .empty;
-                defer temp.deinit(allocator);
-
-                for (data_points.double) |measure| {
-                    switch (aggregation) {
-                        .Drop => return MeasurementsData{ .double = &[_]DataPoint(f64){} },
-                        .Sum, .ExplicitBucketHistogram => {
-                            const key = Attributes.with(measure.attributes);
-                            const value = measure.value;
-                            if (temp.get(key)) |v| {
-                                const newValue = v + value;
-                                try temp.put(allocator, key, newValue);
-                            } else {
-                                try temp.put(allocator, key, value);
-                            }
-                        },
-                        .LastValue => {
-                            const key = Attributes.with(measure.attributes);
-                            try temp.put(allocator, key, measure.value);
-                        },
-                    }
-                }
-
-                var iter = temp.iterator();
-                while (iter.next()) |entry| {
-                    const dp = DataPoint(f64){
-                        .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
-                        .value = entry.value_ptr.*,
-                    };
-                    try deduped.append(allocator, dp);
-                }
-                return .{ .double = try deduped.toOwnedSlice(allocator) };
+            .LastValue => switch (data_points) {
+                .int => MeasurementsData{ .int = try lastValue(i64, data_points.int, allocator) },
+                .double => MeasurementsData{ .double = try lastValue(f64, data_points.double, allocator) },
+                // Sum aggregation is not supported for histograms data points.
+                // FIXME we should probably return an error here.
+                // Specification does not seem to be clear...
+                .histogram => null,
             },
-        }
+            // Currently the histogram are already aggregated when recording.
+            // Hence, we do not need to do anything here other than returning a copy of the data points.
+            .ExplicitBucketHistogram => switch (data_points) {
+                .int, .double => null,
+                .histogram => {
+                    const ret = try allocator.alloc(DataPoint(HistogramDataPoint), data_points.histogram.len);
+                    for (data_points.histogram, 0..) |dp, i| {
+                        ret[i] = try dp.deepCopy(allocator);
+                    }
+                    return MeasurementsData{ .histogram = ret };
+                },
+            },
+        };
+        return aggregated orelse null;
     }
 
     /// Fetch the aggreagted metrics from the meter.
@@ -547,17 +550,17 @@ pub const AggregatedMetrics = struct {
         while (iter.next()) |instr| {
             // Get the data points from the instrument and reset their state,
             const data_points: MeasurementsData = try instr.*.getInstrumentsData(allocator);
-            const aggregated = try aggregate(allocator, data_points, aggregationBy(instr.*.kind));
+            const aggregated_data = try aggregate(allocator, data_points, aggregationBy(instr.*.kind));
             // then fill the result with the aggregated data points
             // only if there are data points.
-            if (!aggregated.isEmpty()) {
+            if (aggregated_data) |agg| {
                 try results.append(Measurements{
                     .meterName = meter.name,
                     .meterSchemaUrl = meter.schema_url,
                     .meterAttributes = meter.attributes,
                     .instrumentKind = instr.*.kind,
                     .instrumentOptions = instr.*.opts,
-                    .data = aggregated,
+                    .data = agg,
                 });
             }
         }
@@ -579,11 +582,11 @@ test "aggregated metrics deduplicated from meter without attributes" {
     const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
 
     const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum);
-    defer switch (deduped) {
+    defer switch (deduped.?) {
         inline else => |m| std.testing.allocator.free(m),
     };
 
-    try std.testing.expectEqualDeep(DataPoint(i64){ .value = 4 }, deduped.int[0]);
+    try std.testing.expectEqualDeep(DataPoint(i64){ .value = 4 }, deduped.?.int[0]);
 }
 
 test "aggregated metrics deduplicated from meter with attributes" {
@@ -607,9 +610,9 @@ test "aggregated metrics deduplicated from meter with attributes" {
     const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
 
     const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum);
-    defer switch (deduped) {
+    defer switch (deduped.?) {
         inline else => |m| {
-            for (deduped.int) |*dp| {
+            for (deduped.?.int) |*dp| {
                 dp.deinit(std.testing.allocator);
             }
             std.testing.allocator.free(m);
@@ -622,7 +625,7 @@ test "aggregated metrics deduplicated from meter with attributes" {
     try std.testing.expectEqualDeep(DataPoint(i64){
         .attributes = attrs,
         .value = 4,
-    }, deduped.int[0]);
+    }, deduped.?.int[0]);
 }
 
 test "aggregated metrics fetch to owned slice" {
@@ -675,7 +678,7 @@ test "aggregated metrics do not duplicate data points" {
     defer std.testing.allocator.free(result_second);
 
     std.testing.expectEqual(0, result_second.len) catch |err| {
-        std.debug.print("Bad result from AggregatedMetrics.fetch():\n{any}\n", .{result_second[0]});
+        std.debug.print("bad result from AggregatedMetrics.fetch():\n{?}\n", .{result_second[0]});
         return err;
     };
 }

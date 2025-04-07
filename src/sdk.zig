@@ -9,6 +9,11 @@ test {
     _ = @import("attributes.zig");
 }
 
+// Test API
+test {
+    _ = @import("api.zig");
+}
+
 pub const MeterProvider = @import("api/metrics/meter.zig").MeterProvider;
 pub const MetricReader = @import("sdk/metrics/reader.zig").MetricReader;
 pub const MetricExporter = @import("sdk/metrics/exporter.zig").MetricExporter;
