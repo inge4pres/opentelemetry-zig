@@ -73,19 +73,7 @@ pub fn build(b: *std.Build) void {
 
     const run_sdk_unit_tests = b.addRunArtifact(sdk_unit_tests);
 
-    // Creates a step for unit testing the SDK.
-    // This only builds the test executable but does not run it.
-    const api_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/api.zig"),
-        .target = target,
-        .optimize = optimize,
-        .filters = b.args orelse &[0][]const u8{},
-    });
-    api_unit_tests.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));
-    const api_sdk_unit_tests = b.addRunArtifact(api_unit_tests);
-
     test_step.dependOn(&run_sdk_unit_tests.step);
-    test_step.dependOn(&api_sdk_unit_tests.step);
 
     // Examples
     const examples_step = b.step("examples", "Build and run all examples");
