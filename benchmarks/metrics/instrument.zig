@@ -20,6 +20,35 @@ fn setupSDK(allocator: std.mem.Allocator) !*sdk.MeterProvider {
     return mp;
 }
 
+test "benchmark metrics instruments" {
+    const mp = try setupSDK(std.testing.allocator);
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{
+        .name = "test.company.org/sample",
+    });
+
+    var counter = try meter.createCounter(u64, .{
+        .name = "sample_counter",
+    });
+    _ = &counter;
+
+    var bench = benchmark.Benchmark.init(std.testing.allocator, std_bench_opts);
+    defer bench.deinit();
+
+    // Counter
+    const cb = CounterBenchmarks{ .counter = counter };
+    try bench.addParam("counter.add w/o attrs", &cb.withoutAttributes(), .{ .track_allocations = false });
+    try bench.addParam("counter.add with attrs", &cb.withAttributes(), .{ .track_allocations = false });
+    try bench.addParam("counter.add concurrent", &cb.concurrent(), .{ .track_allocations = false });
+
+    // Histogram (we want to track allocations)
+    try bench.add("hist.record w/o attrs", HistogramBenchmarks.WithoutAttributes.run, .{ .track_allocations = true });
+    try bench.add("hist.record with attrs", HistogramBenchmarks.WithAttributes.run, .{ .track_allocations = true });
+    try bench.add("hist.record concurrent", HistogramBenchmarks.ConcurrentRecord.run, .{ .track_allocations = true });
+
+    try bench.run(bench_output);
+}
+
 const CounterBenchmarks = struct {
     counter: *sdk.Counter(u64),
 
@@ -81,25 +110,68 @@ const CounterBenchmarks = struct {
     };
 };
 
-test "benchmark metrics instruments" {
-    const mp = try setupSDK(std.testing.allocator);
-    defer mp.shutdown();
-    const meter = try mp.getMeter(.{
-        .name = "test.company.org/sample",
-    });
+const HistogramBenchmarks = struct {
+    const WithAttributes = struct {
+        const attr1: []const u8 = "some-val";
+        const attr2: []const u8 = "some-other-val";
+        pub fn run(allocator: std.mem.Allocator) void {
+            const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+            const meter = provider.getMeter(.{
+                .name = "histogram-with-attrs",
+            }) catch @panic("failed to get meter");
+            const histogram = meter.createHistogram(u64, .{
+                .name = "sample_histogram",
+            }) catch @panic("failed to create histogram");
 
-    var counter = try meter.createCounter(u64, .{
-        .name = "sample_counter",
-    });
-    _ = &counter;
+            histogram.record(1, .{
+                "attribute_one",
+                attr1,
+                "attribute_two",
+                attr2,
+            }) catch @panic("benchmark failed");
+        }
+    };
 
-    var bench = benchmark.Benchmark.init(std.testing.allocator, std_bench_opts);
-    defer bench.deinit();
+    const WithoutAttributes = struct {
+        pub fn run(allocator: std.mem.Allocator) void {
+            const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+            const meter = provider.getMeter(.{
+                .name = "test.company.org/sample",
+            }) catch @panic("failed to get meter");
+            const histogram = meter.createHistogram(u64, .{
+                .name = "sample_histogram",
+            }) catch @panic("failed to create histogram");
 
-    const cb = CounterBenchmarks{ .counter = counter };
+            histogram.record(1, .{}) catch @panic("benchmark failed");
+        }
+    };
 
-    try bench.addParam("counter.add w/o attrs", &cb.withoutAttributes(), .{ .track_allocations = false });
-    try bench.addParam("counter.add with attrs", &cb.withAttributes(), .{ .track_allocations = false });
-    try bench.addParam("counter.add concurrent", &cb.concurrent(), .{ .track_allocations = false });
-    try bench.run(bench_output);
-}
+    const ConcurrentRecord = struct {
+        const attr1: []const u8 = "some-val";
+        const attr2: []const u8 = "some-other-val";
+
+        pub fn run(allocator: std.mem.Allocator) void {
+            const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+            const meter = provider.getMeter(.{
+                .name = "test.company.org/sample",
+            }) catch @panic("failed to get meter");
+            const histogram = meter.createHistogram(u64, .{
+                .name = "sample_histogram",
+            }) catch @panic("failed to create histogram");
+
+            const t1 = std.Thread.spawn(.{}, record, .{ histogram, .{
+                "attribute_one",
+                attr1,
+                "attribute_two",
+                attr2,
+            } }) catch @panic("spawn failed");
+            const t2 = std.Thread.spawn(.{}, record, .{ histogram, .{} }) catch @panic("spawn failed");
+            t1.join();
+            t2.join();
+        }
+
+        fn record(histogram: *sdk.Histogram(u64), attributes: anytype) void {
+            histogram.record(1, attributes) catch @panic("add failed");
+        }
+    };
+};
