@@ -324,8 +324,6 @@ pub fn Histogram(comptime T: type) type {
 
             const recorded_attributes = Attributes.with(try Attributes.from(self.allocator, attributes));
 
-            //TODO build the key/value using getOrPut and fill in the "value" for the HistogramValue
-
             const result = try self.state.getOrPut(recorded_attributes);
             if (!result.found_existing) {
                 // Create a new entry in the state for these attributes:
