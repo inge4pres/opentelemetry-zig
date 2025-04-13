@@ -171,6 +171,7 @@ test "metric exporter no-op" {
     const measurement: []DataPoint(i64) = measure[0..];
     var metrics = [1]Measurements{.{
         .meterName = "my-meter",
+        .meterVersion = "1.0",
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "my-counter" },
         .data = .{ .int = measurement },
@@ -211,6 +212,7 @@ test "metric exporter force flush succeeds" {
     const dataPoints: []DataPoint(i64) = measure[0..];
     var metrics = [1]Measurements{Measurements{
         .meterName = "my-meter",
+        .meterVersion = "1.0",
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "my-counter" },
         .data = .{ .int = dataPoints },
@@ -235,6 +237,7 @@ test "metric exporter force flush fails" {
     const dataPoints: []DataPoint(i64) = measure[0..];
     var metrics = [1]Measurements{Measurements{
         .meterName = "my-meter",
+        .meterVersion = "1.0",
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "my-counter" },
         .data = .{ .int = dataPoints },

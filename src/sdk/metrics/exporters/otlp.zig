@@ -62,7 +62,7 @@ pub const OTLPExporter = struct {
             scope_metrics[i] = pbmetrics.ScopeMetrics{
                 .scope = pbcommon.InstrumentationScope{
                     .name = ManagedString.managed(measurement.meterName),
-                    .version = ManagedString.managed(measurement.meterVersion),
+                    .version = if (measurement.meterVersion) |version| ManagedString.managed(version) else .Empty,
                     // .schema_url = if (measurement.meterSchemaUrl) |s| ManagedString.managed(s) else .Empty,
                     .attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.meterAttributes),
                 },

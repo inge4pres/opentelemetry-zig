@@ -89,6 +89,7 @@ test "MeasurementsData.isEmpty" {
 /// Holds the data collected by a single instrument inside a meter.
 pub const Measurements = struct {
     meterName: []const u8,
+    meterVersion: ?[]const u8,
     meterAttributes: ?[]Attribute = null,
     meterSchemaUrl: ?[]const u8 = null,
 

@@ -85,6 +85,7 @@ test "exporters/stdout" {
 
     try underTest.append(allocator, Measurements{
         .meterName = "first-meter",
+        .meterVersion = "1.0",
         .meterAttributes = null,
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-abc" },
@@ -92,6 +93,7 @@ test "exporters/stdout" {
     });
     try underTest.append(allocator, Measurements{
         .meterName = "another-meter",
+        .meterVersion = "1.0",
         .meterAttributes = null,
         .instrumentKind = .Histogram,
         .instrumentOptions = .{ .name = "histogram-abc" },

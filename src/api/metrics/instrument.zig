@@ -745,7 +745,7 @@ fn testCounterAddingOne(counter: *Counter(u64)) !void {
 fn testCounterCollect(counter: *Counter(u64)) !void {
     // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
     while (!counter.lock.tryLock()) {
-        std.time.sleep(100);
+        std.time.sleep(10);
     }
     counter.lock.unlock();
 
@@ -790,7 +790,7 @@ fn testHistogramRecordOne(histogram: *Histogram(u64)) !void {
 fn testHistogramCollect(histogram: *Histogram(u64)) !void {
     // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
     while (!histogram.lock.tryLock()) {
-        std.time.sleep(100);
+        std.time.sleep(10);
     }
     histogram.lock.unlock();
 

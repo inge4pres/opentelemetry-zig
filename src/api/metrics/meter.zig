@@ -504,6 +504,7 @@ pub const AggregatedMetrics = struct {
             if (aggregated_data) |agg| {
                 try results.append(Measurements{
                     .meterName = meter.scope.name,
+                    .meterVersion = meter.scope.version,
                     .meterSchemaUrl = meter.scope.schema_url,
                     .meterAttributes = meter.scope.attributes,
                     .instrumentKind = instr.*.kind,
