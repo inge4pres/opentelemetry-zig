@@ -24,6 +24,8 @@ const ExporterImpl = @import("../exporter.zig").ExporterImpl;
 
 const MetricReadError = @import("../reader.zig").MetricReadError;
 
+const otlp = @import("../../../otlp.zig");
+
 /// Exports metrics via the OpenTelemetry Protocol (OTLP).
 /// OTLP is a binary protocol used for transmitting telemetry data, encoding them with protobuf.
 /// See https://opentelemetry.io/docs/specs/otlp/
@@ -35,7 +37,7 @@ pub const OTLPExporter = struct {
 
     temporailty: view.TemporalitySelector,
 
-    config: OTLPConfigOpts,
+    config: otlp.ConfigOpts,
 
     pub fn exportBatch(iface: *ExporterImpl, data: []Measurements) MetricReadError!void {
         // Get a pointer to the instance of the struct that implements the interface.
@@ -74,56 +76,6 @@ pub const OTLPExporter = struct {
             .scope_metrics = scope_metrics,
             .schema_url = .Empty,
         };
-    }
-};
-
-pub const OTLPConfigOpts = struct {
-    /// The endpoint to send the data to.
-    /// Must be in the form of "host:port/path".
-    endpoint: []const u8 = "localhost:4317",
-
-    /// Only applicable to HTTP based transports.
-    scheme: ?[]const u8 = "http",
-
-    /// Only applicabl to gRPC based trasnport.
-    /// Defines if the gRPC client can use plaintext connection.
-    insecure: ?bool = null,
-
-    /// The protocol to use for sending the data.
-    protocol: enum {
-        // In order of precedence: SDK MUST support http/protobuf and SHOULD support grpc and http/json.
-        http_protobuf,
-        grpc,
-        http_json,
-    } = .http_protobuf,
-
-    /// Comma-separated list of key=value pairs to include in the request as headers.
-    /// Format "key1=value1,key2=value2,...".
-    /// They wll be parsed into HTTP headers and all the values will be treated as strings.
-    headers: ?[]const u8,
-
-    tls_opts: ?TLSOptions = null,
-
-    compression: enum {
-        none,
-        gzip,
-    } = .none,
-
-    /// The maximum duration of batxh exporting
-    timeout_sec: u64 = 10,
-
-    /// Configure the TLS connection properties
-    pub const TLSOptions = struct {
-        /// CA chain used to verify server certificate.
-        certificate_file: ?[]const u8 = null,
-        /// Client certificate used to authenticate the client.
-        client_certificate_file: ?[]const u8 = null,
-        /// Client private key used to authenticate the client.
-        client_private_key_file: ?[]const u8 = null,
-    };
-
-    pub fn default() OTLPConfigOpts {
-        return .{};
     }
 };
 
@@ -222,7 +174,7 @@ fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points:
 fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(HistogramPoint)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
     var a = try std.ArrayList(pbmetrics.HistogramDataPoint).initCapacity(allocator, data_points.len);
     for (data_points) |dp| {
-        const bounds = try allocator.alloc(f64, dp.value.bucket_counts.len);
+        const bounds = try allocator.alloc(f64, dp.value.explicit_bounds.len);
         for (dp.value.explicit_bounds, 0..) |b, bi| {
             bounds[bi] = b;
         }
@@ -232,7 +184,7 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
             .time_unix_nano = @intCast(std.time.nanoTimestamp()), //TODO fetch from DataPoint
             .count = dp.value.count,
             .sum = dp.value.sum,
-            .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, dp.value.bucket_counts),
+            .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.bucket_counts)),
             .explicit_bounds = std.ArrayList(f64).fromOwnedSlice(allocator, bounds),
             // TODO support exemplars
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
@@ -245,13 +197,15 @@ test "exporters/otlp conversion for NumberDataPoint" {
     const allocator = std.testing.allocator;
     const num: usize = 100;
     var data_points = try allocator.alloc(DataPoint(i64), num);
-    defer allocator.free(data_points);
+    defer {
+        for (data_points) |*dp| dp.deinit(allocator);
+        allocator.free(data_points);
+    }
 
     const anyval: []const u8 = "::anyval::";
     for (0..num) |i| {
         data_points[i] = try DataPoint(i64).new(allocator, @intCast(i), .{ "key", anyval });
     }
-    defer for (data_points) |*dp| dp.deinit(allocator);
 
     const metric = try toProtobufMetric(allocator, Measurements{
         .meterName = "test-meter",
@@ -278,4 +232,57 @@ test "exporters/otlp conversion for NumberDataPoint" {
     });
 }
 
-test "exporters/otlp conversion for HistogramDataPoint" {}
+test "exporters/otlp conversion for HistogramDataPoint" {
+    const allocator = std.testing.allocator;
+    const num: usize = 100;
+    var data_points = try allocator.alloc(DataPoint(HistogramPoint), num);
+    defer {
+        for (data_points) |*dp| dp.deinit(allocator);
+        allocator.free(data_points);
+    }
+
+    const anyval: []const u8 = "::anyval::";
+    var bucket_counts = [_]u64{ 1, 2, 3 };
+    var explicit_bounds = [_]f64{ 1.0, 2.0, 3.0 };
+    for (0..num) |i| {
+        data_points[i] = try DataPoint(HistogramPoint).new(allocator, HistogramPoint{
+            .count = i,
+            .sum = @as(f64, @floatFromInt(i * 2)),
+            // The bucket counts are cloned as they are set independently for each data point,
+            .bucket_counts = try allocator.dupe(u64, &bucket_counts),
+            // while the explicit bounds are referenced from the instrument, as they are constant.
+            .explicit_bounds = &explicit_bounds,
+        }, .{ "key", anyval });
+    }
+
+    const metric = try toProtobufMetric(allocator, Measurements{
+        .meterName = "test-meter",
+        .meterVersion = "1.0",
+        .meterAttributes = null,
+        .instrumentKind = .Histogram,
+        .instrumentOptions = .{ .name = "histogram-abc" },
+        .data = .{ .histogram = data_points },
+    }, view.DefaultTemporality);
+    defer metric.deinit();
+
+    try std.testing.expectEqual(num, metric.data.?.histogram.data_points.items.len);
+    try std.testing.expectEqual(ManagedString.managed("histogram-abc"), metric.name);
+    try std.testing.expectEqual(3, metric.data.?.histogram.data_points.items[0].bucket_counts.items.len);
+    try std.testing.expectEqual(3, metric.data.?.histogram.data_points.items[0].explicit_bounds.items.len);
+    try std.testing.expectEqual(1, metric.data.?.histogram.data_points.items[0].bucket_counts.items[0]);
+    try std.testing.expectEqual(1.0, metric.data.?.histogram.data_points.items[0].explicit_bounds.items[0]);
+
+    try std.testing.expectEqual(99, metric.data.?.histogram.data_points.items[99].count);
+    try std.testing.expectEqual(198, metric.data.?.histogram.data_points.items[99].sum);
+
+    const attrs = Attributes.with(data_points[0].attributes);
+
+    const expected_attrs = .{
+        ManagedString.managed(attrs.attributes.?[0].key),
+        ManagedString.managed(anyval),
+    };
+    try std.testing.expectEqual(expected_attrs, .{
+        metric.data.?.histogram.data_points.items[0].attributes.items[0].key,
+        metric.data.?.histogram.data_points.items[0].attributes.items[0].value.?.value.?.string_value,
+    });
+}

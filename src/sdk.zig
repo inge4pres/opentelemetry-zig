@@ -8,6 +8,7 @@ test {
     _ = @import("pbutils.zig");
     _ = @import("attributes.zig");
     _ = @import("scope.zig");
+    _ = @import("otlp.zig");
 }
 
 // Test API
