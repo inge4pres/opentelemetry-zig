@@ -37,7 +37,7 @@ pub const OTLPExporter = struct {
 
     temporailty: view.TemporalitySelector,
 
-    config: otlp.ConfigOpts,
+    config: otlp.ConfigOptions,
 
     pub fn exportBatch(iface: *ExporterImpl, data: []Measurements) MetricReadError!void {
         // Get a pointer to the instance of the struct that implements the interface.
