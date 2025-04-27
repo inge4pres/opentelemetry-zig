@@ -11,7 +11,9 @@ pub const ConfigError = error{
     ConflictingOptions,
     InvalidEndpoint,
     InvalidScheme,
-    InvalidHeaders,
+    InvalidHeadersSyntax,
+    InvalidHeadersTooManyBytes,
+    InvalidHeadersTooManyItems,
     InvalidTLSOptions,
     InvalidWireFormatForClient,
     InvalidCompression,
@@ -324,11 +326,28 @@ const HTTPClient = struct {
         return request_options;
     }
 
-    fn send(self: Self, url: []const u8, body: []u8) !void {
+    fn send(self: Self, url: []const u8, data: []u8) !void {
         const client = http.Client{};
 
         var resp_body = std.ArrayList(u8).init(self.allocator);
         defer resp_body.deinit();
+
+        var uncompressed = std.ArrayList(u8).fromOwnedSlice(self.allocator, data);
+        defer uncompressed.deinit();
+
+        const req_body = req: {
+            switch (self.config.compression) {
+                .none => break :req try uncompressed.toOwnedSlice(),
+                .gzip => {
+                    // Compress the data using gzip.
+                    // Maximum compression level, favor minimum network transfer over CPU usage.
+                    const compressed = std.ArrayList(u8).init(self.allocator);
+                    try std.compress.gzip.compress(uncompressed, compressed, .{ .level = .level_9 });
+                    break :req try compressed.toOwnedSlice();
+                },
+            }
+        };
+        defer self.allocator.free(req_body);
 
         const req_opts = self.requestOptions(self.config);
         const response = try client.fetch(http.Client.FetchOptions{
@@ -337,7 +356,7 @@ const HTTPClient = struct {
             .method = .POST,
             .headers = req_opts.headers,
             .extra_headers = req_opts.extra_headers,
-            .payload = body,
+            .payload = req_body,
         });
 
         // Check the response status code; ptionally retry on some errors.
@@ -366,22 +385,27 @@ fn parseHeaders(key_values: []const u8) ConfigError![]std.http.Header {
     // The sum of all characters in the key and value must be less than 8192 bytes (2^13).
     var cum_bytes: u13 = 0;
     while (split.next()) |item| {
-        var kv = std.mem.splitScalar(u8, item, '=');
-        const key: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeaders;
-        if (key.len == 0) {
-            return ConfigError.InvalidHeaders;
+        // Fail if there are more than 64 headers.
+        if (idx == headers.len) {
+            return ConfigError.InvalidHeadersTooManyItems;
         }
-        const value: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeaders;
+        var kv = std.mem.splitScalar(u8, item, '=');
+        const key: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeadersSyntax;
+        if (key.len == 0) {
+            return ConfigError.InvalidHeadersSyntax;
+        }
+        const value: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeadersSyntax;
         if (value.len == 0) {
-            return ConfigError.InvalidHeaders;
+            return ConfigError.InvalidHeadersSyntax;
         }
         if (kv.next()) |_| {
-            return ConfigError.InvalidHeaders;
+            return ConfigError.InvalidHeadersSyntax;
         }
         headers[idx] = std.http.Header{ .name = key, .value = value };
         idx += 1;
         // Fail when the sum of all bytes for the headers overflows.
-        cum_bytes = std.math.add(u13, cum_bytes, @intCast(key.len + value.len + 1)) catch return ConfigError.InvalidHeaders;
+        // Each header is accompanied by 3 more bytes: a colon, a space and a newline.
+        cum_bytes = std.math.add(u13, cum_bytes, @intCast(key.len + value.len + 3)) catch return ConfigError.InvalidHeadersTooManyBytes;
     }
     return headers[0..idx];
 }
@@ -402,6 +426,13 @@ test "otlp config parse headers" {
 
     const invalid_headers: [4][]const u8 = .{ "a=,", "=b", "a=b=c", "a=b,=c=d" };
     for (invalid_headers) |header| {
-        try std.testing.expectError(ConfigError.InvalidHeaders, parseHeaders(header));
+        try std.testing.expectError(ConfigError.InvalidHeadersSyntax, parseHeaders(header));
     }
+
+    // 150 bytes * 60 == 9000 bytes
+    const invalid_too_many_bytes: []const u8 = "key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA," ** 60;
+    try std.testing.expectError(ConfigError.InvalidHeadersTooManyBytes, parseHeaders(invalid_too_many_bytes));
+
+    const invalid_too_many_items: []const u8 = "key=val," ** 65;
+    try std.testing.expectError(ConfigError.InvalidHeadersTooManyItems, parseHeaders(invalid_too_many_items));
 }
