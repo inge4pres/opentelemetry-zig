@@ -291,13 +291,17 @@ const HTTPClient = struct {
 
     allocator: std.mem.Allocator,
     config: ConfigOptions,
+    // Default HTTP Client
+    client: http.Client,
 
     pub fn init(allocator: std.mem.Allocator, config: ConfigOptions) !Self {
         try config.validate();
         const s = try allocator.create(Self);
+
         s.* = Self{
             .allocator = allocator,
             .config = config,
+            .client = http.Client{},
         };
         return s;
     }
@@ -326,9 +330,9 @@ const HTTPClient = struct {
         return request_options;
     }
 
-    fn send(self: Self, url: []const u8, data: []u8) !void {
-        const client = http.Client{};
-
+    /// For the Signal type, send the data to the OTLP endpoint using the client's configuration.
+    /// Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
+    pub fn send(self: Self, signal: Signal, data: []u8) !void {
         var resp_body = std.ArrayList(u8).init(self.allocator);
         defer resp_body.deinit();
 
@@ -349,8 +353,12 @@ const HTTPClient = struct {
         };
         defer self.allocator.free(req_body);
 
+        const url = try self.config.httpUrlForSignal(signal, self.allocator);
+        defer self.allocator.free(url);
+
         const req_opts = self.requestOptions(self.config);
-        const response = try client.fetch(http.Client.FetchOptions{
+
+        const response = try self.client.fetch(http.Client.FetchOptions{
             .location = .{ .url = url },
             // We always send a POST request to write OTLP data.
             .method = .POST,
