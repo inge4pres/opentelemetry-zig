@@ -293,35 +293,44 @@ const HTTPClient = struct {
     config: ConfigOptions,
     // Default HTTP Client
     client: http.Client,
+    retry: *ExpBackoffRetry,
 
-    pub fn init(allocator: std.mem.Allocator, config: ConfigOptions) !Self {
+    pub fn init(allocator: std.mem.Allocator, config: ConfigOptions) !*Self {
         try config.validate();
+
         const s = try allocator.create(Self);
 
         s.* = Self{
             .allocator = allocator,
             .config = config,
-            .client = http.Client{},
+            .client = http.Client{ .allocator = allocator },
+            .retry = undefined,
         };
+
+        const retry = try ExpBackoffRetry.init(allocator, &s.client, .{});
+        s.retry = retry;
+
         return s;
     }
 
     pub fn deinit(self: *Self) void {
+        self.retry.deinit();
         self.allocator.destroy(self);
     }
 
-    fn requestOptions(config: ConfigOptions) http.Client.RequestOptions {
+    fn requestOptions(config: ConfigOptions) !http.Client.RequestOptions {
         const headers: http.Client.Request.Headers = .{
-            .accept_encoding = if (config.compression.encodingHeaderValue()) |v| v else .default,
-            .content_type = switch (config.protocol) {
+            .accept_encoding = if (config.compression.encodingHeaderValue()) |v| .{ .override = v } else .default,
+            .content_type = .{ .override = switch (config.protocol) {
                 .http_protobuf => "application/x-protobuf",
                 .http_json => "application/json",
-                else => ConfigError.InvalidWireFormatForClient,
-            },
+                else => return ConfigError.InvalidWireFormatForClient,
+            } },
             .user_agent = .{ .override = UserAgent },
         };
         var request_options: http.Client.RequestOptions = .{
             .headers = headers,
+            .server_header_buffer = undefined,
         };
         if (config.headers) |h| {
             request_options.extra_headers = try parseHeaders(h);
@@ -332,21 +341,22 @@ const HTTPClient = struct {
 
     /// For the Signal type, send the data to the OTLP endpoint using the client's configuration.
     /// Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
-    pub fn send(self: Self, signal: Signal, data: []u8) !void {
+    pub fn send(self: *Self, signal: Signal, data: []u8) !void {
         var resp_body = std.ArrayList(u8).init(self.allocator);
         defer resp_body.deinit();
 
-        var uncompressed = std.ArrayList(u8).fromOwnedSlice(self.allocator, data);
-        defer uncompressed.deinit();
-
         const req_body = req: {
             switch (self.config.compression) {
-                .none => break :req try uncompressed.toOwnedSlice(),
+                .none => break :req try self.allocator.dupe(u8, data),
                 .gzip => {
                     // Compress the data using gzip.
                     // Maximum compression level, favor minimum network transfer over CPU usage.
-                    const compressed = std.ArrayList(u8).init(self.allocator);
-                    try std.compress.gzip.compress(uncompressed, compressed, .{ .level = .level_9 });
+                    var uncompressed = std.io.fixedBufferStream(data);
+                    defer uncompressed.reset();
+
+                    var compressed = std.ArrayList(u8).init(self.allocator);
+
+                    try std.compress.gzip.compress(uncompressed.reader(), compressed.writer(), .{ .level = .level_9 });
                     break :req try compressed.toOwnedSlice();
                 },
             }
@@ -356,25 +366,24 @@ const HTTPClient = struct {
         const url = try self.config.httpUrlForSignal(signal, self.allocator);
         defer self.allocator.free(url);
 
-        const req_opts = self.requestOptions(self.config);
+        const req_opts = try requestOptions(self.config);
 
-        const response = try self.client.fetch(http.Client.FetchOptions{
+        const fetch_request = http.Client.FetchOptions{
             .location = .{ .url = url },
             // We always send a POST request to write OTLP data.
             .method = .POST,
             .headers = req_opts.headers,
             .extra_headers = req_opts.extra_headers,
             .payload = req_body,
-        });
+        };
+        const response = try self.client.fetch(fetch_request);
 
-        // Check the response status code; ptionally retry on some errors.
-        switch (response.status.code) {
+        switch (response.status) {
+            .ok, .accepted => return,
             // We must handle retries for a subset of status codes.
             // See https://opentelemetry.io/docs/specs/otlp/#otlphttp-response
-            .ok, .accepted => return,
             .too_many_requests, .bad_gateway, .service_unavailable, .gateway_timeout => {
-                // Retry the request.
-                // TODO implement retry logic
+                try self.retry.enqueue(fetch_request, 0);
             },
             else => {
                 // Do not retry and report the status code and the message.
@@ -443,4 +452,209 @@ test "otlp config parse headers" {
 
     const invalid_too_many_items: []const u8 = "key=val," ** 65;
     try std.testing.expectError(ConfigError.InvalidHeadersTooManyItems, parseHeaders(invalid_too_many_items));
+}
+
+// Implements the Exponential Backoff Retry strategy for HTTP requests.
+// The default configuration values are not dictated by the OTLP spec.
+// We choose toset a maxumum number of retries, even if not specified in the spec,
+// to avoid infinite loops in case of a un-responsive server.
+const ExpBackoffRetry = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    client: *http.Client,
+
+    max_retries: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+
+    queue: std.PriorityQueue(FetchRequest, void, compareFetchRequest),
+    thread: ?std.Thread,
+    mutex: std.Thread.Mutex,
+    condition: std.Thread.Condition,
+    running: std.atomic.Value(bool),
+
+    // Wrapper for FetchOptions with retry metadata
+    const FetchRequest = struct {
+        options: http.Client.FetchOptions,
+        attempts_counter: u32,
+        next_attempt_time_ms: i64, // Timestamp (ms) for next retry
+    };
+
+    // Compare function for PriorityQueue (earlier next_attempt first)
+    fn compareFetchRequest(_: void, a: FetchRequest, b: FetchRequest) std.math.Order {
+        return std.math.order(a.next_attempt_time_ms, b.next_attempt_time_ms);
+    }
+
+    fn init(allocator: std.mem.Allocator, client: *http.Client, config: struct {
+        max_retries: u32 = 50,
+        base_delay_ms: u64 = 100,
+        max_delay_ms: u64 = 60000,
+    }) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .allocator = allocator,
+            .client = client,
+            .max_retries = config.max_retries,
+            .base_delay_ms = config.base_delay_ms,
+            .max_delay_ms = config.max_delay_ms,
+            .queue = std.PriorityQueue(FetchRequest, void, compareFetchRequest).init(allocator, {}),
+            .mutex = std.Thread.Mutex{},
+            .thread = null,
+            .condition = std.Thread.Condition{},
+            .running = std.atomic.Value(bool).init(true),
+        };
+
+        // Start the background thread
+        s.thread = try std.Thread.spawn(.{}, retryLoop, .{s});
+        return s;
+    }
+
+    fn deinit(self: *Self) void {
+        // Signal the thread to stop
+        self.running.store(false, .release);
+        // Wake the thread if it's waiting
+        self.condition.signal();
+
+        // Wait for the thread to finish
+        if (self.thread) |t| {
+            t.join();
+        }
+
+        // Clean up queue
+        self.mutex.lock();
+        while (self.queue.removeOrNull()) |req| {
+            self.freeFetchRequest(&req);
+        }
+        self.queue.deinit();
+        self.mutex.unlock();
+
+        self.allocator.destroy(self);
+    }
+
+    fn enqueue(self: *Self, options: http.Client.FetchOptions, attempt: u32) !void {
+        const req = FetchRequest{
+            .options = try self.cloneFetchOptions(options),
+            .attempts_counter = attempt,
+            .next_attempt_time_ms = std.time.milliTimestamp() + calculateDelay(self.base_delay_ms, self.max_delay_ms, attempt),
+        };
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.queue.add(req);
+        self.condition.signal();
+    }
+
+    fn retryLoop(self: *Self) void {
+        while (self.running.load(.acquire)) {
+            var req: FetchRequest = undefined;
+            // We use this boolean to avoid a data race.
+            var has_request: bool = false;
+
+            {
+                // Block that acquires the lock and waits for the first request in the queue to be ready.
+                self.mutex.lock();
+                // We release the lock at the end of the block.
+                defer self.mutex.unlock();
+
+                if (self.queue.peek()) |peeked_req| {
+                    const now = std.time.milliTimestamp();
+                    if (now < peeked_req.next_attempt_time_ms) {
+                        // Wait until the next attempt time or a new item
+                        const wait_ns: u64 = @intCast((peeked_req.next_attempt_time_ms - now) * std.time.ns_per_ms);
+                        self.condition.timedWait(&self.mutex, wait_ns) catch continue;
+                    } else {
+                        // Copy the request and remove it from the queue, avoiding the data race that would be caused by
+                        // modifying the queue while the thread is running.
+                        req = peeked_req;
+                        _ = self.queue.remove();
+                        has_request = true;
+                    }
+                } else {
+                    // Queue is empty, wait for a signal
+                    self.condition.wait(&self.mutex);
+                    continue;
+                }
+            }
+
+            if (!has_request) continue;
+            defer self.freeFetchRequest(&req);
+
+            // Attempt the request
+            const response = self.client.fetch(req.options) catch |err| {
+                std.debug.print("OTLP transport: error connecting to server: {}\n", .{err});
+                if (req.attempts_counter < self.max_retries) {
+                    self.enqueue(req.options, req.attempts_counter + 1) catch |e| {
+                        std.debug.print("OTLP transport: failed to re-queue: {}\n", .{e});
+                    };
+                }
+                continue;
+            };
+
+            // Check response status
+            switch (response.status) {
+                .ok, .accepted => {
+                    // Success, go on (the request is cleaned up in the loop)
+                },
+                .too_many_requests, .bad_gateway, .service_unavailable, .gateway_timeout => {
+                    // Retry if we have attempts left
+                    if (req.attempts_counter < self.max_retries) {
+                        self.enqueue(req.options, req.attempts_counter + 1) catch |e| {
+                            std.debug.print("OTLP transport: failed to re-queue: {}\n", .{e});
+                        };
+                    }
+                },
+                else => |s| {
+                    // Non-retryable error should be logged
+                    std.debug.print("OTLP transport: exp backoff response has a non-retryable status: {s}\n", .{@tagName(s)});
+                },
+            }
+        }
+    }
+
+    fn calculateDelay(base_delay_ms: u64, max_delay_ms: u64, attempt: u32) i64 {
+        // Exponential backoff with jitter: delay = min(max_delay, base * 2^attempt) + random(0, 10%)
+        const delay: i64 = @intCast(@min(
+            max_delay_ms,
+            base_delay_ms * std.math.pow(u64, 2, attempt),
+        ));
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+        const jitter = prng.random().intRangeAtMost(i64, 0, @intCast(@divTrunc(delay, 10)));
+        return delay + jitter;
+    }
+
+    fn cloneFetchOptions(self: *Self, opts: http.Client.FetchOptions) !http.Client.FetchOptions {
+        var cloned = opts;
+        cloned.location = .{ .url = try self.allocator.dupe(u8, opts.location.url) };
+        if (opts.payload) |payload| {
+            cloned.payload = try self.allocator.dupe(u8, payload);
+        }
+        cloned.extra_headers = try self.allocator.dupe(http.Header, opts.extra_headers);
+
+        return cloned;
+    }
+
+    fn freeFetchRequest(self: *Self, req: *const FetchRequest) void {
+        self.allocator.free(req.options.location.url);
+        if (req.options.payload) |payload| {
+            self.allocator.free(payload);
+        }
+        self.allocator.free(req.options.extra_headers);
+    }
+};
+
+// This test is here to allow compiling all the code paths of ExpBackoffRetry struct.
+// In itself, it does not provide much value other than ensuring that the code compiles,
+// and there is no memory leak.
+test "otlp HTTPClient send fails for missing server" {
+    const allocator = std.testing.allocator;
+    var config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    const client = try HTTPClient.init(allocator, config.*);
+    defer client.deinit();
+
+    var payload = [_]u8{0} ** 1024;
+    const result = client.send(Signal.metrics, &payload);
+    try std.testing.expectError(std.posix.ConnectError.ConnectionRefused, result);
 }
