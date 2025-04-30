@@ -20,6 +20,11 @@ pub const ConfigError = error{
     InvalidProtocol,
 };
 
+/// Error set for the OTLP Export operation.
+pub const ExportError = error{
+    UnimplementedTransportProtocol,
+};
+
 /// The combination of underlying transport protocol and format used to send the data.
 pub const Protocol = enum {
     // In order of precedence: SDK MUST support http/protobuf and SHOULD support grpc and http/json.
@@ -75,14 +80,59 @@ pub const Signal = enum {
     // TODO add other signals when implemented
     // profiles,
 
-    fn defaulttHttpPath(self: Signal) []const u8 {
+    const Self = @This();
+
+    fn defaulttHttpPath(self: Self) []const u8 {
         switch (self) {
             .metrics => return "/v1/metrics",
             .logs => return "/v1/logs",
             .traces => return "/v1/traces",
         }
     }
+
+    /// Actual signal data as protobuf messages.
+    pub const Data = union(Self) {
+        metrics: pbmetrics.MetricsData,
+        logs: pblogs.LogsData,
+        traces: pbtrace.TracesData,
+        // TODO add other signals when implemented
+        // profiles: profiles.ProfilesData,
+
+        fn toOwnedSlice(self: Data, allocator: std.mem.Allocator, protocol: Protocol) ![]const u8 {
+            return switch (protocol) {
+                .http_json => {
+                    switch (self) {
+                        // All protobuf-generated structs have a json_encode method.
+                        inline else => |data| return data.json_encode(.{}, allocator),
+                    }
+                },
+                .http_protobuf, .grpc => {
+                    switch (self) {
+                        // All protobuf-generated structs have a encode method.
+                        inline else => |data| return data.encode(allocator),
+                    }
+                },
+            };
+        }
+
+        fn signal(self: Data) Signal {
+            return std.meta.activeTag(self);
+        }
+    };
 };
+
+test "otlp Signal.Data get payload bytes" {
+    const allocator = std.testing.allocator;
+    var data = Signal.Data{
+        .metrics = pbmetrics.MetricsData{
+            .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator),
+        },
+    };
+    const payload = try data.toOwnedSlice(allocator, Protocol.http_protobuf);
+    defer allocator.free(payload);
+
+    try std.testing.expectEqual(payload.len, 0);
+}
 
 /// Configuration options for the OTLP transport.
 pub const ConfigOptions = struct {
@@ -293,6 +343,8 @@ const HTTPClient = struct {
     config: ConfigOptions,
     // Default HTTP Client
     client: http.Client,
+    // Retries are processed using a separate thread.
+    // A priority queue is maintained in the ExpBackoffRetry struct.
     retry: *ExpBackoffRetry,
 
     pub fn init(allocator: std.mem.Allocator, config: ConfigOptions) !*Self {
@@ -339,9 +391,10 @@ const HTTPClient = struct {
         return request_options;
     }
 
-    /// For the Signal type, send the data to the OTLP endpoint using the client's configuration.
-    /// Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
-    pub fn send(self: *Self, signal: Signal, data: []u8) !void {
+    // Send the OTLP data to the url using the client's configuration.
+    // Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
+    // Data will be compressed here.
+    fn send(self: *Self, url: []const u8, data: []u8) !void {
         var resp_body = std.ArrayList(u8).init(self.allocator);
         defer resp_body.deinit();
 
@@ -362,9 +415,6 @@ const HTTPClient = struct {
             }
         };
         defer self.allocator.free(req_body);
-
-        const url = try self.config.httpUrlForSignal(signal, self.allocator);
-        defer self.allocator.free(url);
 
         const req_opts = try requestOptions(self.config);
 
@@ -654,7 +704,41 @@ test "otlp HTTPClient send fails for missing server" {
     const client = try HTTPClient.init(allocator, config.*);
     defer client.deinit();
 
+    const url = try config.httpUrlForSignal(.metrics, allocator);
+    defer allocator.free(url);
+
     var payload = [_]u8{0} ** 1024;
-    const result = client.send(Signal.metrics, &payload);
+    const result = client.send(url, &payload);
     try std.testing.expectError(std.posix.ConnectError.ConnectionRefused, result);
+}
+
+const pbmetrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
+const pblogs = @import("opentelemetry/proto/logs/v1.pb.zig");
+const pbtrace = @import("opentelemetry/proto/trace/v1.pb.zig");
+
+/// Export the data to the OTLP endpoint using the options configured with ConfigOptions.
+pub fn Export(
+    allocator: std.mem.Allocator,
+    config: ConfigOptions,
+    otlp_payload: Signal.Data,
+) !void {
+    // Determine the type of client to be used, currently only HTTP is supported.
+    const client = switch (config.protocol) {
+        .http_json, .http_protobuf => try HTTPClient.init(allocator, config),
+        .grpc => return ExportError.UnimplementedTransportProtocol,
+    };
+
+    const payload = otlp_payload.toOwnedSlice(allocator, config.protocol) catch |err| {
+        std.debug.print("OTLP transport: failed to encode payload via {s}: {?}\n", .{ @tagName(config.protocol), err });
+        return err;
+    };
+    defer allocator.free(payload);
+
+    const url = try config.httpUrlForSignal(otlp_payload.signal(), allocator);
+    defer allocator.free(url);
+
+    client.send(url, payload) catch |err| {
+        std.debug.print("OTLP transport: failed to send payload: {?}\n", .{err});
+        return err;
+    };
 }

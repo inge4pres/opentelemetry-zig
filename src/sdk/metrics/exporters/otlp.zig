@@ -27,7 +27,7 @@ const MetricReadError = @import("../reader.zig").MetricReadError;
 const otlp = @import("../../../otlp.zig");
 
 /// Exports metrics via the OpenTelemetry Protocol (OTLP).
-/// OTLP is a binary protocol used for transmitting telemetry data, encoding them with protobuf.
+/// OTLP is a binary protocol used for transmitting telemetry data, encoding them with protobuf or JSON.
 /// See https://opentelemetry.io/docs/specs/otlp/
 pub const OTLPExporter = struct {
     const Self = @This();
@@ -56,8 +56,7 @@ pub const OTLPExporter = struct {
             }
             self.allocator.free(data);
         }
-        var output = try self.allocator.create(pbmetrics.ResourceMetrics);
-        defer output.deinit(self.allocator);
+        var resource_metrics = try self.allocator.alloc(pbmetrics.ResourceMetrics, 1);
 
         var scope_metrics = try self.allocator.alloc(pbmetrics.ScopeMetrics, data.len);
         for (data, 0..) |measurement, i| {
@@ -68,13 +67,26 @@ pub const OTLPExporter = struct {
                     // .schema_url = if (measurement.meterSchemaUrl) |s| ManagedString.managed(s) else .Empty,
                     .attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.meterAttributes),
                 },
+                .schema_url = if (measurement.meterSchemaUrl) |s| ManagedString.managed(s) else .Empty,
                 .metrics = try toProtobufMetric(self.allocator, measurement, self.temporailty(measurement.instrumentKind)),
             };
         }
-        output.* = pbmetrics.ResourceMetrics{
+        resource_metrics[0] = pbmetrics.ResourceMetrics{
             .resource = null, //FIXME support resource attributes
             .scope_metrics = scope_metrics,
             .schema_url = .Empty,
+        };
+
+        const metrics_data = pbmetrics.MetricsData{
+            .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).fromOwnedSlice(self.allocator, resource_metrics),
+        };
+        defer metrics_data.deinit(self.allocator);
+
+        // TODO: offload the data the the OTLP transport.
+        // Problem is: the OTLP transport should be the one in charge of detecting the encoding via the configuration.
+        otlp.Export(self.config, otlp.Signal{ .metrics = metrics_data }) catch |err| {
+            std.debug.print("OTLP export failed: {s}", .{@tagName(err)});
+            return MetricReadError.ExportFailed;
         };
     }
 };
