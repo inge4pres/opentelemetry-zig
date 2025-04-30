@@ -34,6 +34,7 @@ pub const MetricReadError = error{
     ExportFailed,
     ForceFlushTimedOut,
     ConcurrentCollectNotAllowed,
+    OutOfMemory,
 };
 
 /// MetricReader reads metrics' data from a MeterProvider.

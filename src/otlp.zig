@@ -340,14 +340,14 @@ const HTTPClient = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    config: ConfigOptions,
+    config: *ConfigOptions,
     // Default HTTP Client
     client: http.Client,
     // Retries are processed using a separate thread.
     // A priority queue is maintained in the ExpBackoffRetry struct.
     retry: *ExpBackoffRetry,
 
-    pub fn init(allocator: std.mem.Allocator, config: ConfigOptions) !*Self {
+    pub fn init(allocator: std.mem.Allocator, config: *ConfigOptions) !*Self {
         try config.validate();
 
         const s = try allocator.create(Self);
@@ -370,7 +370,7 @@ const HTTPClient = struct {
         self.allocator.destroy(self);
     }
 
-    fn requestOptions(config: ConfigOptions) !http.Client.RequestOptions {
+    fn requestOptions(config: *ConfigOptions) !http.Client.RequestOptions {
         const headers: http.Client.Request.Headers = .{
             .accept_encoding = if (config.compression.encodingHeaderValue()) |v| .{ .override = v } else .default,
             .content_type = .{ .override = switch (config.protocol) {
@@ -394,7 +394,7 @@ const HTTPClient = struct {
     // Send the OTLP data to the url using the client's configuration.
     // Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
     // Data will be compressed here.
-    fn send(self: *Self, url: []const u8, data: []u8) !void {
+    fn send(self: *Self, url: []const u8, data: []const u8) !void {
         var resp_body = std.ArrayList(u8).init(self.allocator);
         defer resp_body.deinit();
 
@@ -701,7 +701,7 @@ test "otlp HTTPClient send fails for missing server" {
     var config = try ConfigOptions.init(allocator);
     defer config.deinit();
 
-    const client = try HTTPClient.init(allocator, config.*);
+    const client = try HTTPClient.init(allocator, config);
     defer client.deinit();
 
     const url = try config.httpUrlForSignal(.metrics, allocator);
@@ -719,7 +719,7 @@ const pbtrace = @import("opentelemetry/proto/trace/v1.pb.zig");
 /// Export the data to the OTLP endpoint using the options configured with ConfigOptions.
 pub fn Export(
     allocator: std.mem.Allocator,
-    config: ConfigOptions,
+    config: *ConfigOptions,
     otlp_payload: Signal.Data,
 ) !void {
     // Determine the type of client to be used, currently only HTTP is supported.

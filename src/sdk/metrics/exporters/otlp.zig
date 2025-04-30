@@ -35,57 +35,72 @@ pub const OTLPExporter = struct {
     allocator: std.mem.Allocator,
     exporter: ExporterImpl,
 
-    temporailty: view.TemporalitySelector,
+    temporality: view.TemporalitySelector,
+    config: *otlp.ConfigOptions,
 
-    config: otlp.ConfigOptions,
+    pub fn init(allocator: std.mem.Allocator, config: *otlp.ConfigOptions, temporality: view.TemporalitySelector) !*Self {
+        const s = try allocator.create(Self);
+        s.* = Self{
+            .allocator = allocator,
+            .exporter = ExporterImpl{
+                .exportFn = exportBatch,
+            },
+            .temporality = temporality,
+            .config = config,
+        };
+        return s;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.allocator.destroy(self);
+    }
 
     pub fn exportBatch(iface: *ExporterImpl, data: []Measurements) MetricReadError!void {
         // Get a pointer to the instance of the struct that implements the interface.
         const self: *Self = @fieldParentPtr("exporter", iface);
-
-        // TODO: implement the OTLP exporter.
-        // Processing pipeline:
-        // 1. convert the measurements to protobuf format (clear up the datapoints after reading them).
-        // 2. create an HTTP or gRPC client.
-        // 3. send the data to the endpoint.
-        // 4. handle the response and potential retries (exp backoff).
-
+        // Cleanup the data after use, it is mandatory for all exporters as they own the data argument.
         defer {
             for (data) |*m| {
                 m.deinit(self.allocator);
             }
             self.allocator.free(data);
         }
-        var resource_metrics = try self.allocator.alloc(pbmetrics.ResourceMetrics, 1);
+        var resource_metrics = self.allocator.alloc(pbmetrics.ResourceMetrics, 1) catch |err| {
+            std.debug.print("OTLP export failed to allocate memory for resource metrics: {s}\n", .{@errorName(err)});
+            return MetricReadError.OutOfMemory;
+        };
 
         var scope_metrics = try self.allocator.alloc(pbmetrics.ScopeMetrics, data.len);
         for (data, 0..) |measurement, i| {
+            const metrics = std.ArrayList(pbmetrics.Metric).initCapacity(self.allocator, 1) catch |err| {
+                std.debug.print("OTLP export failed to allocate memory for metrics: {s}\n", .{@errorName(err)});
+                return MetricReadError.OutOfMemory;
+            };
+            metrics.items[0] = try toProtobufMetric(self.allocator, measurement, self.temporality);
+            const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.meterAttributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{
                 .scope = pbcommon.InstrumentationScope{
                     .name = ManagedString.managed(measurement.meterName),
                     .version = if (measurement.meterVersion) |version| ManagedString.managed(version) else .Empty,
-                    // .schema_url = if (measurement.meterSchemaUrl) |s| ManagedString.managed(s) else .Empty,
-                    .attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.meterAttributes),
+                    .attributes = attributes.values,
                 },
                 .schema_url = if (measurement.meterSchemaUrl) |s| ManagedString.managed(s) else .Empty,
-                .metrics = try toProtobufMetric(self.allocator, measurement, self.temporailty(measurement.instrumentKind)),
+                .metrics = metrics,
             };
         }
         resource_metrics[0] = pbmetrics.ResourceMetrics{
             .resource = null, //FIXME support resource attributes
-            .scope_metrics = scope_metrics,
+            .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).fromOwnedSlice(self.allocator, scope_metrics),
             .schema_url = .Empty,
         };
 
         const metrics_data = pbmetrics.MetricsData{
             .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).fromOwnedSlice(self.allocator, resource_metrics),
         };
-        defer metrics_data.deinit(self.allocator);
+        defer metrics_data.deinit();
 
-        // TODO: offload the data the the OTLP transport.
-        // Problem is: the OTLP transport should be the one in charge of detecting the encoding via the configuration.
-        otlp.Export(self.config, otlp.Signal{ .metrics = metrics_data }) catch |err| {
-            std.debug.print("OTLP export failed: {s}", .{@tagName(err)});
+        otlp.Export(self.allocator, self.config, otlp.Signal.Data{ .metrics = metrics_data }) catch |err| {
+            std.debug.print("OTLP export failed: {s}", .{@errorName(err)});
             return MetricReadError.ExportFailed;
         };
     }
@@ -297,4 +312,13 @@ test "exporters/otlp conversion for HistogramDataPoint" {
         metric.data.?.histogram.data_points.items[0].attributes.items[0].key,
         metric.data.?.histogram.data_points.items[0].attributes.items[0].value.?.value.?.string_value,
     });
+}
+
+test "exporters/otlp init/deinit" {
+    const allocator = std.testing.allocator;
+    const config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config, view.DefaultTemporality);
+    defer exporter.deinit();
 }
