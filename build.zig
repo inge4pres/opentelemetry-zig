@@ -23,11 +23,16 @@ pub fn build(b: *std.Build) void {
         .destination_directory = b.path("src"),
         .source_files = &.{
             // Add more protobuf definitions as the API grows
+            // Signals
             "proto-src/opentelemetry/proto/common/v1/common.proto",
             "proto-src/opentelemetry/proto/resource/v1/resource.proto",
             "proto-src/opentelemetry/proto/metrics/v1/metrics.proto",
             "proto-src/opentelemetry/proto/trace/v1/trace.proto",
             "proto-src/opentelemetry/proto/logs/v1/logs.proto",
+            // collector types for OTLP
+            "proto-src/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+            "proto-src/opentelemetry/proto/collector/trace/v1/trace_service.proto",
+            "proto-src/opentelemetry/proto/collector/logs/v1/logs_service.proto",
         },
         .include_directories = &.{
             // Importsin proto files requires that the top-level directory
