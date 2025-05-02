@@ -18,6 +18,7 @@ const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("../../../opentelemetry/proto/common/v1.pb.zig");
 const pbmetrics = @import("../../../opentelemetry/proto/metrics/v1.pb.zig");
+const pbcollector_metrics = @import("../../../opentelemetry/proto/collector/metrics/v1.pb.zig");
 
 const MetricExporter = @import("../exporter.zig").MetricExporter;
 const ExporterImpl = @import("../exporter.zig").ExporterImpl;
@@ -94,13 +95,13 @@ pub const OTLPExporter = struct {
             .schema_url = .Empty,
         };
 
-        const metrics_data = pbmetrics.MetricsData{
+        const service_req = pbcollector_metrics.ExportMetricsServiceRequest{
             .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).fromOwnedSlice(self.allocator, resource_metrics),
         };
-        defer metrics_data.deinit();
+        defer service_req.deinit();
 
-        otlp.Export(self.allocator, self.config, otlp.Signal.Data{ .metrics = metrics_data }) catch |err| {
-            std.debug.print("OTLP export failed: {s}", .{@errorName(err)});
+        otlp.Export(self.allocator, self.config, otlp.Signal.Data{ .metrics = service_req }) catch |err| {
+            std.debug.print("OTLP export failed in transport: {s}", .{@errorName(err)});
             return MetricReadError.ExportFailed;
         };
     }

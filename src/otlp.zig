@@ -4,6 +4,16 @@ const std = @import("std");
 const http = std.http;
 const Uri = std.Uri;
 
+const pbmetrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
+const pblogs = @import("opentelemetry/proto/logs/v1.pb.zig");
+const pbtrace = @import("opentelemetry/proto/trace/v1.pb.zig");
+
+const pbcollector_metrics = @import("opentelemetry/proto/collector/metrics/v1.pb.zig");
+const pbcollector_trace = @import("opentelemetry/proto/collector/trace/v1.pb.zig");
+const pbcollector_logs = @import("opentelemetry/proto/collector/logs/v1.pb.zig");
+
+// Fixed user-agent string for the OTLP transport.
+// TODO: find a way to make the version dynamic.
 const UserAgent = "zig-o11y_opentelemetry-sdk/0.1.0";
 
 /// Errors that can occur during the configuration of the OTLP transport.
@@ -23,6 +33,7 @@ pub const ConfigError = error{
 /// Error set for the OTLP Export operation.
 pub const ExportError = error{
     UnimplementedTransportProtocol,
+    NonRetryableStatusCodeInResponse,
 };
 
 /// The combination of underlying transport protocol and format used to send the data.
@@ -92,11 +103,11 @@ pub const Signal = enum {
 
     /// Actual signal data as protobuf messages.
     pub const Data = union(Self) {
-        metrics: pbmetrics.MetricsData,
-        logs: pblogs.LogsData,
-        traces: pbtrace.TracesData,
+        metrics: pbcollector_metrics.ExportMetricsServiceRequest,
+        logs: pbcollector_logs.ExportLogsServiceRequest,
+        traces: pbcollector_trace.ExportTraceServiceRequest,
         // TODO add other signals when implemented
-        // profiles: profiles.ProfilesData,
+        // profiles: profiles.ExportProfilesServiceRequest,
 
         fn toOwnedSlice(self: Data, allocator: std.mem.Allocator, protocol: Protocol) ![]const u8 {
             return switch (protocol) {
@@ -124,7 +135,7 @@ pub const Signal = enum {
 test "otlp Signal.Data get payload bytes" {
     const allocator = std.testing.allocator;
     var data = Signal.Data{
-        .metrics = pbmetrics.MetricsData{
+        .metrics = pbcollector_metrics.ExportMetricsServiceRequest{
             .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator),
         },
     };
@@ -139,7 +150,7 @@ pub const ConfigOptions = struct {
     allocator: std.mem.Allocator,
 
     /// The endpoint to send the data to.
-    /// Must be in the form of "host:port".
+    /// Must be in the form of "host:port", withouth scheme.
     endpoint: []const u8 = "localhost:4317",
 
     /// Only applicable to HTTP based transports.
@@ -335,7 +346,7 @@ test "otlp config validation" {
     cfg3.deinit();
 }
 
-// Creates the connection and handles the data transfer for an HTTP-based connection.
+/// Handles the data transfer for HTTP-based OTLP.
 const HTTPClient = struct {
     const Self = @This();
 
@@ -366,6 +377,7 @@ const HTTPClient = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.client.deinit();
         self.retry.deinit();
         self.allocator.destroy(self);
     }
@@ -423,12 +435,15 @@ const HTTPClient = struct {
             // We always send a POST request to write OTLP data.
             .method = .POST,
             .headers = req_opts.headers,
-            .extra_headers = req_opts.extra_headers,
+            .extra_headers = if (req_opts.extra_headers.len > 0) req_opts.extra_headers else &.{},
             .payload = req_body,
         };
+
         const response = try self.client.fetch(fetch_request);
 
         switch (response.status) {
+            // TODO: handle partial success.
+            // See https://opentelemetry.io/docs/specs/otlp/#partial-success-1
             .ok, .accepted => return,
             // We must handle retries for a subset of status codes.
             // See https://opentelemetry.io/docs/specs/otlp/#otlphttp-response
@@ -437,7 +452,8 @@ const HTTPClient = struct {
             },
             else => {
                 // Do not retry and report the status code and the message.
-                // TODO implement error handling
+                // TODO implement error handling, parsing Status message.
+                return ExportError.NonRetryableStatusCodeInResponse;
             },
         }
     }
@@ -712,21 +728,20 @@ test "otlp HTTPClient send fails for missing server" {
     try std.testing.expectError(std.posix.ConnectError.ConnectionRefused, result);
 }
 
-const pbmetrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
-const pblogs = @import("opentelemetry/proto/logs/v1.pb.zig");
-const pbtrace = @import("opentelemetry/proto/trace/v1.pb.zig");
-
 /// Export the data to the OTLP endpoint using the options configured with ConfigOptions.
 pub fn Export(
     allocator: std.mem.Allocator,
     config: *ConfigOptions,
     otlp_payload: Signal.Data,
 ) !void {
+    // FIXME better polymorphism here.
     // Determine the type of client to be used, currently only HTTP is supported.
     const client = switch (config.protocol) {
         .http_json, .http_protobuf => try HTTPClient.init(allocator, config),
         .grpc => return ExportError.UnimplementedTransportProtocol,
     };
+    // the `deinit()` method MUST be implemented by all clients.
+    defer client.deinit();
 
     const payload = otlp_payload.toOwnedSlice(allocator, config.protocol) catch |err| {
         std.debug.print("OTLP transport: failed to encode payload via {s}: {?}\n", .{ @tagName(config.protocol), err });
@@ -741,4 +756,9 @@ pub fn Export(
         std.debug.print("OTLP transport: failed to send payload: {?}\n", .{err});
         return err;
     };
+}
+
+// Integration tests
+test {
+    _ = @import("otlp_test.zig");
 }
