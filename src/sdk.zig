@@ -7,6 +7,7 @@ test {
     // helpers
     _ = @import("pbutils.zig");
     _ = @import("attributes.zig");
+    _ = @import("scope.zig");
 }
 
 // Test API
