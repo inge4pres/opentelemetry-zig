@@ -2,6 +2,8 @@ const std = @import("std");
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attributes = @import("../../attributes.zig").Attributes;
 
+/// Logger is responsible for emitting logs as LogRecords.
+/// see: https://opentelemetry.io/docs/specs/otel/logs/api/#logger
 pub const Logger = struct {
     allocator: std.mem.Allocator,
     scope: InstrumentationScope,
@@ -24,6 +26,8 @@ pub const Logger = struct {
     }
 };
 
+/// LoggerProvider is the entry point of the API. It provides access to Loggers
+/// see: https://opentelemetry.io/docs/specs/otel/logs/api/#loggerprovider
 pub const LoggerProvider = struct {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     allocator: std.mem.Allocator,
