@@ -2,7 +2,7 @@ const std = @import("std");
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attributes = @import("../../attributes.zig").Attributes;
 
-pub const Logger = struct  {
+pub const Logger = struct {
     allocator: std.mem.Allocator,
     scope: InstrumentationScope,
 
@@ -22,22 +22,29 @@ pub const Logger = struct  {
     pub fn deinit(self: *Self) void {
         self.allocator.destroy(self);
     }
-
 };
-
 
 pub const LoggerProvider = struct {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     allocator: std.mem.Allocator,
+    loggers: std.HashMap(
+        InstrumentationScope,
+        *Logger,
+        InstrumentationScope.HashContext,
+        std.hash_map.default_max_load_percentage,
+    ),
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const loggerProvider = try allocator.create(Self);
 
-        loggerProvider.* = Self{
-            .allocator = allocator,
-        };
+        loggerProvider.* = Self{ .allocator = allocator, .loggers = std.HashMap(
+            InstrumentationScope,
+            *Logger,
+            InstrumentationScope.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ).init(allocator) };
 
         return loggerProvider;
     }
@@ -46,30 +53,38 @@ pub const LoggerProvider = struct {
         const allocator = gpa.allocator();
         const provider = try allocator.create(Self);
 
-        provider.* = Self{
-            .allocator = allocator,
-        };
+        provider.* = Self{ .allocator = allocator, .loggers = std.HashMap(
+            InstrumentationScope,
+            *Logger,
+            InstrumentationScope.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ).init(allocator) };
 
         return provider;
     }
 
     pub fn deinit(self: *Self) void {
+        self.loggers.deinit();
         self.allocator.destroy(self);
     }
 
     pub fn getLogger(self: *Self, scope: InstrumentationScope) !*Logger {
-        return Logger.init(self.allocator, scope);
+        if (self.loggers.get(scope)) |logger| {
+            return logger;
+        }
+
+        const instance = try Logger.init(self.allocator, scope);
+        try self.loggers.put(scope, instance);
+
+        return instance;
     }
 };
-
 
 test "logger valid when name is empty" {
     const lp = try LoggerProvider.default();
     defer lp.deinit();
 
-    const lg = try lp.getLogger(.{
-        .name = ""
-    });
+    const lg = try lp.getLogger(.{ .name = "" });
 
     try std.testing.expectEqual(Logger, @TypeOf(lg.*));
 }
@@ -78,32 +93,48 @@ test "logger valid when name is empty without memory leak" {
     const lp = try LoggerProvider.init(std.testing.allocator);
     defer lp.deinit();
 
-    const lg = try lp.getLogger(.{
-        .name = ""
-    });
+    const lg = try lp.getLogger(.{ .name = "" });
     defer lg.deinit();
 
     try std.testing.expectEqual(Logger, @TypeOf(lg.*));
 }
 
-
 test "logger valid with instrumentation scope provided" {
     const lp = try LoggerProvider.init(std.testing.allocator);
     defer lp.deinit();
 
-    const attributes = try Attributes.from(std.testing.allocator,.{
-        "key", @as(u64, 1), "secondKey", @as(u64, 2)
-    });
+    const attributes = try Attributes.from(std.testing.allocator, .{ "key", @as(u64, 1), "secondKey", @as(u64, 2) });
 
     defer std.testing.allocator.free(attributes.?);
 
     const scope = InstrumentationScope{
         .name = "myLogger",
-        .attributes =  attributes,
+        .attributes = attributes,
     };
 
     const lg = try lp.getLogger(scope);
     defer lg.deinit();
 
     try std.testing.expectEqualDeep(scope, lg.scope);
+}
+
+test "logger exactly the same when getting one with same scope" {
+    const lp = try LoggerProvider.init(std.testing.allocator);
+    defer lp.deinit();
+
+    const attributes = try Attributes.from(std.testing.allocator, .{ "key", @as(u64, 1), "secondKey", @as(u64, 2) });
+
+    defer std.testing.allocator.free(attributes.?);
+
+    const scope = InstrumentationScope{
+        .name = "myLogger",
+        .attributes = attributes,
+    };
+
+    const lg = try lp.getLogger(scope);
+    defer lg.deinit();
+
+    const lg2 = try lp.getLogger(scope);
+
+    try std.testing.expectEqualDeep(lg, lg2);
 }
