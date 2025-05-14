@@ -87,7 +87,7 @@ pub const MetricReader = struct {
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
                 const measurements: []Measurements = AggregatedMetrics.fetch(self.allocator, meter, self.aggregation) catch |err| {
-                    std.debug.print("MetricReader: error aggregating data points from meter {s}: {?}", .{ meter.name, err });
+                    std.debug.print("MetricReader: error aggregating data points from meter {s}: {?}", .{ meter.scope.name, err });
                     continue;
                 };
                 // this makes a copy of the measurements to the array list

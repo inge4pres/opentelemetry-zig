@@ -678,7 +678,7 @@ test "instrument in meter and instrument in data are the same" {
         const counter_value = instrument.data.Counter_u64.data_points.pop() orelse unreachable;
         try std.testing.expectEqual(100, counter_value.value);
     } else {
-        std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
+        std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.scope.name });
     }
 }
 
@@ -711,7 +711,7 @@ test "instrument fetches measurements from inner" {
         std.debug.assert(measurements.int.len == 1);
         try std.testing.expectEqual(@as(i64, 100), measurements.int[0].value);
     } else {
-        std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.name });
+        std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.scope.name });
     }
 }
 

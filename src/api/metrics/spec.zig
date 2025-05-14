@@ -2,8 +2,9 @@ const std = @import("std");
 const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
 const pbutils = @import("../../pbutils.zig");
 
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+
 const MeterProvider = @import("meter.zig").MeterProvider;
-const MeterOptions = @import("meter.zig").MeterOptions;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 
 /// FormatError is an error type that is used to represent errors in the format of the data.
@@ -140,45 +141,9 @@ test "validate description" {
 
 /// ResourceError indicates that there is a problem in the access of the resoruce.
 pub const ResourceError = error{
-    MeterExistsWithDifferentAttributes,
     InstrumentExistsWithSameNameAndIdentifyingFields,
     MetricReaderAlreadyAttached,
 };
-
-/// Generate an identifier for a meter: an existing meter with same
-/// name, version and schemUrl cannot be created again with different attributes.
-pub fn meterIdentifier(options: MeterOptions) u64 {
-    var hash: [2048]u8 = std.mem.zeroes([2048]u8);
-    var nextInsertIdx: usize = 0;
-    const keys = [_][]const u8{ options.name, options.version, options.schema_url orelse "" };
-    for (keys) |k| {
-        for (k) |b| {
-            hash[nextInsertIdx] = b;
-        }
-        nextInsertIdx += k.len;
-    }
-    return std.hash.XxHash3.hash(0, &hash);
-}
-
-test "meter identifier" {
-    const name = "my-meter";
-    const version = "v1.2.3";
-    const schema_url = "http://foo.bar";
-
-    const id = meterIdentifier(.{ .name = name, .version = version, .schema_url = schema_url });
-    std.debug.assert(id == 0xf5938ee137020d5e);
-}
-
-test "meter identifier changes with different schema url" {
-    const name = "my-meter";
-    const version = "v1.2.3";
-    const schema_url = "http://foo.bar";
-    const schema_url2 = "http://foo.baz";
-
-    const id = meterIdentifier(.{ .name = name, .version = version, .schema_url = schema_url });
-    const id2 = meterIdentifier(.{ .name = name, .version = version, .schema_url = schema_url2 });
-    std.debug.assert(id != id2);
-}
 
 /// Identify an instrument in a meter by its name, kind, unit and description.
 /// Used to recognize duplicate instrument registration as defined in

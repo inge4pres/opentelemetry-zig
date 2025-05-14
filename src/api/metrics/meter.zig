@@ -4,6 +4,8 @@ const spec = @import("spec.zig");
 const builtin = @import("builtin");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+
 const DataPoint = @import("measurement.zig").DataPoint;
 const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
 
@@ -18,14 +20,18 @@ const Histogram = @import("instrument.zig").Histogram;
 const Gauge = @import("instrument.zig").Gauge;
 const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
 
-const defaultMeterVersion = "0.1.0";
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 /// MeterProvider is responsble for creating and managing meters.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meterprovider
 pub const MeterProvider = struct {
     allocator: std.mem.Allocator,
-    meters: std.AutoHashMapUnmanaged(u64, Meter),
+    meters: std.HashMapUnmanaged(
+        InstrumentationScope,
+        Meter,
+        InstrumentationScope.HashContext,
+        std.hash_map.default_max_load_percentage,
+    ),
     readers: std.ArrayListUnmanaged(*MetricReader),
 
     const Self = @This();
@@ -72,37 +78,20 @@ pub const MeterProvider = struct {
     }
 
     /// Get a new meter by specifying its name.
-    /// Options can be passed to specify a version, schemaURL, and attributes.
+    /// Scope can be passed to specify a version, schemaURL, and attributes.
     /// SchemaURL and attributes are default to null.
     /// If a meter with the same name already exists, it will be returned.
     /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#get-a-meter
-    pub fn getMeter(self: *Self, options: MeterOptions) !*Meter {
+    pub fn getMeter(self: *Self, scope: InstrumentationScope) !*Meter {
         const i = Meter{
-            .name = options.name,
-            .version = options.version,
-            .attributes = options.attributes,
-            .schema_url = options.schema_url,
+            .scope = scope,
             .instruments = .empty,
             .allocator = self.allocator,
         };
-        // A Meter is identified uniquely by its name, version and schema_url.
-        // We use a hash of these values to identify the meter.
-        const meterId = spec.meterIdentifier(options);
 
-        // Raise an error if a meter with the same name/version/schema_url is asked to be fetched with different attributes.
-        if (self.meterExistsWithDifferentAttributes(meterId, options.attributes)) {
-            return spec.ResourceError.MeterExistsWithDifferentAttributes;
-        }
-        const meter = try self.meters.getOrPutValue(self.allocator, meterId, i);
+        const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
 
         return meter.value_ptr;
-    }
-
-    fn meterExistsWithDifferentAttributes(self: *Self, identifier: u64, attributes: ?[]Attribute) bool {
-        if (self.meters.get(identifier)) |m| {
-            return !std.mem.eql(u8, &std.mem.toBytes(m.attributes), &std.mem.toBytes(attributes));
-        }
-        return false;
     }
 
     pub fn addReader(self: *Self, m: *MetricReader) !void {
@@ -114,20 +103,10 @@ pub const MeterProvider = struct {
     }
 };
 
-pub const MeterOptions = struct {
-    name: []const u8,
-    version: []const u8 = defaultMeterVersion,
-    schema_url: ?[]const u8 = null,
-    attributes: ?[]Attribute = null,
-};
-
 /// Meter is a named instance that is used to record measurements.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meter
 const Meter = struct {
-    name: []const u8,
-    version: []const u8,
-    schema_url: ?[]const u8,
-    attributes: ?[]Attribute = null,
+    scope: InstrumentationScope,
     instruments: std.StringHashMapUnmanaged(*Instrument),
     allocator: std.mem.Allocator,
 
@@ -198,7 +177,7 @@ const Meter = struct {
         if (self.instruments.contains(id)) {
             std.debug.print(
                 "Instrument with identifying name {s} already exists in meter {s}\n",
-                .{ id, self.name },
+                .{ id, self.scope.name },
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
         }
@@ -216,7 +195,7 @@ const Meter = struct {
         // Cleanup Meters' Instruments values.
         self.instruments.deinit(self.allocator);
         // Cleanup the meter attributes.
-        if (self.attributes) |attrs| self.allocator.free(attrs);
+        if (self.scope.attributes) |attrs| self.allocator.free(attrs);
     }
 };
 
@@ -242,10 +221,10 @@ test "meter can be created from custom provider" {
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
 
-    std.debug.assert(std.mem.eql(u8, meter.name, meter_name));
-    std.debug.assert(std.mem.eql(u8, meter.version, meter_version));
-    std.debug.assert(meter.schema_url == null);
-    std.debug.assert(meter.attributes == null);
+    std.debug.assert(std.mem.eql(u8, meter.scope.name, meter_name));
+    std.debug.assert(std.mem.eql(u8, meter.scope.version.?, meter_version));
+    std.debug.assert(meter.scope.schema_url == null);
+    std.debug.assert(meter.scope.attributes == null);
 }
 
 test "meter can be created from default provider with schema url and attributes" {
@@ -259,41 +238,10 @@ test "meter can be created from default provider with schema url and attributes"
     const attributes = try Attributes.from(mp.allocator, .{ "key", val });
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version, .schema_url = "http://foo.bar", .attributes = attributes });
-    try std.testing.expectEqual(meter.name, meter_name);
-    try std.testing.expectEqualStrings(meter.version, meter_version);
-    try std.testing.expectEqualStrings(meter.schema_url.?, "http://foo.bar");
-    std.debug.assert(std.mem.eql(u8, std.mem.sliceAsBytes(meter.attributes.?), std.mem.sliceAsBytes(attributes.?)));
-}
-
-test "meter has default version when creted with no options" {
-    const mp = try MeterProvider.default();
-    defer mp.shutdown();
-
-    const meter = try mp.getMeter(.{ .name = "ameter" });
-    std.debug.assert(std.mem.eql(u8, meter.version, defaultMeterVersion));
-}
-
-test "getting same meter with different attributes returns an error" {
-    const name = "my-meter";
-    const version = "v1.2.3";
-    const schema_url = "http://foo.bar";
-
-    const mp = try MeterProvider.default();
-    defer mp.shutdown();
-
-    const val1: []const u8 = "value1";
-    const val2: []const u8 = "value2";
-    const attributes = try Attributes.from(mp.allocator, .{ "key1", val1 });
-
-    _ = try mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributes });
-
-    // modify the attributes adding one/
-    // these attributes are not allocated with the same allocator as the meter.
-    const attributesUpdated = try Attributes.from(std.testing.allocator, .{ "key1", val1, "key2", val2 });
-    defer std.testing.allocator.free(attributesUpdated.?);
-
-    const r = mp.getMeter(.{ .name = name, .version = version, .schema_url = schema_url, .attributes = attributesUpdated });
-    try std.testing.expectError(spec.ResourceError.MeterExistsWithDifferentAttributes, r);
+    try std.testing.expectEqual(meter.scope.name, meter_name);
+    try std.testing.expectEqualStrings(meter.scope.version.?, meter_version);
+    try std.testing.expectEqualStrings(meter.scope.schema_url.?, "http://foo.bar");
+    std.debug.assert(std.mem.eql(u8, std.mem.sliceAsBytes(meter.scope.attributes.?), std.mem.sliceAsBytes(attributes.?)));
 }
 
 test "meter register instrument twice with same name fails" {
@@ -555,9 +503,9 @@ pub const AggregatedMetrics = struct {
             // only if there are data points.
             if (aggregated_data) |agg| {
                 try results.append(Measurements{
-                    .meterName = meter.name,
-                    .meterSchemaUrl = meter.schema_url,
-                    .meterAttributes = meter.attributes,
+                    .meterName = meter.scope.name,
+                    .meterSchemaUrl = meter.scope.schema_url,
+                    .meterAttributes = meter.scope.attributes,
                     .instrumentKind = instr.*.kind,
                     .instrumentOptions = instr.*.opts,
                     .data = agg,
@@ -647,8 +595,8 @@ test "aggregated metrics fetch to owned slice" {
     }
 
     try std.testing.expectEqual(1, result.len);
-    try std.testing.expectEqualStrings(meter.name, result[0].meterName);
-    try std.testing.expectEqualStrings(meter.schema_url.?, result[0].meterSchemaUrl.?);
+    try std.testing.expectEqualStrings(meter.scope.name, result[0].meterName);
+    try std.testing.expectEqualStrings(meter.scope.schema_url.?, result[0].meterSchemaUrl.?);
     try std.testing.expectEqualStrings("test-counter", result[0].instrumentOptions.name);
     try std.testing.expectEqual(4, result[0].data.int[0].value);
 }
