@@ -118,10 +118,29 @@ pub const Attributes = struct {
     }
 
     pub const HashContext = struct {
-        pub fn hash(_: HashContext, self: Self) u64 {
+        fn compareAttributes(context: void, a: Attribute, b: Attribute) bool {
+            _ = context;
+            return std.mem.lessThan(u8, a.key, b.key);
+        }
+
+        const MAX_ATTRS = 128;
+
+        pub fn hash(_: HashContext, self: Attributes) u64 {
             var h = std.hash.Wyhash.init(0);
             const attrs = self.attributes orelse &[_]Attribute{};
-            for (attrs) |attr| {
+
+            // Enforce soft limit: only hash up to MAX_ATTRS attributes
+            const count = @min(attrs.len, MAX_ATTRS);
+
+            var buffer: [MAX_ATTRS]Attribute = undefined;
+            const to_sort = buffer[0..count];
+            @memcpy(to_sort, attrs[0..count]);
+
+            if (to_sort.len > 1) {
+                std.mem.sort(Attribute, to_sort, {}, compareAttributes);
+            }
+
+            for (to_sort) |attr| {
                 h.update(attr.key);
                 h.update(attr.value.toStringNoAlloc());
             }

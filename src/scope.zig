@@ -91,3 +91,21 @@ test "InstrumentationScope should equal correctly" {
 
     try std.testing.expect(hashContext.eql(first, second));
 }
+
+test "InstrumentationScope hash should be consistent regardless of attribute order" {
+    const allocator = std.testing.allocator;
+
+    const attrs1 = try Attributes.from(allocator, .{ "key1", @as(u64, 42), "key2", true, "key3", @as([]const u8, "value3") });
+    defer allocator.free(attrs1.?);
+
+    const attrs2 = try Attributes.from(allocator, .{ "key3", @as([]const u8, "value3"), "key1", @as(u64, 42), "key2", true });
+    defer allocator.free(attrs2.?);
+
+    const scope1: InstrumentationScope = .{ .name = "testScope", .attributes = attrs1 };
+    const scope2: InstrumentationScope = .{ .name = "testScope", .attributes = attrs2 };
+
+    const hashContext = InstrumentationScope.HashContext{};
+
+    try std.testing.expectEqual(hashContext.hash(scope1), hashContext.hash(scope2));
+    try std.testing.expect(hashContext.eql(scope1, scope2));
+}
