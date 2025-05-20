@@ -95,6 +95,28 @@ test "otlp HTTPClient uncompressed protobuf metrics payload" {
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
 }
 
+test "otlp HTTPClient compressed protobuf metrics payload" {
+    const allocator = std.testing.allocator;
+
+    var server = try HTTPTestServer.init(allocator, assertCompressionHeaderGzip);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+
+    config.compression = otlp.Compression.gzip;
+    const req = try oneDataPointMetricsExportRequest(allocator);
+    defer req.deinit();
+
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
+
 fn emptyMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.ExportMetricsServiceRequest {
     const rm = try allocator.alloc(pbmetrics.ResourceMetrics, 1);
     const rm0 = pbmetrics.ResourceMetrics{
@@ -179,10 +201,26 @@ fn assertUncompressedProtobufMetricsBodyCanBeParsed(request: *http.Server.Reques
     };
     defer proto.deinit();
     if (proto.resource_metrics.items.len != 1) {
-        std.debug.print("otlp HTTP test - decoded protobuf: {}\n", proto);
+        std.debug.print("otlp HTTP test - decoded protobuf: {}\n", .{proto});
         return AssertionError.ProtobufBodyMismatch;
     }
     try request.respond("", .{ .status = .ok });
+}
+
+fn assertCompressionHeaderGzip(request: *http.Server.Request) anyerror!void {
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        if (std.mem.eql(u8, header.name, "accept-encoding")) {
+            const content_encoding = header.value;
+            if (!std.mem.eql(u8, content_encoding, "gzip")) {
+                std.debug.print("otlp HTTP test - compression header mismatch, want 'gzip' got '{s}'\n", .{content_encoding});
+                return AssertionError.CompressionMismatch;
+            }
+            try request.respond("", .{ .status = .ok });
+            return;
+        }
+    }
+    return AssertionError.CompressionMismatch;
 }
 
 const HTTPTestServer = struct {
