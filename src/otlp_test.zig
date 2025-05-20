@@ -5,7 +5,9 @@ const otlp = @import("otlp.zig");
 
 const ConfigOptions = otlp.ConfigOptions;
 
+const protobuf = @import("protobuf");
 const pbcollector_metrics = @import("opentelemetry/proto/collector/metrics/v1.pb.zig");
+const pbcommon = @import("opentelemetry/proto/common/v1.pb.zig");
 const pbmetrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
 
 test "otlp HTTPClient send fails on non-retryable error" {
@@ -72,6 +74,27 @@ test "otlp HTTPClient send retries on retryable error" {
     try std.testing.expectEqual(max_requests, req_counter.load(.acquire));
 }
 
+test "otlp HTTPClient uncompressed protobuf metrics payload" {
+    const allocator = std.testing.allocator;
+
+    var server = try HTTPTestServer.init(allocator, assertUncompressedProtobufMetricsBodyCanBeParsed);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+
+    const req = try oneDataPointMetricsExportRequest(allocator);
+    defer req.deinit();
+
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
+
 fn emptyMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.ExportMetricsServiceRequest {
     const rm = try allocator.alloc(pbmetrics.ResourceMetrics, 1);
     const rm0 = pbmetrics.ResourceMetrics{
@@ -86,8 +109,51 @@ fn emptyMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.
     return dummy;
 }
 
+fn oneDataPointMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.ExportMetricsServiceRequest {
+    var data_points = try allocator.alloc(pbmetrics.NumberDataPoint, 1);
+    const data_points0 = pbmetrics.NumberDataPoint{
+        .value = .{ .as_int = 42 },
+        .start_time_unix_nano = @intCast(std.time.nanoTimestamp()),
+        .attributes = std.ArrayList(pbcommon.KeyValue).init(allocator),
+        .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
+    };
+    data_points[0] = data_points0;
+    var metrics = try allocator.alloc(pbmetrics.Metric, 1);
+    const metrics0 = pbmetrics.Metric{
+        .name = protobuf.ManagedString.managed("test_metric"),
+        .data = .{ .gauge = .{ .data_points = std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(allocator, data_points) } },
+        .metadata = std.ArrayList(pbcommon.KeyValue).init(allocator),
+    };
+    metrics[0] = metrics0;
+
+    var scope_metrics = try allocator.alloc(pbmetrics.ScopeMetrics, 1);
+    const scope_metrics0 = pbmetrics.ScopeMetrics{
+        .scope = null,
+        .metrics = std.ArrayList(pbmetrics.Metric).fromOwnedSlice(allocator, metrics),
+    };
+    scope_metrics[0] = scope_metrics0;
+
+    const rm = try allocator.alloc(pbmetrics.ResourceMetrics, 1);
+    const rm0 = pbmetrics.ResourceMetrics{
+        .resource = null,
+        .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).fromOwnedSlice(allocator, scope_metrics),
+    };
+
+    rm[0] = rm0;
+    const req = pbcollector_metrics.ExportMetricsServiceRequest{
+        .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).fromOwnedSlice(allocator, rm),
+    };
+    return req;
+}
+
 // Type that defines the behavior of the mocked HTTP test server.
 const serverBehavior = *const fn (request: *http.Server.Request) anyerror!void;
+
+const AssertionError = error{
+    EmptyBody,
+    ProtobufBodyMismatch,
+    CompressionMismatch,
+};
 
 fn badRequest(request: *http.Server.Request) anyerror!void {
     try request.respond("", .{ .status = .bad_request });
@@ -95,6 +161,28 @@ fn badRequest(request: *http.Server.Request) anyerror!void {
 
 fn tooManyRequests(request: *http.Server.Request) anyerror!void {
     try request.respond("", .{ .status = .too_many_requests });
+}
+
+fn assertUncompressedProtobufMetricsBodyCanBeParsed(request: *http.Server.Request) anyerror!void {
+    var allocator = std.testing.allocator;
+    const reader = try request.reader();
+
+    const body = try reader.readAllAlloc(allocator, 8192);
+    defer allocator.free(body);
+    if (body.len == 0) {
+        return AssertionError.EmptyBody;
+    }
+
+    const proto = pbcollector_metrics.ExportMetricsServiceRequest.decode(body, allocator) catch |err| {
+        std.debug.print("Error parsing proto: {}\n", .{err});
+        return err;
+    };
+    defer proto.deinit();
+    if (proto.resource_metrics.items.len != 1) {
+        std.debug.print("otlp HTTP test - decoded protobuf: {}\n", proto);
+        return AssertionError.ProtobufBodyMismatch;
+    }
+    try request.respond("", .{ .status = .ok });
 }
 
 const HTTPTestServer = struct {

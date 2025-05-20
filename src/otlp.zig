@@ -378,7 +378,6 @@ const HTTPClient = struct {
             .allocator = allocator,
             .config = config,
             .client = http.Client{ .allocator = allocator },
-            // .retry = try ExpBackoffRetry.init(allocator, config.retryConfig),
         };
 
         return s;
@@ -670,7 +669,7 @@ pub fn Export(
     };
 }
 
-// NOTE: This is **not used** in the current implementation, but it is here to show how it could be done.
+// NOTE: The following code **not used** in the current implementation, but it is here to show how it could be done.
 
 // This is an attempt to implement a priority queue for the retryable requests.
 // The retryable requests are stored in a priority queue, sorted by the next attempt time.
