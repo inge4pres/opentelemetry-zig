@@ -110,6 +110,16 @@ pub fn build(b: *std.Build) void {
         const run_metrics_benchmark = b.addRunArtifact(step);
         benchmarks_step.dependOn(&run_metrics_benchmark.step);
     }
+
+    // Documentation
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = sdk_lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Copy documentation artifacts to prefix path");
+    docs_step.dependOn(&install_docs.step);
 }
 
 fn buildExamples(b: *std.Build, base_dir: []const u8, otel_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
