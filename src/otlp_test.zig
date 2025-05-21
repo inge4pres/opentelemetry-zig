@@ -117,6 +117,27 @@ test "otlp HTTPClient compressed protobuf metrics payload" {
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
 }
 
+test "otlp HTTPClient send extra headers" {
+    const allocator = std.testing.allocator;
+
+    var server = try HTTPTestServer.init(allocator, assertExtraHeaders);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+    config.headers = "test-header=test-value";
+
+    const dummy = try emptyMetricsExportRequest(allocator);
+    defer dummy.deinit();
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = dummy });
+}
+
 fn emptyMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.ExportMetricsServiceRequest {
     const rm = try allocator.alloc(pbmetrics.ResourceMetrics, 1);
     const rm0 = pbmetrics.ResourceMetrics{
@@ -175,6 +196,7 @@ const AssertionError = error{
     EmptyBody,
     ProtobufBodyMismatch,
     CompressionMismatch,
+    ExtraHeaderMissing,
 };
 
 fn badRequest(request: *http.Server.Request) anyerror!void {
@@ -209,18 +231,50 @@ fn assertUncompressedProtobufMetricsBodyCanBeParsed(request: *http.Server.Reques
 
 fn assertCompressionHeaderGzip(request: *http.Server.Request) anyerror!void {
     var headers = request.iterateHeaders();
+    var accept_found = false;
     while (headers.next()) |header| {
         if (std.mem.eql(u8, header.name, "accept-encoding")) {
-            const content_encoding = header.value;
-            if (!std.mem.eql(u8, content_encoding, "gzip")) {
-                std.debug.print("otlp HTTP test - compression header mismatch, want 'gzip' got '{s}'\n", .{content_encoding});
+            if (!std.mem.eql(u8, header.value, "gzip")) {
+                std.debug.print("otlp HTTP test accept-encoding header mismatch, want 'gzip' got '{s}'\n", .{header.value});
                 return AssertionError.CompressionMismatch;
             }
+            accept_found = true;
+        }
+    }
+    var content_found = false;
+    var headers2 = request.iterateHeaders();
+    while (headers2.next()) |header| {
+        if (std.mem.eql(u8, header.name, "content-encoding")) {
+            if (!std.mem.eql(u8, header.value, "gzip")) {
+                std.debug.print("otlp HTTP test content-encoding header mismatch, want 'gzip' got '{s}'\n", .{header.value});
+                return AssertionError.CompressionMismatch;
+            }
+            content_found = true;
+        }
+    }
+    if (!content_found or !accept_found) {
+        std.debug.print("otlp HTTP test compression headers not found: content-encoding {} | accept-encoding {}\n", .{
+            content_found,
+            accept_found,
+        });
+        return AssertionError.CompressionMismatch;
+    }
+    try request.respond("", .{ .status = .ok });
+}
+
+fn assertExtraHeaders(request: *http.Server.Request) anyerror!void {
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        if (std.mem.eql(u8, header.name, "test-header")) {
+            if (!std.mem.eql(u8, header.value, "test-value")) {
+                return AssertionError.ExtraHeaderMissing;
+            }
+
             try request.respond("", .{ .status = .ok });
             return;
         }
     }
-    return AssertionError.CompressionMismatch;
+    return AssertionError.ExtraHeaderMissing;
 }
 
 const HTTPTestServer = struct {

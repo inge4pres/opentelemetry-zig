@@ -388,7 +388,21 @@ const HTTPClient = struct {
         self.allocator.destroy(self);
     }
 
-    fn requestOptions(config: *ConfigOptions) !http.Client.RequestOptions {
+    fn extraHeaders(allocator: std.mem.Allocator, config: *ConfigOptions) ![]http.Header {
+        var extra_headers = std.ArrayList(http.Header).init(allocator);
+        if (config.headers) |h| {
+            const parsed_headers = try parseHeaders(allocator, h);
+            defer allocator.free(parsed_headers);
+            try extra_headers.appendSlice(parsed_headers);
+        }
+        if (config.compression.encodingHeaderValue()) |comp| {
+            const ce: http.Header = .{ .name = "content-encoding", .value = comp };
+            try extra_headers.append(ce);
+        }
+        return extra_headers.toOwnedSlice();
+    }
+
+    fn requestOptions(allocator: std.mem.Allocator, config: *ConfigOptions) !http.Client.RequestOptions {
         const headers: http.Client.Request.Headers = .{
             .accept_encoding = if (config.compression.encodingHeaderValue()) |v| .{ .override = v } else .default,
             .content_type = .{ .override = switch (config.protocol) {
@@ -398,13 +412,11 @@ const HTTPClient = struct {
             } },
             .user_agent = .{ .override = UserAgent },
         };
-        var request_options: http.Client.RequestOptions = .{
+        const request_options: http.Client.RequestOptions = .{
             .headers = headers,
             .server_header_buffer = undefined,
+            .extra_headers = try extraHeaders(allocator, config),
         };
-        if (config.headers) |h| {
-            request_options.extra_headers = try parseHeaders(h);
-        }
 
         return request_options;
     }
@@ -434,7 +446,10 @@ const HTTPClient = struct {
         };
         defer self.allocator.free(req_body);
 
-        const req_opts = try requestOptions(self.config);
+        const req_opts = try requestOptions(self.allocator, self.config);
+        defer {
+            if (req_opts.extra_headers.len > 0) self.allocator.free(req_opts.extra_headers);
+        }
 
         const fetch_request = http.Client.FetchOptions{
             .location = .{ .url = url },
@@ -537,15 +552,19 @@ fn calculateDelayMillisec(base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u
     return delay + jitter;
 }
 
-fn parseHeaders(key_values: []const u8) ConfigError![]std.http.Header {
+// Parses the key-value, comma separated list of headers from the config.
+// Caller owns the memory and must free it.
+fn parseHeaders(allocator: std.mem.Allocator, key_values: []const u8) ![]std.http.Header {
     // Maximum 64 items are allowd in the W3C baggage
-    var headers = [_]std.http.Header{.{ .name = "", .value = "" }} ** 64;
-    var split = std.mem.splitScalar(u8, key_values, ',');
+    var headers = try allocator.alloc(std.http.Header, 64);
+    defer allocator.free(headers);
+
+    var comma_split = std.mem.splitScalar(u8, key_values, ',');
 
     var idx: usize = 0;
     // The sum of all characters in the key and value must be less than 8192 bytes (2^13).
     var cum_bytes: u13 = 0;
-    while (split.next()) |item| {
+    while (comma_split.next()) |item| {
         // Fail if there are more than 64 headers.
         if (idx == headers.len) {
             return ConfigError.InvalidHeadersTooManyItems;
@@ -562,40 +581,70 @@ fn parseHeaders(key_values: []const u8) ConfigError![]std.http.Header {
         if (kv.next()) |_| {
             return ConfigError.InvalidHeadersSyntax;
         }
-        headers[idx] = std.http.Header{ .name = key, .value = value };
-        idx += 1;
         // Fail when the sum of all bytes for the headers overflows.
         // Each header is accompanied by 3 more bytes: a colon, a space and a newline.
         cum_bytes = std.math.add(u13, cum_bytes, @intCast(key.len + value.len + 3)) catch return ConfigError.InvalidHeadersTooManyBytes;
+
+        headers[idx] = std.http.Header{ .name = key, .value = value };
+        idx += 1;
     }
-    return headers[0..idx];
+    const ret = try allocator.alloc(std.http.Header, idx);
+    std.mem.copyForwards(std.http.Header, ret, headers[0..idx]);
+    return ret;
 }
 
 test "otlp config parse headers" {
+    const allocator = std.testing.allocator;
+
+    const single_header = "test-header=test-value";
+    const single_parsed = try parseHeaders(allocator, single_header);
+    defer allocator.free(single_parsed);
+
+    try std.testing.expectEqual(1, single_parsed.len);
+    try std.testing.expectEqualSlices(u8, "test-header", single_parsed[0].name);
+    try std.testing.expectEqualSlices(u8, "test-value", single_parsed[0].value);
+
     const valid_headers = "a=b,123=456,key1=value1  ,  key2=value2";
-    const parsed = try parseHeaders(valid_headers);
+    const parsed = try parseHeaders(allocator, valid_headers);
+    defer allocator.free(parsed);
 
     try std.testing.expectEqual(parsed.len, 4);
-    try std.testing.expectEqualSlices(u8, parsed[0].name, "a");
-    try std.testing.expectEqualSlices(u8, parsed[0].value, "b");
-    try std.testing.expectEqualSlices(u8, parsed[1].name, "123");
-    try std.testing.expectEqualSlices(u8, parsed[1].value, "456");
-    try std.testing.expectEqualSlices(u8, parsed[2].name, "key1");
-    try std.testing.expectEqualSlices(u8, parsed[2].value, "value1");
-    try std.testing.expectEqualSlices(u8, parsed[3].name, "key2");
-    try std.testing.expectEqualSlices(u8, parsed[3].value, "value2");
+    try std.testing.expectEqualSlices(u8, "a", parsed[0].name);
+    try std.testing.expectEqualSlices(u8, "b", parsed[0].value);
+    try std.testing.expectEqualSlices(u8, "123", parsed[1].name);
+    try std.testing.expectEqualSlices(u8, "456", parsed[1].value);
+    try std.testing.expectEqualSlices(u8, "key1", parsed[2].name);
+    try std.testing.expectEqualSlices(u8, "value1", parsed[2].value);
+    try std.testing.expectEqualSlices(u8, "key2", parsed[3].name);
+    try std.testing.expectEqualSlices(u8, "value2", parsed[3].value);
 
     const invalid_headers: [4][]const u8 = .{ "a=,", "=b", "a=b=c", "a=b,=c=d" };
     for (invalid_headers) |header| {
-        try std.testing.expectError(ConfigError.InvalidHeadersSyntax, parseHeaders(header));
+        try std.testing.expectError(ConfigError.InvalidHeadersSyntax, parseHeaders(allocator, header));
     }
 
     // 150 bytes * 60 == 9000 bytes
     const invalid_too_many_bytes: []const u8 = "key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA," ** 60;
-    try std.testing.expectError(ConfigError.InvalidHeadersTooManyBytes, parseHeaders(invalid_too_many_bytes));
+    try std.testing.expectError(ConfigError.InvalidHeadersTooManyBytes, parseHeaders(allocator, invalid_too_many_bytes));
 
     const invalid_too_many_items: []const u8 = "key=val," ** 65;
-    try std.testing.expectError(ConfigError.InvalidHeadersTooManyItems, parseHeaders(invalid_too_many_items));
+    try std.testing.expectError(ConfigError.InvalidHeadersTooManyItems, parseHeaders(allocator, invalid_too_many_items));
+}
+
+test "otlp HTTPClient extra headers" {
+    const allocator = std.testing.allocator;
+    var config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    config.headers = "key1=value1,key2=value2";
+    const headers = try HTTPClient.extraHeaders(allocator, config);
+    defer allocator.free(headers);
+
+    try std.testing.expectEqual(2, headers.len);
+    try std.testing.expectEqualSlices(u8, "key1", headers[0].name);
+    try std.testing.expectEqualSlices(u8, "value1", headers[0].value);
+    try std.testing.expectEqualSlices(u8, "key2", headers[1].name);
+    try std.testing.expectEqualSlices(u8, "value2", headers[1].value);
 }
 
 test "otlp exp backoff delay calculation" {
