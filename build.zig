@@ -141,29 +141,24 @@ fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: 
 
     var ex_dir_iter = ex_dir.iterate();
     while (try ex_dir_iter.next()) |file| {
-        // Get the file name.
-        // If it doesn't end in 'zig' then ignore.
-        const index = std.mem.lastIndexOfScalar(u8, file.name, '.') orelse continue;
-        if (index == 0) continue; // discard dotfiles
-        if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
+        if (getZigFileName(file.name)) |name| {
+            const file_name = try examples_dir.join(b.allocator, file.name);
 
-        const name = file.name[0..index];
-        const file_name = try examples_dir.join(b.allocator, file.name);
-
-        const b_mod = b.createModule(.{
-            .root_source_file = file_name,
-            .target = otel_sdk_mod.resolved_target.?,
-            // We set the optimization level to ReleaseSafe for examples
-            // because we want to have safety checks, and execute assertions.
-            .optimize = .ReleaseSafe,
-            .imports = &.{
-                .{ .name = "opentelemetry-sdk", .module = otel_sdk_mod },
-            },
-        });
-        try exes.append(b.addExecutable(.{
-            .name = name,
-            .root_module = b_mod,
-        }));
+            const b_mod = b.createModule(.{
+                .root_source_file = file_name,
+                .target = otel_sdk_mod.resolved_target.?,
+                // We set the optimization level to ReleaseSafe for examples
+                // because we want to have safety checks, and execute assertions.
+                .optimize = .ReleaseSafe,
+                .imports = &.{
+                    .{ .name = "opentelemetry-sdk", .module = otel_sdk_mod },
+                },
+            });
+            try exes.append(b.addExecutable(.{
+                .name = name,
+                .root_module = b_mod,
+            }));
+        }
     }
 
     return exes.toOwnedSlice();
@@ -183,32 +178,36 @@ fn buildBenchmarks(
 
     var iter = test_dir.iterate();
     while (try iter.next()) |file| {
-        // Get the file name.
-        // If it doesn't end in 'zig' then ignore.
-        const index = std.mem.lastIndexOfScalar(u8, file.name, '.') orelse continue;
-        if (index == 0) continue; // discard dotfiles
-        if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
+        if (getZigFileName(file.name)) |name| {
+            const file_name = try bench_dir.join(b.allocator, file.name);
 
-        const name = file.name[0..index];
-        const file_name = try bench_dir.join(b.allocator, file.name);
+            const b_mod = b.createModule(.{
+                .root_source_file = file_name,
+                .target = otel_mod.resolved_target.?,
+                // We set the optimization level to ReleaseFast for benchmarks
+                // because we want to have the best performance.
+                .optimize = .ReleaseFast,
+                .imports = &.{
+                    .{ .name = "opentelemetry-sdk", .module = otel_mod },
+                    .{ .name = "benchmark", .module = benchmark_mod },
+                },
+            });
 
-        const b_mod = b.createModule(.{
-            .root_source_file = file_name,
-            .target = otel_mod.resolved_target.?,
-            // We set the optimization level to ReleaseFast for benchmarks
-            // because we want to have the best performance.
-            .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "opentelemetry-sdk", .module = otel_mod },
-                .{ .name = "benchmark", .module = benchmark_mod },
-            },
-        });
-
-        try bench_tests.append(b.addTest(.{
-            .name = name,
-            .root_module = b_mod,
-        }));
+            try bench_tests.append(b.addTest(.{
+                .name = name,
+                .root_module = b_mod,
+            }));
+        }
     }
 
     return bench_tests.toOwnedSlice();
+}
+
+fn getZigFileName(file_name: []const u8) ?[]const u8 {
+    // Get the file name without extension, checking if it ends with '.zig'.
+    // If it doesn't end in 'zig' then ignore.
+    const index = std.mem.lastIndexOfScalar(u8, file_name, '.') orelse return null;
+    if (index == 0) return null; // discard dotfiles
+    if (!std.mem.eql(u8, file_name[index + 1 ..], "zig")) return null;
+    return file_name[0..index];
 }
