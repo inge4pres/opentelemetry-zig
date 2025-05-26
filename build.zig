@@ -106,7 +106,12 @@ pub fn build(b: *std.Build) !void {
 
     const benchmark_mod = benchmarks_dep.module("zbench");
 
-    const metrics_benchmarks = buildBenchmarks(b, "benchmarks/metrics", sdk_mod, benchmark_mod) catch |err| {
+    const metrics_benchmarks = buildBenchmarks(
+        b,
+        b.path(b.pathJoin(&.{ "benchmarks", "metrics" })),
+        sdk_mod,
+        benchmark_mod,
+    ) catch |err| {
         std.debug.print("Error building metrics benchmarks: {}\n", .{err});
         return err;
     };
@@ -166,14 +171,14 @@ fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: 
 
 fn buildBenchmarks(
     b: *std.Build,
-    base_dir: []const u8,
+    bench_dir: std.Build.LazyPath,
     otel_mod: *std.Build.Module,
     benchmark_mod: *std.Build.Module,
 ) ![]*std.Build.Step.Compile {
     var bench_tests = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer bench_tests.deinit();
 
-    var test_dir = try std.fs.cwd().openDir(base_dir, .{ .iterate = true });
+    var test_dir = try bench_dir.getPath3(b, null).openDir("", .{ .iterate = true });
     defer test_dir.close();
 
     var iter = test_dir.iterate();
@@ -185,18 +190,24 @@ fn buildBenchmarks(
         if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
 
         const name = file.name[0..index];
-        const benchmark = b.addTest(.{
-            .name = name,
-            .root_source_file = b.path(try std.fs.path.join(b.allocator, &.{ base_dir, file.name })),
+        const file_name = try bench_dir.join(b.allocator, file.name);
+
+        const b_mod = b.createModule(.{
+            .root_source_file = file_name,
             .target = otel_mod.resolved_target.?,
             // We set the optimization level to ReleaseFast for benchmarks
             // because we want to have the best performance.
             .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "opentelemetry-sdk", .module = otel_mod },
+                .{ .name = "benchmark", .module = benchmark_mod },
+            },
         });
-        benchmark.root_module.addImport("opentelemetry-sdk", otel_mod);
-        benchmark.root_module.addImport("benchmark", benchmark_mod);
 
-        try bench_tests.append(benchmark);
+        try bench_tests.append(b.addTest(.{
+            .name = name,
+            .root_module = b_mod,
+        }));
     }
 
     return bench_tests.toOwnedSlice();
