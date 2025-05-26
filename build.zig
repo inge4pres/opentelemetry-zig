@@ -1,7 +1,7 @@
 const std = @import("std");
 const protobuf = @import("protobuf");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -84,12 +84,15 @@ pub fn build(b: *std.Build) void {
 
     // Examples
     const examples_step = b.step("examples", "Build and run all examples");
-    examples_step.dependOn(&sdk_lib.step);
 
     // TODO add examples for other signals
-    const metrics_examples = buildExamples(b, "examples/metrics", sdk_mod) catch |err| {
+    const metrics_examples = buildExamples(
+        b,
+        b.path(b.pathJoin(&.{ "examples", "metrics" })),
+        sdk_mod,
+    ) catch |err| {
         std.debug.print("Error building metrics examples: {}\n", .{err});
-        return;
+        return err;
     };
     defer b.allocator.free(metrics_examples);
     for (metrics_examples) |step| {
@@ -105,7 +108,7 @@ pub fn build(b: *std.Build) void {
 
     const metrics_benchmarks = buildBenchmarks(b, "benchmarks/metrics", sdk_mod, benchmark_mod) catch |err| {
         std.debug.print("Error building metrics benchmarks: {}\n", .{err});
-        return;
+        return err;
     };
     defer b.allocator.free(metrics_benchmarks);
     for (metrics_benchmarks) |step| {
@@ -124,11 +127,11 @@ pub fn build(b: *std.Build) void {
     docs_step.dependOn(&install_docs.step);
 }
 
-fn buildExamples(b: *std.Build, base_dir: []const u8, otel_sdk_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
+fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
     var exes = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer exes.deinit();
 
-    var ex_dir = try std.fs.cwd().openDir(base_dir, .{ .iterate = true });
+    var ex_dir = try examples_dir.getPath3(b, null).openDir("", .{ .iterate = true });
     defer ex_dir.close();
 
     var ex_dir_iter = ex_dir.iterate();
@@ -140,8 +143,10 @@ fn buildExamples(b: *std.Build, base_dir: []const u8, otel_sdk_mod: *std.Build.M
         if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
 
         const name = file.name[0..index];
+        const file_name = try examples_dir.join(b.allocator, file.name);
+
         const b_mod = b.createModule(.{
-            .root_source_file = b.path(try std.fs.path.join(b.allocator, &.{ base_dir, file.name })),
+            .root_source_file = file_name,
             .target = otel_sdk_mod.resolved_target.?,
             // We set the optimization level to ReleaseSafe for examples
             // because we want to have safety checks, and execute assertions.
