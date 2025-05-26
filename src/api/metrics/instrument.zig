@@ -110,6 +110,9 @@ pub const Instrument = struct {
             u16 => .{ .Histogram_u16 = h },
             u32 => .{ .Histogram_u32 = h },
             u64 => .{ .Histogram_u64 = h },
+            i16 => .{ .Histogram_i16 = h },
+            i32 => .{ .Histogram_i32 = h },
+            i64 => .{ .Histogram_i64 = h },
             f32 => .{ .Histogram_f32 = h },
             f64 => .{ .Histogram_f64 = h },
             else => {
