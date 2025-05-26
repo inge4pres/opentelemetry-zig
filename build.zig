@@ -47,18 +47,21 @@ pub fn build(b: *std.Build) void {
     const gen_proto = b.step("gen-proto", "Generates Zig files from protobuf definitions");
     gen_proto.dependOn(&protoc_step.step);
 
-    const sdk_lib = b.addStaticLibrary(.{
-        .name = "opentelemetry-sdk",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/sdk.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = false,
-            .unwind_tables = .sync,
-        }),
+    const sdk_mod = b.addModule("sdk", .{
+        .root_source_file = b.path("src/sdk.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = false,
+        .unwind_tables = .sync,
+        .imports = &.{
+            .{ .name = "protobuf", .module = protobuf_dep.module("protobuf") },
+        },
     });
 
-    sdk_lib.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));
+    const sdk_lib = b.addLibrary(.{
+        .name = "opentelemetry-sdk",
+        .root_module = sdk_mod,
+    });
 
     b.installArtifact(sdk_lib);
 
@@ -68,13 +71,12 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing the SDK.
     // This only builds the test executable but does not run it.
     const sdk_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/sdk.zig"),
+        .root_module = sdk_mod,
         .target = target,
         .optimize = optimize,
         // Allow passing test filter using the build args.
         .filters = b.args orelse &[0][]const u8{},
     });
-    sdk_unit_tests.root_module.addImport("protobuf", protobuf_dep.module("protobuf"));
 
     const run_sdk_unit_tests = b.addRunArtifact(sdk_unit_tests);
 
@@ -85,7 +87,7 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&sdk_lib.step);
 
     // TODO add examples for other signals
-    const metrics_examples = buildExamples(b, "examples/metrics", sdk_lib.root_module) catch |err| {
+    const metrics_examples = buildExamples(b, "examples/metrics", sdk_mod) catch |err| {
         std.debug.print("Error building metrics examples: {}\n", .{err});
         return;
     };
@@ -101,7 +103,7 @@ pub fn build(b: *std.Build) void {
 
     const benchmark_mod = benchmarks_dep.module("zbench");
 
-    const metrics_benchmarks = buildBenchmarks(b, "benchmarks/metrics", sdk_lib.root_module, benchmark_mod) catch |err| {
+    const metrics_benchmarks = buildBenchmarks(b, "benchmarks/metrics", sdk_mod, benchmark_mod) catch |err| {
         std.debug.print("Error building metrics benchmarks: {}\n", .{err});
         return;
     };
@@ -111,7 +113,7 @@ pub fn build(b: *std.Build) void {
         benchmarks_step.dependOn(&run_metrics_benchmark.step);
     }
 
-    // Documentation
+    // Documentation webiste with autodoc
     const install_docs = b.addInstallDirectory(.{
         .source_dir = sdk_lib.getEmittedDocs(),
         .install_dir = .prefix,
@@ -122,7 +124,7 @@ pub fn build(b: *std.Build) void {
     docs_step.dependOn(&install_docs.step);
 }
 
-fn buildExamples(b: *std.Build, base_dir: []const u8, otel_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
+fn buildExamples(b: *std.Build, base_dir: []const u8, otel_sdk_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
     var exes = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer exes.deinit();
 
@@ -138,16 +140,20 @@ fn buildExamples(b: *std.Build, base_dir: []const u8, otel_mod: *std.Build.Modul
         if (!std.mem.eql(u8, file.name[index + 1 ..], "zig")) continue;
 
         const name = file.name[0..index];
-        const example = b.addExecutable(.{
-            .name = name,
+        const b_mod = b.createModule(.{
             .root_source_file = b.path(try std.fs.path.join(b.allocator, &.{ base_dir, file.name })),
-            .target = otel_mod.resolved_target.?,
+            .target = otel_sdk_mod.resolved_target.?,
             // We set the optimization level to ReleaseSafe for examples
             // because we want to have safety checks, and execute assertions.
             .optimize = .ReleaseSafe,
+            .imports = &.{
+                .{ .name = "opentelemetry-sdk", .module = otel_sdk_mod },
+            },
         });
-        example.root_module.addImport("opentelemetry-sdk", otel_mod);
-        try exes.append(example);
+        try exes.append(b.addExecutable(.{
+            .name = name,
+            .root_module = b_mod,
+        }));
     }
 
     return exes.toOwnedSlice();
