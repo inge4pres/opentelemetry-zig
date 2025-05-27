@@ -102,7 +102,6 @@ pub fn build(b: *std.Build) !void {
 
     // Benchmarks
     const benchmarks_step = b.step("benchmarks", "Build and run all benchmarks");
-    benchmarks_step.dependOn(&sdk_lib.step);
 
     const benchmark_mod = benchmarks_dep.module("zbench");
 
@@ -129,6 +128,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const docs_step = b.step("docs", "Copy documentation artifacts to prefix path");
+    docs_step.dependOn(&sdk_lib.step);
     docs_step.dependOn(&install_docs.step);
 }
 
