@@ -365,11 +365,12 @@ const HTTPClient = struct {
     config: *ConfigOptions,
     // Default HTTP Client
     client: http.Client,
-    // Retries are processed using a separate thread.
-    // A priority queue is maintained in the ExpBackoffRetry struct.
-    // retry: *ExpBackoffRetry,
 
     pub fn init(allocator: std.mem.Allocator, config: *ConfigOptions) !*Self {
+        var env = try std.process.getEnvMap(allocator);
+        defer env.deinit();
+        // Merge the environment variables into the config.
+        try config.mergeFromEnvMap(&env);
         try config.validate();
 
         const s = try allocator.create(Self);
