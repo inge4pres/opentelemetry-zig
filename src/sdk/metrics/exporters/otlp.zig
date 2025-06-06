@@ -119,7 +119,7 @@ fn toProtobufMetric(
         .description = if (instrument_opts.description) |d| ManagedString.managed(d) else .Empty,
         .unit = if (instrument_opts.unit) |u| ManagedString.managed(u) else .Empty,
         .data = switch (kind) {
-            .Counter, .UpDownCounter => |k| pbmetrics.Metric.data_union{
+            .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => |k| pbmetrics.Metric.data_union{
                 .sum = pbmetrics.Sum{
                     .data_points = try numberDataPoints(allocator, i64, measurements.data.int),
                     .aggregation_temporality = temporailty(kind).toProto(),
@@ -135,7 +135,7 @@ fn toProtobufMetric(
                 },
             },
 
-            .Gauge => pbmetrics.Metric.data_union{
+            .Gauge, .ObservableGauge => pbmetrics.Metric.data_union{
                 .gauge = pbmetrics.Gauge{
                     .data_points = switch (measurements.data) {
                         .int => try numberDataPoints(allocator, i64, measurements.data.int),

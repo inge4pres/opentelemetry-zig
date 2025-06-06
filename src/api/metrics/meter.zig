@@ -20,6 +20,8 @@ const Histogram = @import("instrument.zig").Histogram;
 const Gauge = @import("instrument.zig").Gauge;
 const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
 
+const AsyncInstrument = @import("async_instrument.zig");
+
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 /// MeterProvider is responsble for creating and managing meters.
@@ -153,6 +155,56 @@ const Meter = struct {
     pub fn createGauge(self: *Self, comptime T: type, options: InstrumentOptions) !*Gauge(T) {
         var i = try Instrument.new(.Gauge, options, self.allocator);
         const g = try i.gauge(T);
+        errdefer self.allocator.destroy(g);
+        try self.registerInstrument(i);
+
+        return g;
+    }
+
+    /// Create an ObservableCounter instrument that can be used to observe values asynchronously.
+    /// This instrument is used to report counters with absolute values.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#asynchronous-counter.
+    pub fn createObservableCounter(
+        self: *Self,
+        options: InstrumentOptions,
+        context: AsyncInstrument.ObservedContext,
+        callbacks: ?[]AsyncInstrument.ObserveMeasures,
+    ) !*AsyncInstrument.ObservableInstrument(.ObservableCounter) {
+        var i = try Instrument.new(.ObservableCounter, options, self.allocator);
+        const c = try i.asyncCounter(context, callbacks);
+        errdefer self.allocator.destroy(c);
+        try self.registerInstrument(i);
+
+        return c;
+    }
+
+    /// Create an ObservableUpDownCounter instrument that can be used to observe values asynchronously.
+    /// This instrument is used to report counters with absolute values that can go up and down.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#asynchronous-updowncounter.
+    pub fn createObservableUpDownCounter(
+        self: *Self,
+        options: InstrumentOptions,
+        context: AsyncInstrument.ObservedContext,
+        callbacks: ?[]AsyncInstrument.ObserveMeasures,
+    ) !*AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter) {
+        var i = try Instrument.new(.ObservableUpDownCounter, options, self.allocator);
+        const c = try i.asyncUpDownCounter(context, callbacks);
+        errdefer self.allocator.destroy(c);
+        try self.registerInstrument(i);
+
+        return c;
+    }
+
+    /// Create an ObservableGauge instrument that can be used to observe values asynchronously.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#asynchronous-gauge.
+    pub fn createObservableGauge(
+        self: *Self,
+        options: InstrumentOptions,
+        context: AsyncInstrument.ObservedContext,
+        callbacks: ?[]AsyncInstrument.ObserveMeasures,
+    ) !*AsyncInstrument.ObservableInstrument(.ObservableGauge) {
+        var i = try Instrument.new(.ObservableGauge, options, self.allocator);
+        const g = try i.asyncGauge(context, callbacks);
         errdefer self.allocator.destroy(g);
         try self.registerInstrument(i);
 

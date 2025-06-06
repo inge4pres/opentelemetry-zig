@@ -8,11 +8,18 @@ const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
 
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
+const AsyncInstrument = @import("async_instrument.zig");
+
 pub const Kind = enum {
+    // Synchronous instruments
     Counter,
     UpDownCounter,
     Histogram,
     Gauge,
+    // Observable instruments (ascynchronous)
+    ObservableCounter,
+    ObservableUpDownCounter,
+    ObservableGauge,
 
     pub fn toString(self: Kind) []const u8 {
         return switch (self) {
@@ -20,11 +27,15 @@ pub const Kind = enum {
             .UpDownCounter => "UpDownCounter",
             .Histogram => "Histogram",
             .Gauge => "Gauge",
+            .ObservableCounter => "ObservableCounter",
+            .ObservableUpDownCounter => "ObservableUpDownCounter",
+            .ObservableGauge => "ObservableGauge",
         };
     }
 };
 
 const instrumentData = union(enum) {
+    // Synchronous instruments.
     Counter_u16: *Counter(u16),
     Counter_u32: *Counter(u32),
     Counter_u64: *Counter(u64),
@@ -44,6 +55,10 @@ const instrumentData = union(enum) {
     Gauge_i64: *Gauge(i64),
     Gauge_f32: *Gauge(f32),
     Gauge_f64: *Gauge(f64),
+    // Async instruments.
+    ObservableCounter: *AsyncInstrument.ObservableInstrument(.ObservableCounter),
+    ObservableUpDownCounter: *AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter),
+    ObservableGauge: *AsyncInstrument.ObservableInstrument(.ObservableGauge),
 };
 
 /// Instrument is a container of all supported instrument types.
@@ -139,6 +154,57 @@ pub const Instrument = struct {
             },
         };
         return g;
+    }
+
+    pub fn asyncCounter(
+        self: *Self,
+        context: AsyncInstrument.ObservedContext,
+        callbacks: ?[]AsyncInstrument.ObserveMeasures,
+    ) !*AsyncInstrument.ObservableInstrument(.ObservableCounter) {
+        const i = try self.allocator.create(AsyncInstrument.ObservableInstrument(.ObservableCounter));
+        i.* = AsyncInstrument.ObservableInstrument(.ObservableCounter).init(self.allocator, context);
+
+        if (callbacks) |cb| {
+            for (cb) |c| {
+                try i.registerCallback(c);
+            }
+        }
+        self.data = .{ .ObservableCounter = i };
+        return i;
+    }
+
+    pub fn asyncUpDownCounter(
+        self: *Self,
+        context: AsyncInstrument.ObservedContext,
+        callbacks: ?[]AsyncInstrument.ObserveMeasures,
+    ) !*AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter) {
+        const i = try self.allocator.create(AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter));
+        i.* = AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter).init(self.allocator, context);
+
+        if (callbacks) |cb| {
+            for (cb) |c| {
+                try i.registerCallback(c);
+            }
+        }
+        self.data = .{ .ObservableUpDownCounter = i };
+        return i;
+    }
+
+    pub fn asyncGauge(
+        self: *Self,
+        context: AsyncInstrument.ObservedContext,
+        callbacks: ?[]AsyncInstrument.ObserveMeasures,
+    ) !*AsyncInstrument.ObservableInstrument(.ObservableGauge) {
+        const i = try self.allocator.create(AsyncInstrument.ObservableInstrument(.ObservableGauge));
+        i.* = AsyncInstrument.ObservableInstrument(.ObservableGauge).init(self.allocator, context);
+
+        if (callbacks) |cb| {
+            for (cb) |c| {
+                try i.registerCallback(c);
+            }
+        }
+        self.data = .{ .ObservableGauge = i };
+        return i;
     }
 
     pub fn deinit(self: *Self) void {
@@ -619,7 +685,7 @@ test "histogram keeps track of count, sum and min/max by attribute" {
     try std.testing.expectEqual(2, histogram.data_points.items[2].value.count);
 }
 
-test "gauge instrument and record value without attributes" {
+test "gauge instrument records value without attributes" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -631,7 +697,7 @@ test "gauge instrument and record value without attributes" {
     std.debug.assert(gauge.data_points.pop().?.value == -42);
 }
 
-test "upDownCounter and stores value" {
+test "upDownCounter instrument records and stores value" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -836,4 +902,39 @@ test "instrument cleans up internal state when datapoints are fetched" {
     }
     // Assert that we have 1 data point: the first added by the test thread.
     try std.testing.expectEqual(0, c.data_points.items.len);
+}
+
+const MetricObserveError = AsyncInstrument.MetricObserveError;
+
+test "async instrument registered in meter" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const background = struct {
+        fn observe(_: AsyncInstrument.ObservedContext, _: std.mem.Allocator) MetricObserveError!MeasurementsData {
+            // This is a dummy callback that does nothing.
+            // In a real-world scenario, it would collect data asynchronously.
+            return MeasurementsData{
+                .int = &.{},
+            };
+        }
+    };
+
+    const name = "test-async-counter";
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+
+    var callbacks = [_]AsyncInstrument.ObserveMeasures{
+        background.observe,
+    };
+
+    var async_counter = try meter.createObservableCounter(
+        .{ .name = name },
+        .{},
+        &callbacks,
+    );
+
+    // SDK users aren't expected to call measurementsData on the async instrument,
+    // rather simply use the meter to register the instrument
+    const data = try async_counter.measurementsData(std.testing.allocator);
+    try std.testing.expectEqual(0, data.int.len);
 }

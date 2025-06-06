@@ -75,6 +75,79 @@ pub const MeasurementsData = union(enum) {
             inline else => |list| return list.len == 0,
         }
     }
+
+    pub fn deinit(self: *MeasurementsData, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            inline else => |list| {
+                for (list) |*dp| dp.deinit(allocator);
+                allocator.free(list);
+            },
+        }
+    }
+
+    /// Create a single entity from 2 distinct measurements data.
+    /// If the active tags differ between the two, a panic will occur.
+    /// Caller owns the memory.
+    pub fn join(self: *MeasurementsData, other: MeasurementsData, allocator: std.mem.Allocator) !void {
+        switch (self.*) {
+            .int => |list| self.int = try mergeDataPoints(i64, list, other.int, allocator),
+            .double => |list| self.double = try mergeDataPoints(f64, list, other.double, allocator),
+            .histogram => |list| self.histogram = try mergeDataPoints(HistogramDataPoint, list, other.histogram, allocator),
+        }
+    }
+
+    fn mergeDataPoints(comptime T: type, dp1: []DataPoint(T), dp2: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
+        defer allocator.free(dp1);
+        defer allocator.free(dp2);
+
+        var ret = try allocator.alloc(DataPoint(T), dp1.len + dp2.len);
+        for (dp1, 0..) |point, i| {
+            ret[i] = point;
+        }
+        for (dp2, dp1.len..) |point, h| {
+            ret[h] = point;
+        }
+        return ret;
+    }
+
+    /// Returns a new MeasurementsData with deduplicated data points based on their attributes.
+    /// When attributes coincide with an existing data point, the older is discarded.
+    pub fn dedupByAttributes(self: *MeasurementsData, allocator: std.mem.Allocator) !void {
+        if (self.isEmpty()) return;
+        return switch (self.*) {
+            .int => |list| self.int = try pruneByAttributes(i64, list, allocator),
+            .double => |list| self.double = try pruneByAttributes(f64, list, allocator),
+            .histogram => |list| self.histogram = try pruneByAttributes(HistogramDataPoint, list, allocator),
+        };
+    }
+
+    fn pruneByAttributes(comptime T: type, dp: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
+        defer allocator.free(dp);
+
+        var seen = std.HashMap(
+            Attributes,
+            DataPoint(T),
+            Attributes.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ).init(allocator);
+        defer seen.deinit();
+
+        for (dp) |point| {
+            const gop = try seen.getOrPut(Attributes.with(point.attributes));
+            if (gop.found_existing) {
+                // we need to free the memory for the duplicate data point before replacing it.
+                gop.value_ptr.deinit(allocator);
+            }
+            gop.value_ptr.* = point;
+        }
+        var ret = try std.ArrayList(DataPoint(T)).initCapacity(allocator, seen.count());
+        var i = seen.valueIterator();
+        while (i.next()) |entry| {
+            try ret.append(entry.*);
+        }
+
+        return try ret.toOwnedSlice();
+    }
 };
 
 test "MeasurementsData.isEmpty" {
@@ -83,6 +156,52 @@ test "MeasurementsData.isEmpty" {
 
     m = MeasurementsData{ .double = &.{} };
     try std.testing.expect(m.isEmpty());
+}
+
+test "MeasurementsData.join" {
+    const allocator = std.testing.allocator;
+
+    var dp1 = try allocator.alloc(DataPoint(i64), 1);
+    var dp2 = try allocator.alloc(DataPoint(i64), 1);
+
+    dp1[0] = try DataPoint(i64).new(allocator, 1, .{});
+    dp2[0] = try DataPoint(i64).new(allocator, 2, .{});
+
+    var m1 = MeasurementsData{ .int = dp1 };
+    const m2 = MeasurementsData{ .int = dp2 };
+
+    try m1.join(m2, allocator);
+    defer allocator.free(m1.int);
+    defer for (m1.int) |*dp| dp.deinit(allocator);
+
+    try std.testing.expect(m1.int.len == 2);
+    try std.testing.expect(m1.int[0].value == 1);
+    try std.testing.expect(m1.int[1].value == 2);
+}
+
+test "MeasurementsData.dedupByAttributes" {
+    const allocator = std.testing.allocator;
+
+    var dp = try allocator.alloc(DataPoint(i64), 4);
+
+    const val1: []const u8 = "value1";
+    const val2: []const u8 = "value2";
+
+    dp[0] = try DataPoint(i64).new(allocator, 1, .{ "key", val1 });
+    dp[1] = try DataPoint(i64).new(allocator, 2, .{ "key", val2 });
+    dp[2] = try DataPoint(i64).new(allocator, 3, .{ "key", val1 });
+    dp[3] = try DataPoint(i64).new(allocator, 4, .{ "key", val1, "other", val2 });
+
+    var mes = MeasurementsData{ .int = dp };
+
+    try mes.dedupByAttributes(allocator);
+    defer allocator.free(mes.int);
+    defer for (mes.int) |*point| point.deinit(allocator);
+
+    try std.testing.expectEqual(3, mes.int.len);
+    try std.testing.expectEqual(2, mes.int[0].value);
+    try std.testing.expectEqual(4, mes.int[1].value);
+    try std.testing.expectEqual(3, mes.int[2].value);
 }
 
 /// A set of data points with a series of metadata coming from the meter and the instrument.

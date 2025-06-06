@@ -13,9 +13,8 @@ pub const Aggregation = enum {
 /// Default aggregation for a given kind of instrument.
 pub fn DefaultAggregation(kind: instrument.Kind) Aggregation {
     return switch (kind) {
-        .Counter => Aggregation.Sum,
-        .UpDownCounter => Aggregation.Sum,
-        .Gauge => Aggregation.LastValue,
+        .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => Aggregation.Sum,
+        .Gauge, .ObservableGauge => Aggregation.LastValue,
         .Histogram => Aggregation.ExplicitBucketHistogram,
     };
 }
@@ -37,9 +36,8 @@ pub const Temporality = enum {
 
 pub fn DefaultTemporality(kind: instrument.Kind) Temporality {
     return switch (kind) {
-        .Counter => Temporality.Cumulative,
-        .UpDownCounter => Temporality.Cumulative,
-        .Gauge => Temporality.Delta,
+        .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => Temporality.Cumulative,
+        .Gauge, .ObservableGauge => Temporality.Delta,
         .Histogram => Temporality.Cumulative,
     };
 }
