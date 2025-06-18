@@ -431,58 +431,43 @@ const view = @import("../../sdk/metrics/view.zig");
 /// AggregatedMetrics is a collection of metrics that have been aggregated using the
 /// MetricReader's temporality and aggregation functions.
 pub const AggregatedMetrics = struct {
-    fn sum(comptime T: type, data_points: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
-        var deduped = try std.ArrayListUnmanaged(DataPoint(T)).initCapacity(allocator, data_points.len);
-        var temp = std.HashMap(
+    fn sum(comptime T: type, data_points: []DataPoint(T), current_time: u64, allocator: std.mem.Allocator) ![]DataPoint(T) {
+        var deduped = std.ArrayHashMap(
             Attributes,
-            T,
-            Attributes.HashContext,
-            std.hash_map.default_max_load_percentage,
+            DataPoint(T),
+            Attributes.ArrayHashContext,
+            true,
         ).init(allocator);
-        // No need to cleanup the keys, they are the same Attribute slices from instruments_datapoints.
-        defer temp.deinit();
+        // No need to cleanup the keys, they are reference to the same Attribute slices from data_points.
+        defer deduped.deinit();
 
         for (data_points) |dp| {
             const key = Attributes.with(dp.attributes);
-            const value = dp.value;
-            const gop = try temp.getOrPut(key);
-            if (!gop.found_existing) gop.value_ptr.* = value else gop.value_ptr.* += value;
+            const gop = try deduped.getOrPut(key);
+            if (!gop.found_existing) gop.value_ptr.* = try dp.deepCopy(allocator) else gop.value_ptr.*.value += dp.value;
+            // Add timestamps that will be used in temporal aggregation.
+            gop.value_ptr.*.timestamps = .{ .start_time_ns = current_time, .time_ns = current_time };
         }
-        var iter = temp.iterator();
-        while (iter.next()) |entry| {
-            const dp = DataPoint(T){
-                .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
-                .value = entry.value_ptr.*,
-            };
-            try deduped.append(allocator, dp);
-        }
-        return try deduped.toOwnedSlice(allocator);
+        return allocator.dupe(DataPoint(T), deduped.values());
     }
 
-    fn lastValue(comptime T: type, data_points: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
-        var deduped = try std.ArrayListUnmanaged(DataPoint(T)).initCapacity(allocator, data_points.len);
-        var temp = std.HashMap(
+    fn lastValue(comptime T: type, data_points: []DataPoint(T), current_time: u64, allocator: std.mem.Allocator) ![]DataPoint(T) {
+        var deduped = std.ArrayHashMap(
             Attributes,
-            T,
-            Attributes.HashContext,
-            std.hash_map.default_max_load_percentage,
+            DataPoint(T),
+            Attributes.ArrayHashContext,
+            true,
         ).init(allocator);
-        // No need to cleanup the keys, they are the same Attribute slices from instruments_datapoints.
-        defer temp.deinit();
+        defer deduped.deinit();
 
         for (data_points) |dp| {
-            const key = Attributes.with(dp.attributes);
-            try temp.put(key, dp.value);
+            var duped = try dp.deepCopy(allocator);
+            // Add timestamps that will be used in temporal aggregation.
+            duped.timestamps = .{ .start_time_ns = current_time, .time_ns = current_time };
+
+            try deduped.put(Attributes.with(dp.attributes), duped);
         }
-        var iter = temp.iterator();
-        while (iter.next()) |entry| {
-            const dp = DataPoint(T){
-                .attributes = try Attributes.with(entry.key_ptr.*.attributes).dupe(allocator),
-                .value = entry.value_ptr.*,
-            };
-            try deduped.append(allocator, dp);
-        }
-        return try deduped.toOwnedSlice(allocator);
+        return allocator.dupe(DataPoint(T), deduped.values());
     }
 
     fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation: view.Aggregation) !?MeasurementsData {
@@ -502,20 +487,22 @@ pub const AggregatedMetrics = struct {
             }
         }
 
+        const current_time: u64 = @intCast(std.time.nanoTimestamp());
+
         // Processing pipeline is split by aggregation type
         const aggregated: ?MeasurementsData = switch (aggregation) {
             .Drop => null,
             .Sum => switch (data_points) {
-                .int => MeasurementsData{ .int = try sum(i64, data_points.int, allocator) },
-                .double => MeasurementsData{ .double = try sum(f64, data_points.double, allocator) },
+                .int => MeasurementsData{ .int = try sum(i64, data_points.int, current_time, allocator) },
+                .double => MeasurementsData{ .double = try sum(f64, data_points.double, current_time, allocator) },
                 // Sum aggregation is not supported for histograms data points.
                 // FIXME we should probably return an error here.
                 // Specification does not seem to be clear...
                 .histogram => null,
             },
             .LastValue => switch (data_points) {
-                .int => MeasurementsData{ .int = try lastValue(i64, data_points.int, allocator) },
-                .double => MeasurementsData{ .double = try lastValue(f64, data_points.double, allocator) },
+                .int => MeasurementsData{ .int = try lastValue(i64, data_points.int, current_time, allocator) },
+                .double => MeasurementsData{ .double = try lastValue(f64, data_points.double, current_time, allocator) },
                 // Sum aggregation is not supported for histograms data points.
                 // FIXME we should probably return an error here.
                 // Specification does not seem to be clear...
@@ -528,7 +515,10 @@ pub const AggregatedMetrics = struct {
                 .histogram => {
                     const ret = try allocator.alloc(DataPoint(HistogramDataPoint), data_points.histogram.len);
                     for (data_points.histogram, 0..) |dp, i| {
-                        ret[i] = try dp.deepCopy(allocator);
+                        var d = try dp.deepCopy(allocator);
+                        // Add timestamps that will be used in temporal aggregation.
+                        d.timestamps = .{ .time_ns = current_time };
+                        ret[i] = d;
                     }
                     return MeasurementsData{ .histogram = ret };
                 },
@@ -587,7 +577,10 @@ test "aggregated metrics deduplicated from meter without attributes" {
         inline else => |m| std.testing.allocator.free(m),
     };
 
-    try std.testing.expectEqualDeep(DataPoint(i64){ .value = 4 }, deduped.?.int[0]);
+    try std.testing.expectEqualDeep(DataPoint(i64){
+        .value = 4,
+        .timestamps = deduped.?.int[0].timestamps orelse @panic("missing timestamps"),
+    }, deduped.?.int[0]);
 }
 
 test "aggregated metrics deduplicated from meter with attributes" {
@@ -626,6 +619,7 @@ test "aggregated metrics deduplicated from meter with attributes" {
     try std.testing.expectEqualDeep(DataPoint(i64){
         .attributes = attrs,
         .value = 4,
+        .timestamps = deduped.?.int[0].timestamps orelse @panic("missing timestamps"),
     }, deduped.?.int[0]);
 }
 
@@ -682,4 +676,28 @@ test "aggregated metrics do not duplicate data points" {
         std.debug.print("bad result from AggregatedMetrics.fetch():\n{?}\n", .{result_second[0]});
         return err;
     };
+}
+
+test "aggregatedmetrics have timestamps" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    try counter.add(1, .{});
+    try counter.add(3, .{});
+
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    defer {
+        for (result) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result);
+    }
+
+    try std.testing.expectEqual(1, result.len);
+    try std.testing.expectEqual(4, result[0].data.int[0].value);
+    try std.testing.expect(result[0].data.int[0].timestamps.?.start_time_ns.? > 0);
+    try std.testing.expect(result[0].data.int[0].timestamps.?.time_ns > 0);
 }

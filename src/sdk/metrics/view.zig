@@ -8,14 +8,15 @@ pub const Aggregation = enum {
     Sum,
     LastValue,
     ExplicitBucketHistogram,
+    // TODO add ExponentialBucketHistogram
 };
 
 /// Default aggregation for a given kind of instrument.
 pub fn DefaultAggregation(kind: instrument.Kind) Aggregation {
     return switch (kind) {
-        .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => Aggregation.Sum,
-        .Gauge, .ObservableGauge => Aggregation.LastValue,
-        .Histogram => Aggregation.ExplicitBucketHistogram,
+        .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => .Sum,
+        .Gauge, .ObservableGauge => .LastValue,
+        .Histogram => .ExplicitBucketHistogram,
     };
 }
 
@@ -36,9 +37,9 @@ pub const Temporality = enum {
 
 pub fn DefaultTemporality(kind: instrument.Kind) Temporality {
     return switch (kind) {
-        .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => Temporality.Cumulative,
-        .Gauge, .ObservableGauge => Temporality.Delta,
-        .Histogram => Temporality.Cumulative,
+        .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => .Cumulative,
+        .Gauge, .ObservableGauge => .Delta,
+        .Histogram => .Cumulative,
     };
 }
 
@@ -47,5 +48,9 @@ pub const TemporalitySelector = *const fn (instrument.Kind) Temporality;
 pub const AggregationSelector = *const fn (instrument.Kind) Aggregation;
 
 pub fn TemporalityCumulative(_: instrument.Kind) Temporality {
-    return Temporality.Cumulative;
+    return .Cumulative;
+}
+
+pub fn TemporalityDelta(_: instrument.Kind) Temporality {
+    return .Delta;
 }

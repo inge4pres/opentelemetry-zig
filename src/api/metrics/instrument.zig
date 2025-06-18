@@ -300,7 +300,10 @@ pub fn Counter(comptime T: type) type {
                 u16, u32, u64, i16, i32, i64 => {
                     var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = try Attributes.with(m.attributes).dupe(allocator), .value = @intCast(m.value) };
+                        data[idx] = .{
+                            .value = @intCast(m.value),
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                        };
                     }
                     return .{ .int = data };
                 },
@@ -411,7 +414,7 @@ pub fn Histogram(comptime T: type) type {
                     .max = null,
                 };
             } else {
-                // When the key exists, we need to clear up the attributes allocate previously.
+                // When the key exists, we need to clear up the attributes previously allocated.
                 if (recorded_attributes.attributes) |a| self.allocator.free(a);
             }
 
@@ -536,14 +539,20 @@ pub fn Gauge(comptime T: type) type {
                 i16, i32, i64 => {
                     var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = try Attributes.with(m.attributes).dupe(allocator), .value = @intCast(m.value) };
+                        data[idx] = .{
+                            .value = @intCast(m.value),
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                        };
                     }
                     return .{ .int = data };
                 },
                 f32, f64 => {
                     var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
                     for (self.data_points.items, 0..) |m, idx| {
-                        data[idx] = .{ .attributes = try Attributes.with(m.attributes).dupe(allocator), .value = @floatCast(m.value) };
+                        data[idx] = .{
+                            .value = @floatCast(m.value),
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                        };
                     }
                     return .{ .double = data };
                 },

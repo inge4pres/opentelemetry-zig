@@ -13,11 +13,15 @@ pub fn DataPoint(comptime T: type) type {
 
         value: T,
         attributes: ?[]Attribute = null,
-        // TODO: consider adding a timestamp field
+        timestamps: ?Timestamps = null, // Timestamps are filled in when extracting data points from the meter.
 
+        /// Creates a data points with the provided value and attributes,
+        /// adding a timestamp with the current time.
         pub fn new(allocator: std.mem.Allocator, value: T, attributes: anytype) std.mem.Allocator.Error!Self {
-            //TODO: consider setting the timestamp as part of creation of DataPoint
-            return Self{ .value = value, .attributes = try Attributes.from(allocator, attributes) };
+            return Self{
+                .value = value,
+                .attributes = try Attributes.from(allocator, attributes),
+            };
         }
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
@@ -47,6 +51,16 @@ pub fn DataPoint(comptime T: type) type {
     };
 }
 
+/// Times used to report temporal aggregation.
+/// Start time is used to indicate the continuation of previous measurements,
+/// while time is used to indicate the moment the measurement is collected from a reader.
+pub const Timestamps = struct {
+    /// Referred to as "TimeUnixNano" in the OTel spec: the time when the measurement was collected.
+    time_ns: u64,
+    /// Referred to as "StartTimeUnixNano" in the OTel spec: an optional indication of unbroken time series.
+    start_time_ns: ?u64 = null,
+};
+
 test "datapoint without attributes" {
     var m = try DataPoint(u32).new(std.testing.allocator, 42, .{});
     defer m.deinit(std.testing.allocator);
@@ -60,6 +74,19 @@ test "datapoint with attributes" {
     var m = try DataPoint(u32).new(std.testing.allocator, 42, .{ "anykey", val });
     defer m.deinit(std.testing.allocator);
     try std.testing.expect(m.value == 42);
+}
+
+test "datapoint deepCopy" {
+    const allocator = std.testing.allocator;
+    const val: []const u8 = "name";
+    var m = try DataPoint(u32).new(allocator, 42, .{ "anykey", val });
+    defer m.deinit(allocator);
+
+    var copy = try m.deepCopy(allocator);
+    defer copy.deinit(allocator);
+
+    try std.testing.expect(copy.value == 42);
+    try std.testing.expectEqualSlices(Attribute, copy.attributes.?, m.attributes.?);
 }
 
 /// A union of measurements with either integer or double values.

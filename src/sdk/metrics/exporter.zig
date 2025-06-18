@@ -112,8 +112,8 @@ pub const MetricExporter = struct {
 
     /// ExportBatch exports a batch of metrics data by calling the exporter implementation.
     /// The passed metrics data will be owned by the exporter implementation.
-    //TODO exportBatch MUST have a timeout
     pub fn exportBatch(self: *Self, metrics: []Measurements) ExportResult {
+        // TODO exportBatch MUST have a timeout
         if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
             // When shutdown has already been called, calling export should be a failure.
             // https://opentelemetry.io/docs/specs/otel/metrics/sdk/#shutdown-2

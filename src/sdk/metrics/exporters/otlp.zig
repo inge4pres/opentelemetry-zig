@@ -184,9 +184,8 @@ fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points:
         const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
         a.appendAssumeCapacity(pbmetrics.NumberDataPoint{
             .attributes = attrs.values,
-            // FIXME add a timestamp to DatatPoint in order to get it here.
-            .time_unix_nano = @intCast(std.time.nanoTimestamp()), //TODO fetch from DataPoint
-            // FIXME reader's temporailty is not applied here.
+            .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
+            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.time.nanoTimestamp()),
             .value = switch (T) {
                 i64 => .{ .as_int = dp.value },
                 f64 => .{ .as_double = dp.value },
@@ -209,7 +208,8 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
         const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
         a.appendAssumeCapacity(pbmetrics.HistogramDataPoint{
             .attributes = attrs.values,
-            .time_unix_nano = @intCast(std.time.nanoTimestamp()), //TODO fetch from DataPoint
+            .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
+            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.time.nanoTimestamp()),
             .count = dp.value.count,
             .sum = dp.value.sum,
             .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.bucket_counts)),

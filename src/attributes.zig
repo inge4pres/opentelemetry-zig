@@ -116,7 +116,7 @@ pub const Attributes = struct {
     pub fn with(attributes: ?[]Attribute) Self {
         return Self{ .attributes = attributes };
     }
-
+    // Allows implementing HashMaps
     pub const HashContext = struct {
         fn compareAttributes(context: void, a: Attribute, b: Attribute) bool {
             _ = context;
@@ -164,6 +164,18 @@ pub const Attributes = struct {
         }
     };
 
+    // Allows implementing ArrayHashMaps
+    pub const ArrayHashContext = struct {
+        pub fn hash(_: ArrayHashContext, self: Attributes) u32 {
+            const hc = HashContext{};
+            return @truncate(hc.hash(self));
+        }
+
+        pub fn eql(_: ArrayHashContext, a: Self, b: Self, _: usize) bool {
+            const hc = HashContext{};
+            return hc.eql(a, b);
+        }
+    };
     /// Creates a slice of attributes from a list of key-value pairs.
     /// Caller owns the returned memory and should free the slice when done via the same allocator.
     pub fn from(allocator: std.mem.Allocator, keyValues: anytype) std.mem.Allocator.Error!?[]Attribute {

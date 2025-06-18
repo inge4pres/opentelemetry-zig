@@ -15,6 +15,8 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 const MeasurementsData = @import("../../api/metrics/measurement.zig").MeasurementsData;
+const DataPoint = @import("../../api/metrics/measurement.zig").DataPoint;
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 const view = @import("view.zig");
 const TemporalitySelector = view.TemporalitySelector;
@@ -24,6 +26,7 @@ const exporter = @import("exporter.zig");
 const MetricExporter = exporter.MetricExporter;
 const ExporterIface = exporter.ExporterImpl;
 const ExportResult = exporter.ExportResult;
+const Temporality = @import("temporality.zig");
 
 const InMemoryExporter = @import("exporters/in_memory.zig").InMemoryExporter;
 
@@ -51,6 +54,8 @@ pub const MetricReader = struct {
     // Data transform configuration
     temporality: TemporalitySelector = view.DefaultTemporality,
     aggregation: AggregationSelector = view.DefaultAggregation,
+    // Composes the .Cumulative data points.
+    temporal_aggregation: *Temporality = undefined,
 
     // Signal that shutdown has been called.
     hasShutDown: bool = false,
@@ -65,6 +70,7 @@ pub const MetricReader = struct {
             .exporter = metric_exporter,
             .temporality = metric_exporter.temporality orelse view.DefaultTemporality,
             .aggregation = metric_exporter.aggregation orelse view.DefaultAggregation,
+            .temporal_aggregation = try Temporality.init(allocator),
         };
 
         return s;
@@ -87,25 +93,23 @@ pub const MetricReader = struct {
             // Measurements can be ported to protobuf structs during OTLP export.
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
-                const measurements: []Measurements = AggregatedMetrics.fetch(self.allocator, meter, self.aggregation) catch |err| {
+                const measurements = AggregatedMetrics.fetch(self.allocator, meter, self.aggregation) catch |err| {
                     std.debug.print("MetricReader: error aggregating data points from meter {s}: {?}", .{ meter.scope.name, err });
                     continue;
                 };
-                // this makes a copy of the measurements to the array list
+                defer self.allocator.free(measurements);
+
+                for (measurements) |*m| {
+                    try self.temporal_aggregation.process(m, self.temporality);
+                }
+
+                // The exporter takes ownership of the data points, which are deinitialized
+                // by calling deinit() on the Measurements once done.
+                // MetricExporter must be built with the same allocator as MetricReader
+                // to ensure that the memory is managed correctly.
                 try toBeExported.appendSlice(measurements);
-                self.allocator.free(measurements);
             }
 
-            //TODO: apply temporality before exporting, optionally keeping state in the reader.
-            // When .Delta temporality is used, it will report the difference between the value
-            // previsouly collected and the currently collected value.
-            // This requires keeping state in the reader to store the previous value.
-
-            // Export the metrics data through the exporter.
-            // The exporter will own the metrics and should free it
-            // by calling deinit() on the Measurements once done.
-            // MetricExporter must be built with the same allocator as MetricReader
-            // to ensure that the memory is managed correctly.
             const owned = try toBeExported.toOwnedSlice();
             switch (self.exporter.exportBatch(owned)) {
                 ExportResult.Success => return,
@@ -123,6 +127,7 @@ pub const MetricReader = struct {
             std.debug.print("MetricReader shutdown: error while collecting metrics: {?}\n", .{e});
         };
         self.exporter.shutdown();
+        self.temporal_aggregation.deinit();
         self.allocator.destroy(self);
     }
 };
@@ -221,4 +226,58 @@ test "metric reader custom temporality and aggregation" {
     }
     // Since we are using the .Drop aggregation, no data should be collected.
     try std.testing.expectEqual(0, data.len);
+}
+
+test "metric reader correctness exporting cumulative temporality" {
+    const allocator = std.testing.allocator;
+
+    const mp = try MeterProvider.init(allocator);
+    defer mp.shutdown();
+
+    var inMem = try InMemoryExporter.init(allocator);
+    defer inMem.deinit();
+
+    const metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
+
+    var reader = try MetricReader.init(allocator, metric_exporter);
+    defer reader.shutdown();
+    try mp.addReader(reader);
+
+    // Generate data
+    const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    try counter.add(1, .{});
+    try counter.add(2, .{});
+
+    // first collection cycle: the value should be 3
+    try reader.collect();
+    const result = try inMem.fetch(allocator);
+    defer {
+        for (result) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result);
+    }
+
+    try std.testing.expectEqual(3, result[0].data.int[0].value);
+
+    try counter.add(1, .{});
+    try counter.add(2, .{});
+
+    // Second collection cycle: the value should be 6
+    try reader.collect();
+    const result2 = try inMem.fetch(allocator);
+    defer {
+        for (result2) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result2);
+    }
+
+    // Assert value is actually summed up with .Cumulative
+    try std.testing.expectEqual(6, result2[0].data.int[0].value);
+    // and that timestamp is preserved in a long-running series
+    try std.testing.expectEqual(result[0].data.int[0].timestamps.?.time_ns, result2[0].data.int[0].timestamps.?.start_time_ns);
 }
