@@ -47,6 +47,16 @@ pub fn build(b: *std.Build) !void {
     const gen_proto = b.step("gen-proto", "Generates Zig files from protobuf definitions");
     gen_proto.dependOn(&protoc_step.step);
 
+    // Protobuf-generated code gets its own internal module
+    const proto_mod = b.createModule(.{
+        .root_source_file = b.path("src/opentelemetry/proto/proto.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "protobuf", .module = protobuf_dep.module("protobuf") },
+        },
+    });
+
     const sdk_mod = b.addModule("sdk", .{
         .root_source_file = b.path("src/sdk.zig"),
         .target = target,
@@ -55,6 +65,7 @@ pub fn build(b: *std.Build) !void {
         .unwind_tables = .sync,
         .imports = &.{
             .{ .name = "protobuf", .module = protobuf_dep.module("protobuf") },
+            .{ .name = "opentelemetry-proto", .module = proto_mod },
         },
     });
 
@@ -84,12 +95,26 @@ pub fn build(b: *std.Build) !void {
 
     // Examples
     const examples_step = b.step("examples", "Build and run all examples");
+    const examples_filter = b.option([]const u8, "examples-filter", "Filter examples to build");
 
+    // Attach an OTLP stub module to allow examples to use it.
+    const otel_stub_mod = b.createModule(.{
+        .root_source_file = b.path("examples/otlp_stub/server.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "opentelemetry-sdk", .module = sdk_mod },
+            .{ .name = "protobuf", .module = protobuf_dep.module("protobuf") },
+            .{ .name = "opentelemetry-proto", .module = proto_mod },
+        },
+    });
     // TODO add examples for other signals
     const metrics_examples = buildExamples(
         b,
         b.path(b.pathJoin(&.{ "examples", "metrics" })),
         sdk_mod,
+        otel_stub_mod,
+        examples_filter,
     ) catch |err| {
         std.debug.print("Error building metrics examples: {}\n", .{err});
         return err;
@@ -132,7 +157,7 @@ pub fn build(b: *std.Build) !void {
     docs_step.dependOn(&install_docs.step);
 }
 
-fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: *std.Build.Module) ![]*std.Build.Step.Compile {
+fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: *std.Build.Module, otlp_stub_mod: *std.Build.Module, name_filter: ?[]const u8) ![]*std.Build.Step.Compile {
     var exes = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer exes.deinit();
 
@@ -142,6 +167,10 @@ fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: 
     var ex_dir_iter = ex_dir.iterate();
     while (try ex_dir_iter.next()) |file| {
         if (getZigFileName(file.name)) |name| {
+            // Discard the modules that do not match the filter
+            if (name_filter) |filter| {
+                if (std.mem.indexOf(u8, name, filter) == null) continue;
+            }
             const file_name = try examples_dir.join(b.allocator, file.name);
 
             const b_mod = b.createModule(.{
@@ -152,6 +181,7 @@ fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: 
                 .optimize = .ReleaseSafe,
                 .imports = &.{
                     .{ .name = "opentelemetry-sdk", .module = otel_sdk_mod },
+                    .{ .name = "otlp-stub", .module = otlp_stub_mod },
                 },
             });
             try exes.append(b.addExecutable(.{
