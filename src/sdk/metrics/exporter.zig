@@ -10,11 +10,11 @@ const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 
 const Attributes = @import("../../attributes.zig").Attributes;
 
-const InMemoryExporter = @import("./exporters/in_memory.zig").InMemoryExporter;
-const StdoutExporter = @import("./exporters/stdout.zig").StdoutExporter;
+const InMemoryExporter = @import("exporters/in_memory.zig").InMemoryExporter;
+const StdoutExporter = @import("exporters/stdout.zig").StdoutExporter;
+const OTLPExporter = @import("exporters/otlp.zig").OTLPExporter;
 
-const otlp = @import("exporters/otlp.zig");
-const OTLPExporter = @import("./exporters/otlp.zig").OTLPExporter;
+const otlp = @import("../../otlp.zig");
 
 const view = @import("view.zig");
 

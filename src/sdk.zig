@@ -20,6 +20,9 @@ pub const MeterProvider = @import("api/metrics/meter.zig").MeterProvider;
 pub const MetricReader = @import("sdk/metrics/reader.zig").MetricReader;
 pub const MetricExporter = @import("sdk/metrics/exporter.zig").MetricExporter;
 pub const InMemoryExporter = @import("sdk/metrics/exporters/in_memory.zig").InMemoryExporter;
+pub const StdoutExporter = @import("sdk/metrics/exporters/stdout.zig").StdoutExporter;
+pub const OTLPExporter = @import("sdk/metrics/exporters/otlp.zig").OTLPExporter;
+pub const otlp = @import("otlp.zig");
 
 pub const Counter = @import("api/metrics/instrument.zig").Counter;
 pub const UpDownCounter = @import("api/metrics/instrument.zig").Counter;

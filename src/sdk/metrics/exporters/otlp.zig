@@ -16,9 +16,9 @@ const view = @import("../view.zig");
 
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pbcommon = @import("../../../opentelemetry/proto/common/v1.pb.zig");
-const pbmetrics = @import("../../../opentelemetry/proto/metrics/v1.pb.zig");
-const pbcollector_metrics = @import("../../../opentelemetry/proto/collector/metrics/v1.pb.zig");
+const pbcommon = @import("opentelemetry-proto").common;
+const pbmetrics = @import("opentelemetry-proto").metrics;
+const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics;
 
 const MetricExporter = @import("../exporter.zig").MetricExporter;
 const ExporterImpl = @import("../exporter.zig").ExporterImpl;
@@ -73,11 +73,12 @@ pub const OTLPExporter = struct {
 
         var scope_metrics = try self.allocator.alloc(pbmetrics.ScopeMetrics, data.len);
         for (data, 0..) |measurement, i| {
-            const metrics = std.ArrayList(pbmetrics.Metric).initCapacity(self.allocator, 1) catch |err| {
+            var metrics = std.ArrayList(pbmetrics.Metric).initCapacity(self.allocator, 1) catch |err| {
                 std.debug.print("OTLP export failed to allocate memory for metrics: {s}\n", .{@errorName(err)});
                 return MetricReadError.OutOfMemory;
             };
-            metrics.items[0] = try toProtobufMetric(self.allocator, measurement, self.temporality);
+            metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, measurement, self.temporality));
+
             const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.meterAttributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{
                 .scope = pbcommon.InstrumentationScope{

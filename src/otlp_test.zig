@@ -6,9 +6,10 @@ const otlp = @import("otlp.zig");
 const ConfigOptions = otlp.ConfigOptions;
 
 const protobuf = @import("protobuf");
-const pbcollector_metrics = @import("opentelemetry/proto/collector/metrics/v1.pb.zig");
-const pbcommon = @import("opentelemetry/proto/common/v1.pb.zig");
-const pbmetrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
+
+const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics;
+const pbcommon = @import("opentelemetry-proto").common;
+const pbmetrics = @import("opentelemetry-proto").metrics;
 
 test "otlp HTTPClient send fails on non-retryable error" {
     const allocator = std.testing.allocator;
@@ -217,13 +218,13 @@ fn assertUncompressedProtobufMetricsBodyCanBeParsed(request: *http.Server.Reques
         return AssertionError.EmptyBody;
     }
 
-    const proto = pbcollector_metrics.ExportMetricsServiceRequest.decode(body, allocator) catch |err| {
+    const proto_msg = pbcollector_metrics.ExportMetricsServiceRequest.decode(body, allocator) catch |err| {
         std.debug.print("Error parsing proto: {}\n", .{err});
         return err;
     };
-    defer proto.deinit();
-    if (proto.resource_metrics.items.len != 1) {
-        std.debug.print("otlp HTTP test - decoded protobuf: {}\n", .{proto});
+    defer proto_msg.deinit();
+    if (proto_msg.resource_metrics.items.len != 1) {
+        std.debug.print("otlp HTTP test - decoded protobuf: {}\n", .{proto_msg});
         return AssertionError.ProtobufBodyMismatch;
     }
     try request.respond("", .{ .status = .ok });

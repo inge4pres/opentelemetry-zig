@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pbcommon = @import("opentelemetry/proto/common/v1.pb.zig");
+const pbcommon = @import("opentelemetry-proto").common;
 
 // Converts a key-value pair into a pbcommon.KeyValue.
 // It only supports a subset of the possible value types available in attributes.

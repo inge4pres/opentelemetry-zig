@@ -1,10 +1,11 @@
 const std = @import("std");
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pbcommon = @import("../../opentelemetry/proto/common/v1.pb.zig");
-const pbresource = @import("../../opentelemetry/proto/resource/v1.pb.zig");
-const pbmetrics = @import("../../opentelemetry/proto/metrics/v1.pb.zig");
-const pbutils = @import("../../pbutils.zig");
+
+const pbcommon = @import("opentelemetry-proto").common;
+const pbresource = @import("opentelemetry-proto").resource;
+const pbmetrics = @import("opentelemetry-proto").metrics;
+
 const instrument = @import("../../api/metrics/instrument.zig");
 const Instrument = instrument.Instrument;
 const Kind = instrument.Kind;

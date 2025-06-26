@@ -4,13 +4,15 @@ const std = @import("std");
 const http = std.http;
 const Uri = std.Uri;
 
-const pbmetrics = @import("opentelemetry/proto/metrics/v1.pb.zig");
-const pblogs = @import("opentelemetry/proto/logs/v1.pb.zig");
-const pbtrace = @import("opentelemetry/proto/trace/v1.pb.zig");
+const proto = @import("opentelemetry-proto");
 
-const pbcollector_metrics = @import("opentelemetry/proto/collector/metrics/v1.pb.zig");
-const pbcollector_trace = @import("opentelemetry/proto/collector/trace/v1.pb.zig");
-const pbcollector_logs = @import("opentelemetry/proto/collector/logs/v1.pb.zig");
+const pbmetrics = proto.metrics;
+const pblogs = proto.logs;
+const pbtrace = proto.trace;
+
+const pbcollector_metrics = proto.collector_metrics;
+const pbcollector_trace = proto.collector_trace;
+const pbcollector_logs = proto.collector_logs;
 
 // Fixed user-agent string for the OTLP transport.
 // TODO: find a way to make the version dynamic.
