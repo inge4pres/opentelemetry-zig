@@ -46,6 +46,14 @@ pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
             var server = std.http.Server.init(conn, &buf);
             var request = try server.receiveHead();
 
+            const body = try (try request.reader()).readAllAlloc(self.allocator, 8192);
+            defer self.allocator.free(body);
+
+            var body_msg: RequestType = try protobuf.pb_decode(RequestType, body, self.allocator);
+            defer body_msg.deinit();
+
+            self.on_export(&body_msg);
+
             try request.respond(
                 okResponeBody(self.allocator, signal),
                 .{ .status = .ok },
