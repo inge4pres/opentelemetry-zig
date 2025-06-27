@@ -114,6 +114,7 @@ pub fn build(b: *std.Build) !void {
         b.path(b.pathJoin(&.{ "examples", "metrics" })),
         sdk_mod,
         otel_stub_mod,
+        proto_mod,
         examples_filter,
     ) catch |err| {
         std.debug.print("Error building metrics examples: {}\n", .{err});
@@ -157,7 +158,14 @@ pub fn build(b: *std.Build) !void {
     docs_step.dependOn(&install_docs.step);
 }
 
-fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: *std.Build.Module, otlp_stub_mod: *std.Build.Module, name_filter: ?[]const u8) ![]*std.Build.Step.Compile {
+fn buildExamples(
+    b: *std.Build,
+    examples_dir: std.Build.LazyPath,
+    otel_sdk_mod: *std.Build.Module,
+    otlp_stub_mod: *std.Build.Module,
+    proto_mod: *std.Build.Module,
+    name_filter: ?[]const u8,
+) ![]*std.Build.Step.Compile {
     var exes = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer exes.deinit();
 
@@ -182,6 +190,7 @@ fn buildExamples(b: *std.Build, examples_dir: std.Build.LazyPath, otel_sdk_mod: 
                 .imports = &.{
                     .{ .name = "opentelemetry-sdk", .module = otel_sdk_mod },
                     .{ .name = "otlp-stub", .module = otlp_stub_mod },
+                    .{ .name = "opentelemetry-proto", .module = proto_mod },
                 },
             });
             try exes.append(b.addExecutable(.{

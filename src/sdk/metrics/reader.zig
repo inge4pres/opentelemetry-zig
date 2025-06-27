@@ -1,6 +1,4 @@
 const std = @import("std");
-const protobuf = @import("protobuf");
-const ManagedString = protobuf.ManagedString;
 
 const pbcommon = @import("opentelemetry-proto").common;
 const pbresource = @import("opentelemetry-proto").resource;

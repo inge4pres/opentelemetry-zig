@@ -4,7 +4,7 @@ const MeterProvider = sdk.MeterProvider;
 
 const otlp = sdk.otlp;
 const otlp_stub = @import("otlp-stub");
-const pbmetrics = @import("../../src/opentelemetry/proto/collector/metrics/v1.pb.zig");
+const pbmetrics = @import("opentelemetry-proto").collector_metrics;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -12,9 +12,9 @@ pub fn main() !void {
     defer if (gpa.detectLeaks()) @panic("leaks detected");
 
     // number of data points we expect to send
-    const how_many = 1000;
+    const how_many = 10;
 
-    // Set up a stub OTLP server for metrics
+    // Set up a stub OTLP server for metrics, and
     const OnExport = struct {
         pub fn handler(req: *pbmetrics.ExportMetricsServiceRequest) void {
             std.debug.assert(req.resource_metrics.items[0].scope_metrics.items[0].metrics.items[0].data.?.sum.data_points.items.len == how_many);
@@ -24,14 +24,15 @@ pub fn main() !void {
     defer server.deinit();
 
     // Start the server in a background thread
-    var stop = std.atomic.Value(bool).init(false);
     var thread = try std.Thread.spawn(.{}, struct {
-        fn run(srv: *otlp_stub.MetricsStubServer, done: *std.atomic.Value(bool)) !void {
-            srv.start(done) catch |e| std.debug.print("Stub server error: {s}\n", .{@errorName(e)});
+        fn run(srv: *otlp_stub.MetricsStubServer) !void {
+            srv.start() catch |e| {
+                std.debug.print("Stub server error: {s}\n", .{@errorName(e)});
+                @panic("server start failure");
+            };
         }
-    }.run, .{ server, &stop });
+    }.run, .{server});
     defer thread.join();
-    defer _ = stop.swap(true, .acq_rel);
 
     // Configure the OTLP exporter to use the stub server
     var config = try sdk.otlp.ConfigOptions.init(allocator);
