@@ -96,6 +96,53 @@ test "otlp HTTPClient uncompressed protobuf metrics payload" {
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
 }
 
+test "otlp HTTPClient uncompressed json metrics payload" {
+    const allocator = std.testing.allocator;
+
+    var server = try HTTPTestServer.init(allocator, assertUncompressedJsonMetricsBodyCanBeParsed);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    config.protocol = .http_json;
+
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+
+    const req = try oneDataPointMetricsExportRequest(allocator);
+    defer req.deinit();
+
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
+
+test "otlp HTTPClient compressed json metrics payload" {
+    const allocator = std.testing.allocator;
+
+    var server = try HTTPTestServer.init(allocator, assertCompressedJsonMetricsBodyCanBeParsed);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    config.protocol = .http_json;
+    config.compression = .gzip;
+
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+
+    const req = try oneDataPointMetricsExportRequest(allocator);
+    defer req.deinit();
+
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
+
 test "otlp HTTPClient compressed protobuf metrics payload" {
     const allocator = std.testing.allocator;
 
@@ -196,6 +243,7 @@ const serverBehavior = *const fn (request: *http.Server.Request) anyerror!void;
 const AssertionError = error{
     EmptyBody,
     ProtobufBodyMismatch,
+    JsonBodyMismatch,
     CompressionMismatch,
     ExtraHeaderMissing,
 };
@@ -206,6 +254,56 @@ fn badRequest(request: *http.Server.Request) anyerror!void {
 
 fn tooManyRequests(request: *http.Server.Request) anyerror!void {
     try request.respond("", .{ .status = .too_many_requests });
+}
+
+fn assertUncompressedJsonMetricsBodyCanBeParsed(request: *http.Server.Request) anyerror!void {
+    const reader = try request.reader();
+    const body = try reader.readAllAlloc(std.testing.allocator, 8192);
+    defer std.testing.allocator.free(body);
+
+    const parsed = try pbcollector_metrics.ExportMetricsServiceRequest.json_decode(body, .{}, std.testing.allocator);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(1, parsed.value.resource_metrics.items.len);
+    try std.testing.expectEqual(1, parsed.value.resource_metrics.items[0].scope_metrics.items.len);
+
+    try request.respond("", .{ .status = .ok });
+}
+
+fn assertCompressedJsonMetricsBodyCanBeParsed(request: *http.Server.Request) anyerror!void {
+    var headers = request.iterateHeaders();
+    var content_found = false;
+    while (headers.next()) |header| {
+        if (std.mem.eql(u8, header.name, "content-encoding")) {
+            if (!std.mem.eql(u8, header.value, "gzip")) {
+                return AssertionError.CompressionMismatch;
+            }
+            content_found = true;
+        }
+    }
+
+    if (!content_found) {
+        return AssertionError.CompressionMismatch;
+    }
+
+    const reader = try request.reader();
+    const body = try reader.readAllAlloc(std.testing.allocator, 8192);
+    defer std.testing.allocator.free(body);
+
+    var json_body = std.ArrayList(u8).init(std.testing.allocator);
+    defer json_body.deinit();
+
+    var fixed_buffer_stream = std.io.fixedBufferStream(body);
+    const compressed_reader = fixed_buffer_stream.reader();
+    try std.compress.gzip.decompress(compressed_reader, json_body.writer());
+
+    const parsed = try pbcollector_metrics.ExportMetricsServiceRequest.json_decode(json_body.items, .{}, std.testing.allocator);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(1, parsed.value.resource_metrics.items.len);
+    try std.testing.expectEqual(1, parsed.value.resource_metrics.items[0].scope_metrics.items.len);
+
+    try request.respond("", .{ .status = .ok });
 }
 
 fn assertUncompressedProtobufMetricsBodyCanBeParsed(request: *http.Server.Request) anyerror!void {
