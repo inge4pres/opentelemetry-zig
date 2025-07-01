@@ -5,6 +5,9 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const benchmark_output = b.option([]const u8, "benchmark-output", "Path to write benchmark results to a file");
+    const benchmark_filter = b.option([]const u8, "benchmark-filter", "Filter to run only specific benchmarks");
+
     // Dependencies section
     // Benchmarks lib
     const benchmarks_dep = b.dependency("zbench", .{
@@ -136,6 +139,7 @@ pub fn build(b: *std.Build) !void {
         b.path(b.pathJoin(&.{ "benchmarks", "metrics" })),
         sdk_mod,
         benchmark_mod,
+        benchmark_filter,
     ) catch |err| {
         std.debug.print("Error building metrics benchmarks: {}\n", .{err});
         return err;
@@ -143,6 +147,13 @@ pub fn build(b: *std.Build) !void {
     defer b.allocator.free(metrics_benchmarks);
     for (metrics_benchmarks) |step| {
         const run_metrics_benchmark = b.addRunArtifact(step);
+
+        // If output file is specified, redirect stderr to file
+        if (benchmark_output) |output_path| {
+            // Set stderr to write to file
+            run_metrics_benchmark.setEnvironmentVariable("BENCHMARK_OUTPUT_FILE", output_path);
+        }
+
         benchmarks_step.dependOn(&run_metrics_benchmark.step);
     }
 
@@ -208,6 +219,7 @@ fn buildBenchmarks(
     bench_dir: std.Build.LazyPath,
     otel_mod: *std.Build.Module,
     benchmark_mod: *std.Build.Module,
+    benchmark_filter: ?[]const u8,
 ) ![]*std.Build.Step.Compile {
     var bench_tests = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer bench_tests.deinit();
@@ -232,10 +244,17 @@ fn buildBenchmarks(
                 },
             });
 
-            try bench_tests.append(b.addTest(.{
+            const test_step = b.addTest(.{
                 .name = name,
                 .root_module = b_mod,
-            }));
+            });
+
+            // Apply benchmark filter if provided
+            if (benchmark_filter) |filter| {
+                test_step.filters = b.allocator.dupe([]const u8, &.{filter}) catch unreachable;
+            }
+
+            try bench_tests.append(test_step);
         }
     }
 

@@ -4,8 +4,43 @@ const MeterProvider = sdk.MeterProvider;
 
 const benchmark = @import("benchmark");
 
-// We need to use stderr instead of stdout because stdout is used by the build.
-const bench_output = std.io.getStdErr().writer();
+// Writer type that can be either file or stderr
+const BenchmarkWriter = union(enum) {
+    file: struct {
+        file: std.fs.File,
+        writer: std.fs.File.Writer,
+    },
+    stderr: std.fs.File.Writer,
+
+    fn writer(self: *const BenchmarkWriter) std.fs.File.Writer {
+        return switch (self.*) {
+            .file => |f| f.writer,
+            .stderr => |w| w,
+        };
+    }
+
+    fn deinit(self: *BenchmarkWriter) void {
+        switch (self.*) {
+            .file => |f| f.file.close(),
+            .stderr => {},
+        }
+    }
+};
+
+// Get the output writer based on environment variable or default to stderr
+fn getBenchmarkWriter() !BenchmarkWriter {
+    if (std.process.getEnvVarOwned(std.heap.page_allocator, "BENCHMARK_OUTPUT_FILE")) |output_path| {
+        defer std.heap.page_allocator.free(output_path);
+        const file = try std.fs.cwd().createFile(output_path, .{});
+        return BenchmarkWriter{ .file = .{
+            .file = file,
+            .writer = file.writer(),
+        } };
+    } else |_| {
+        // Default to stderr if no output file specified
+        return BenchmarkWriter{ .stderr = std.io.getStdErr().writer() };
+    }
+}
 
 const std_bench_opts = benchmark.Config{
     .max_iterations = 100000,
@@ -46,7 +81,9 @@ test "benchmark metrics instruments" {
     try bench.add("hist.record with attrs", HistogramBenchmarks.WithAttributes.run, .{ .track_allocations = true });
     try bench.add("hist.record concurrent", HistogramBenchmarks.ConcurrentRecord.run, .{ .track_allocations = true });
 
-    try bench.run(bench_output);
+    var bench_writer = try getBenchmarkWriter();
+    defer bench_writer.deinit();
+    try bench.run(bench_writer.writer());
 }
 
 const CounterBenchmarks = struct {

@@ -50,7 +50,7 @@ jobs:
       # The optimize argument builds the SDK library with optimizations,
       # benchmarks files are always compiled with ReleaseFast.
       - run: |
-          zig build benchmarks -Doptimize=ReleaseFast 2> benchmarks-result.txt
+          zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-output=benchmarks-result.txt
       - uses: actions/upload-artifact@v4
         with:
           name: benchmarks-result
