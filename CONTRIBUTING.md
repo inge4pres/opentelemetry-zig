@@ -20,6 +20,23 @@ They can be executed locally with:
 zig build benchmarks -Doptimize=ReleaseFast
 ```
 
+### Benchmark options
+
+The benchmark build supports the following options:
+
+- `-Dbenchmark-filter=<pattern>`: Filter benchmarks to run only those matching the specified pattern
+- `-Dbenchmark-output=<path>`: Path to write benchmark results to a file
+
+Example usage:
+
+```
+# Run only counter benchmarks
+zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-filter="counter"
+
+# Run a specific benchmark and save results
+zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-filter="hist.record" -Dbenchmark-output="results.txt"
+```
+
 > [!NOTE]
 > Currently there is no good way of comparing benchmark runs across various machines,
 > as the results do not include CPU information.
