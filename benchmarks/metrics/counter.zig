@@ -35,30 +35,30 @@ const ATTR_VALUES = [_][]const u8{
 test "Counter_Add_Sorted" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "requests_total",
         .description = "Total number of requests",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const sorted_bench = struct {
         counter: *sdk.Counter(u64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx3 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx4 = rng.random().intRangeAtMost(usize, 0, 9);
-            
+
             // Note: In Zig, attributes are already sorted by the SDK
             self.counter.add(1, .{
                 "attr1", ATTR_VALUES[idx1],
@@ -68,9 +68,9 @@ test "Counter_Add_Sorted" {
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("Counter_Add_Sorted", &sorted_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -78,30 +78,30 @@ test "Counter_Add_Sorted" {
 test "Counter_Add_Unsorted" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "requests_total",
         .description = "Total number of requests",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const unsorted_bench = struct {
         counter: *sdk.Counter(u64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx3 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx4 = rng.random().intRangeAtMost(usize, 0, 9);
-            
+
             // Intentionally unsorted attribute order
             self.counter.add(1, .{
                 "attr4", ATTR_VALUES[idx4],
@@ -111,9 +111,9 @@ test "Counter_Add_Unsorted" {
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("Counter_Add_Unsorted", &unsorted_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -121,42 +121,42 @@ test "Counter_Add_Unsorted" {
 test "Counter_Add_Non_Static_Values" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "requests_total",
         .description = "Total number of requests",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const dynamic_bench = struct {
         counter: *sdk.Counter(u64),
         allocator: std.mem.Allocator,
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx2 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx3 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx4 = rng.random().intRangeAtMost(u8, 0, 9);
-            
+
             // Create dynamic strings
             var buf1: [20]u8 = undefined;
             var buf2: [20]u8 = undefined;
             var buf3: [20]u8 = undefined;
             var buf4: [20]u8 = undefined;
-            
+
             const val1 = std.fmt.bufPrint(&buf1, "value_{}", .{idx1}) catch @panic("fmt failed");
             const val2 = std.fmt.bufPrint(&buf2, "value_{}", .{idx2}) catch @panic("fmt failed");
             const val3 = std.fmt.bufPrint(&buf3, "value_{}", .{idx3}) catch @panic("fmt failed");
             const val4 = std.fmt.bufPrint(&buf4, "value_{}", .{idx4}) catch @panic("fmt failed");
-            
+
             self.counter.add(1, .{
                 "attr1", val1,
                 "attr2", val2,
@@ -164,13 +164,13 @@ test "Counter_Add_Non_Static_Values" {
                 "attr4", val4,
             }) catch @panic("counter add failed");
         }
-    }{ 
+    }{
         .counter = counter,
         .allocator = std.testing.allocator,
     };
-    
+
     try bench.addParam("Counter_Add_Non_Static_Values", &dynamic_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -178,43 +178,43 @@ test "Counter_Add_Non_Static_Values" {
 test "Counter_Overflow" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter.overflow",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "overflow_test",
         .description = "Testing counter with many unique time series",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const overflow_bench = struct {
         counter: *sdk.Counter(u64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Use random values to create unique attributes for each iteration
             const rng = getThreadRng();
             const iteration = rng.random().int(u32);
-            
+
             // Create unique attributes for each iteration to force new time series
             var buf1: [20]u8 = undefined;
             var buf2: [20]u8 = undefined;
             const key1 = std.fmt.bufPrint(&buf1, "iter_{}", .{iteration}) catch @panic("fmt failed");
             const key2 = std.fmt.bufPrint(&buf2, "batch_{}", .{iteration / 100}) catch @panic("fmt failed");
-            
+
             self.counter.add(1, .{
                 "iteration", key1,
-                "batch", key2,
+                "batch",     key2,
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("Counter_Overflow", &overflow_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -222,7 +222,7 @@ test "Counter_Overflow" {
 test "ThreadLocal_Random_Generator" {
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const rng_bench = struct {
         pub fn run(_: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -234,9 +234,9 @@ test "ThreadLocal_Random_Generator" {
             _ = rng.random().intRangeAtMost(usize, 0, 9);
         }
     }{};
-    
+
     try bench.addParam("ThreadLocal_Random_Generator_5", &rng_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -271,7 +271,7 @@ const ConcurrentCounterBench = struct {
         const t1 = std.Thread.spawn(.{}, addWithAttrs, .{self.counter}) catch @panic("spawn failed");
         const t2 = std.Thread.spawn(.{}, addWithoutAttrs, .{self.counter}) catch @panic("spawn failed");
         const t3 = std.Thread.spawn(.{}, addWithDifferentAttrs, .{self.counter}) catch @panic("spawn failed");
-        
+
         t1.join();
         t2.join();
         t3.join();
@@ -297,7 +297,7 @@ const ConcurrentCounterBench = struct {
         counter.add(1, .{
             "thread_id", attr1,
             "operation", attr2,
-            "type", attr3,
+            "type",      attr3,
         }) catch @panic("add failed");
     }
 };

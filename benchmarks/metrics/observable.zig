@@ -24,7 +24,7 @@ const ObservableCounterBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
         const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
         defer provider.shutdown();
-        
+
         const meter = provider.getMeter(.{
             .name = "observable-counter-benchmark",
         }) catch @panic("failed to get meter");
@@ -52,7 +52,7 @@ const ObservableUpDownBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
         const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
         defer provider.shutdown();
-        
+
         const meter = provider.getMeter(.{
             .name = "observable-updown-benchmark",
         }) catch @panic("failed to get meter");
@@ -79,7 +79,7 @@ const ObservableGaugeBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
         const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
         defer provider.shutdown();
-        
+
         const meter = provider.getMeter(.{
             .name = "observable-gauge-benchmark",
         }) catch @panic("failed to get meter");

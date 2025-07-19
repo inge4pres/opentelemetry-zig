@@ -29,30 +29,30 @@ const ATTR_VALUES = [_][]const u8{
 test "Gauge_Add" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.gauge",
     });
-    
+
     const gauge = try meter.createGauge(f64, .{
         .name = "cpu_usage",
         .description = "CPU usage percentage",
         .unit = "%",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const gauge_bench = struct {
         gauge: *sdk.Gauge(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx3 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx4 = rng.random().intRangeAtMost(usize, 0, 9);
-            
+
             // Record gauge value of 1 as in Rust benchmark
             self.gauge.record(1.0, .{
                 "attr1", ATTR_VALUES[idx1],
@@ -62,9 +62,9 @@ test "Gauge_Add" {
             }) catch @panic("gauge record failed");
         }
     }{ .gauge = gauge };
-    
+
     try bench.addParam("Gauge_Add", &gauge_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -73,40 +73,40 @@ test "Gauge_Add" {
 test "Gauge_Record_Realistic_Values" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.gauge.realistic",
     });
-    
+
     const gauge = try meter.createGauge(f64, .{
         .name = "system_metrics",
         .description = "Various system metrics",
         .unit = "ratio",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const realistic_bench = struct {
         gauge: *sdk.Gauge(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
-            
+
             // Generate realistic gauge value between 0 and 1
             const value = rng.random().float(f64);
-            
+
             self.gauge.record(value, .{
-                "host", ATTR_VALUES[idx1],
+                "host",        ATTR_VALUES[idx1],
                 "metric_type", ATTR_VALUES[idx2],
             }) catch @panic("gauge record failed");
         }
     }{ .gauge = gauge };
-    
+
     try bench.addParam("Gauge_Record_Realistic_Values", &realistic_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -115,41 +115,41 @@ test "Gauge_Record_Realistic_Values" {
 test "Gauge_Record_Non_Static_Values" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.gauge.dynamic",
     });
-    
+
     const gauge = try meter.createGauge(f64, .{
         .name = "dynamic_gauge",
         .description = "Gauge with dynamic attributes",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const dynamic_bench = struct {
         gauge: *sdk.Gauge(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx2 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx3 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx4 = rng.random().intRangeAtMost(u8, 0, 9);
-            
+
             // Create dynamic strings
             var buf1: [20]u8 = undefined;
             var buf2: [20]u8 = undefined;
             var buf3: [20]u8 = undefined;
             var buf4: [20]u8 = undefined;
-            
+
             const val1 = std.fmt.bufPrint(&buf1, "value_{}", .{idx1}) catch @panic("fmt failed");
             const val2 = std.fmt.bufPrint(&buf2, "value_{}", .{idx2}) catch @panic("fmt failed");
             const val3 = std.fmt.bufPrint(&buf3, "value_{}", .{idx3}) catch @panic("fmt failed");
             const val4 = std.fmt.bufPrint(&buf4, "value_{}", .{idx4}) catch @panic("fmt failed");
-            
+
             self.gauge.record(1.0, .{
                 "attr1", val1,
                 "attr2", val2,
@@ -158,9 +158,9 @@ test "Gauge_Record_Non_Static_Values" {
             }) catch @panic("gauge record failed");
         }
     }{ .gauge = gauge };
-    
+
     try bench.addParam("Gauge_Record_Non_Static_Values", &dynamic_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }

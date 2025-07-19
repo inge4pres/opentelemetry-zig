@@ -71,8 +71,8 @@ test "UpDownCounter_Add_WithAttributes" {
             const attr3: []const u8 = "up";
             self.counter.add(1, .{
                 "direction", attr3,
-                "attr1", attr1,
-                "attr2", attr2,
+                "attr1",     attr1,
+                "attr2",     attr2,
             }) catch @panic("add failed");
         }
     }{ .counter = updown };
@@ -113,7 +113,7 @@ const ConcurrentUpDownBench = struct {
         const t1 = std.Thread.spawn(.{}, addPositive, .{self.counter}) catch @panic("spawn failed");
         const t2 = std.Thread.spawn(.{}, addNegative, .{self.counter}) catch @panic("spawn failed");
         const t3 = std.Thread.spawn(.{}, addWithoutAttrs, .{self.counter}) catch @panic("spawn failed");
-        
+
         t1.join();
         t2.join();
         t3.join();
@@ -123,7 +123,7 @@ const ConcurrentUpDownBench = struct {
         const t1_thread: []const u8 = "t1";
         const up_dir: []const u8 = "up";
         counter.add(1, .{
-            "thread", t1_thread,
+            "thread",    t1_thread,
             "direction", up_dir,
         }) catch @panic("add failed");
     }
@@ -132,7 +132,7 @@ const ConcurrentUpDownBench = struct {
         const t2_thread: []const u8 = "t2";
         const down_dir: []const u8 = "down";
         counter.add(-1, .{
-            "thread", t2_thread,
+            "thread",    t2_thread,
             "direction", down_dir,
         }) catch @panic("add failed");
     }
@@ -166,7 +166,7 @@ test "UpDownCounter_MixedOperations" {
             const op2: []const u8 = "batch_down";
             const op3: []const u8 = "single_up";
             const op4: []const u8 = "correction";
-            
+
             // Simulate mixed up/down operations
             self.counter.add(5, .{ "op", op1 }) catch @panic("add failed");
             self.counter.add(-3, .{ "op", op2 }) catch @panic("add failed");
@@ -187,33 +187,33 @@ test "UpDownCounterMixedOps" {
     const meter = try mp.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const updown = try meter.createUpDownCounter(i64, .{
         .name = "test_updown",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const mixed_ops = struct {
         counter: *sdk.Counter(i64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Use random to alternate between positive and negative values
             var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
             const is_positive = rng.random().boolean();
             const value: i64 = if (is_positive) 1 else -1;
             const op: []const u8 = if (value > 0) "increment" else "decrement";
-            
+
             self.counter.add(value, .{
                 "operation", op,
             }) catch @panic("counter add failed");
         }
     }{ .counter = updown };
-    
+
     try bench.addParam("UpDownCounterMixedOps", &mixed_ops, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }

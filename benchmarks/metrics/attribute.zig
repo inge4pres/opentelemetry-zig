@@ -10,7 +10,7 @@ const bench_config = benchmark.Config{
     .track_allocations = false,
 };
 
-// Helper function to create meter provider and meter  
+// Helper function to create meter provider and meter
 fn setupMeter(allocator: std.mem.Allocator) !*MeterProvider {
     const provider = try MeterProvider.init(allocator);
     return provider;
@@ -23,24 +23,24 @@ test "AddNoAttrs" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "test_counter",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const no_attrs = struct {
         counter: *sdk.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             self.counter.add(1, .{}) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("AddNoAttrs", &no_attrs, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -51,15 +51,15 @@ test "AddOneAttr" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "test_counter",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const one_attr = struct {
         counter: *sdk.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -69,9 +69,9 @@ test "AddOneAttr" {
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("AddOneAttr", &one_attr, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -82,15 +82,15 @@ test "AddThreeAttr" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "test_counter",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const three_attr = struct {
         counter: *sdk.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -104,9 +104,9 @@ test "AddThreeAttr" {
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("AddThreeAttr", &three_attr, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -117,15 +117,15 @@ test "AddFiveAttr" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "test_counter",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const five_attr = struct {
         counter: *sdk.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -143,9 +143,9 @@ test "AddFiveAttr" {
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("AddFiveAttr", &five_attr, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -156,15 +156,15 @@ test "AddTenAttr" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "test_counter",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const ten_attr = struct {
         counter: *sdk.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -192,9 +192,9 @@ test "AddTenAttr" {
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("AddTenAttr", &ten_attr, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -206,7 +206,7 @@ test "RecordHistogram10Bounds" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "test_histogram",
         .unit = "ms",
@@ -214,10 +214,10 @@ test "RecordHistogram10Bounds" {
             .explicitBuckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
         },
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const hist_bench = struct {
         histogram: *sdk.Histogram(f64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -229,9 +229,9 @@ test "RecordHistogram10Bounds" {
             }) catch @panic("histogram record failed");
         }
     }{ .histogram = histogram };
-    
+
     try bench.addParam("RecordHistogram10Bounds", &hist_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -242,13 +242,13 @@ test "RecordHistogram50Bounds" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     // Create 50 bucket boundaries
     var buckets: [50]f64 = undefined;
     for (&buckets, 0..) |*bucket, i| {
         bucket.* = @as(f64, @floatFromInt(i)) * 2.0;
     }
-    
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "test_histogram_50",
         .unit = "ms",
@@ -256,10 +256,10 @@ test "RecordHistogram50Bounds" {
             .explicitBuckets = &buckets,
         },
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const hist_bench = struct {
         histogram: *sdk.Histogram(f64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -271,9 +271,9 @@ test "RecordHistogram50Bounds" {
             }) catch @panic("histogram record failed");
         }
     }{ .histogram = histogram };
-    
+
     try bench.addParam("RecordHistogram50Bounds", &hist_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -285,34 +285,34 @@ test "AddSingleUseAttrs" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const counter = try meter.createCounter(u64, .{
         .name = "test_counter",
         .unit = "1",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const single_use = struct {
         counter: *sdk.Counter(u64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Use timestamp to create unique attribute value for each iteration
             const ts = std.time.timestamp();
-            
+
             // Create unique attribute value for each iteration
             var buf: [32]u8 = undefined;
             const unique_value = std.fmt.bufPrint(&buf, "iteration_{}", .{ts}) catch @panic("fmt failed");
-            
+
             self.counter.add(1, .{
                 "unique_key", unique_value,
             }) catch @panic("counter add failed");
         }
     }{ .counter = counter };
-    
+
     try bench.addParam("AddSingleUseAttrs", &single_use, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -324,34 +324,34 @@ test "GaugeRecordVaried" {
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
-    
+
     const gauge = try meter.createGauge(f64, .{
         .name = "test_gauge",
         .unit = "%",
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const gauge_varied = struct {
         gauge: *sdk.Gauge(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Simulate CPU usage between 0% and 100%
             var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
             const value = rng.random().float(f64) * 100.0;
-            
+
             const cpu: []const u8 = "cpu0";
             const host: []const u8 = "localhost";
             self.gauge.record(value, .{
-                "cpu", cpu,
+                "cpu",  cpu,
                 "host", host,
             }) catch @panic("gauge record failed");
         }
     }{ .gauge = gauge };
-    
+
     try bench.addParam("GaugeRecordVaried", &gauge_varied, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }

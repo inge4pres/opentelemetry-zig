@@ -35,11 +35,11 @@ const ATTR_VALUES = [_][]const u8{
 test "Histogram_Record" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.histogram",
     });
-    
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "response_time",
         .description = "Response time in milliseconds",
@@ -48,23 +48,23 @@ test "Histogram_Record" {
             .explicitBuckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
         },
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const static_bench = struct {
         histogram: *sdk.Histogram(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx3 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx4 = rng.random().intRangeAtMost(usize, 0, 9);
-            
+
             // Generate random value between 0 and 500
             const value = rng.random().float(f64) * 500.0;
-            
+
             self.histogram.record(value, .{
                 "attr1", ATTR_VALUES[idx1],
                 "attr2", ATTR_VALUES[idx2],
@@ -73,9 +73,9 @@ test "Histogram_Record" {
             }) catch @panic("histogram record failed");
         }
     }{ .histogram = histogram };
-    
+
     try bench.addParam("Histogram_Record", &static_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -83,11 +83,11 @@ test "Histogram_Record" {
 test "Histogram_Record_With_Non_Static_Values" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.histogram",
     });
-    
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "response_time",
         .description = "Response time in milliseconds",
@@ -96,34 +96,34 @@ test "Histogram_Record_With_Non_Static_Values" {
             .explicitBuckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
         },
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const dynamic_bench = struct {
         histogram: *sdk.Histogram(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx2 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx3 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx4 = rng.random().intRangeAtMost(u8, 0, 9);
-            
+
             // Create dynamic strings
             var buf1: [20]u8 = undefined;
             var buf2: [20]u8 = undefined;
             var buf3: [20]u8 = undefined;
             var buf4: [20]u8 = undefined;
-            
+
             const val1 = std.fmt.bufPrint(&buf1, "value_{}", .{idx1}) catch @panic("fmt failed");
             const val2 = std.fmt.bufPrint(&buf2, "value_{}", .{idx2}) catch @panic("fmt failed");
             const val3 = std.fmt.bufPrint(&buf3, "value_{}", .{idx3}) catch @panic("fmt failed");
             const val4 = std.fmt.bufPrint(&buf4, "value_{}", .{idx4}) catch @panic("fmt failed");
-            
+
             // Generate random value between 0 and 500
             const value = rng.random().float(f64) * 500.0;
-            
+
             self.histogram.record(value, .{
                 "attr1", val1,
                 "attr2", val2,
@@ -132,9 +132,9 @@ test "Histogram_Record_With_Non_Static_Values" {
             }) catch @panic("histogram record failed");
         }
     }{ .histogram = histogram };
-    
+
     try bench.addParam("Histogram_Record_With_Non_Static_Values", &dynamic_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -143,17 +143,17 @@ test "Histogram_Record_With_Non_Static_Values" {
 test "Histogram_Record_With_Many_Buckets" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
-    
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.histogram.many_buckets",
     });
-    
+
     // Create histogram with 50 buckets similar to Rust benchmarks
     var buckets: [50]f64 = undefined;
     for (&buckets, 0..) |*bucket, i| {
         bucket.* = @as(f64, @floatFromInt(i)) * 10.0;
     }
-    
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "response_time_many_buckets",
         .description = "Response time with many buckets",
@@ -162,30 +162,30 @@ test "Histogram_Record_With_Many_Buckets" {
             .explicitBuckets = &buckets,
         },
     });
-    
+
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
-    
+
     const many_buckets_bench = struct {
         histogram: *sdk.Histogram(f64),
-        
+
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
-            
+
             // Generate random value between 0 and 500
             const value = rng.random().float(f64) * 500.0;
-            
+
             self.histogram.record(value, .{
-                "service", ATTR_VALUES[idx1],
+                "service",  ATTR_VALUES[idx1],
                 "endpoint", ATTR_VALUES[idx2],
             }) catch @panic("histogram record failed");
         }
     }{ .histogram = histogram };
-    
+
     try bench.addParam("Histogram_Record_With_50_Buckets", &many_buckets_bench, .{});
-    
+
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
 }
@@ -223,7 +223,7 @@ const ConcurrentHistogramBench = struct {
         const t1 = std.Thread.spawn(.{}, recordFast, .{self.histogram}) catch @panic("spawn failed");
         const t2 = std.Thread.spawn(.{}, recordMedium, .{self.histogram}) catch @panic("spawn failed");
         const t3 = std.Thread.spawn(.{}, recordSlow, .{self.histogram}) catch @panic("spawn failed");
-        
+
         t1.join();
         t2.join();
         t3.join();
@@ -234,7 +234,7 @@ const ConcurrentHistogramBench = struct {
         const attr2: []const u8 = "p50";
         histogram.record(2.5, .{
             "latency_type", attr1,
-            "percentile", attr2,
+            "percentile",   attr2,
         }) catch @panic("record failed");
     }
 
@@ -243,7 +243,7 @@ const ConcurrentHistogramBench = struct {
         const attr2: []const u8 = "p90";
         histogram.record(45.0, .{
             "latency_type", attr1,
-            "percentile", attr2,
+            "percentile",   attr2,
         }) catch @panic("record failed");
     }
 
@@ -252,7 +252,7 @@ const ConcurrentHistogramBench = struct {
         const attr2: []const u8 = "p99";
         histogram.record(250.0, .{
             "latency_type", attr1,
-            "percentile", attr2,
+            "percentile",   attr2,
         }) catch @panic("record failed");
     }
 };
