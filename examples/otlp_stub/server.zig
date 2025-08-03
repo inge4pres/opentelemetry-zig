@@ -63,15 +63,15 @@ pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
         fn okResponeBody(allocator: Allocator, input: otlp.Signal) []const u8 {
             switch (input) {
                 .metrics => {
-                    const p = pb.collector_metrics.ExportMetricsServiceResponse{};
+                    const p = pb.collector_metrics_v1.ExportMetricsServiceResponse{};
                     return p.encode(allocator) catch unreachable;
                 },
                 .traces => {
-                    const p = pb.collector_trace.ExportTraceServiceResponse{};
+                    const p = pb.collector_trace_v1.ExportTraceServiceResponse{};
                     return p.encode(allocator) catch unreachable;
                 },
                 .logs => {
-                    const p = pb.collector_logs.ExportLogsServiceResponse{};
+                    const p = pb.collector_logs_v1.ExportLogsServiceResponse{};
                     return p.encode(allocator) catch unreachable;
                 },
             }
@@ -80,5 +80,5 @@ pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
 }
 
 // Type aliases for convenience
-pub const MetricsStubServer = OTLPStubServer(pb.collector_metrics.ExportMetricsServiceRequest, .metrics);
+pub const MetricsStubServer = OTLPStubServer(pb.collector_metrics_v1.ExportMetricsServiceRequest, .metrics);
 // For traces/logs, add similar aliases with appropriate protobuf types.

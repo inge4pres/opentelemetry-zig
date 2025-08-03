@@ -1,4 +1,4 @@
-const pbmetrics = @import("opentelemetry-proto").metrics;
+const pbmetrics = @import("opentelemetry-proto").metrics_v1;
 const instrument = @import("../../api/metrics/instrument.zig");
 
 /// Defines the ways and means to compute aggregated metrics.

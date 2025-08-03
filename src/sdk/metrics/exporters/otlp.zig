@@ -16,9 +16,9 @@ const view = @import("../view.zig");
 
 const protobuf = @import("protobuf");
 const ManagedString = protobuf.ManagedString;
-const pbcommon = @import("opentelemetry-proto").common;
-const pbmetrics = @import("opentelemetry-proto").metrics;
-const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics;
+const pbcommon = @import("opentelemetry-proto").common_v1;
+const pbmetrics = @import("opentelemetry-proto").metrics_v1;
+const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics_v1;
 
 const MetricExporter = @import("../exporter.zig").MetricExporter;
 const ExporterImpl = @import("../exporter.zig").ExporterImpl;

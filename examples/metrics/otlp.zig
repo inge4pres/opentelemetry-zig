@@ -4,7 +4,7 @@ const MeterProvider = sdk.MeterProvider;
 
 const otlp = sdk.otlp;
 const otlp_stub = @import("otlp-stub");
-const pbmetrics = @import("opentelemetry-proto").collector_metrics;
+const pbmetrics = @import("opentelemetry-proto").collector_metrics_v1;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

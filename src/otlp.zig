@@ -6,13 +6,13 @@ const Uri = std.Uri;
 
 const proto = @import("opentelemetry-proto");
 
-const pbmetrics = proto.metrics;
-const pblogs = proto.logs;
-const pbtrace = proto.trace;
+const pbmetrics = proto.metrics_v1;
+const pblogs = proto.logs_v1;
+const pbtrace = proto.trace_v1;
 
-const pbcollector_metrics = proto.collector_metrics;
-const pbcollector_trace = proto.collector_trace;
-const pbcollector_logs = proto.collector_logs;
+const pbcollector_metrics = proto.collector_metrics_v1;
+const pbcollector_trace = proto.collector_trace_v1;
+const pbcollector_logs = proto.collector_logs_v1;
 
 // Fixed user-agent string for the OTLP transport.
 // TODO: find a way to make the version dynamic.

@@ -24,12 +24,16 @@
     // internet connectivity.
     .dependencies = .{
         .protobuf = .{
-            .url = "git+https://github.com/Arwalk/zig-protobuf#5ae85ea07dcc415682fc7c23497bf2a602d2d27b",
-            .hash = "protobuf-2.0.0-0e82auljGwD8GabbCgDJ1jbwK48SDvqZFmji4BCgg5Fn",
+            .url = "https://github.com/Arwalk/zig-protobuf/archive/da4d17264fcfdd793e71b3a8b466fb0f05bc6fd3.tar.gz",
+            .hash = "protobuf-2.0.0-0e82asubGwBS6OnkIzYh6-uiIV35Lbt4OHvmGTvcJNo_",
         },
         .zbench = .{
             .url = "https://github.com/hendriknielaender/zBench/archive/v0.9.3.tar.gz",
             .hash = "zbench-0.9.3-YTdc79DoAABUp44km7nmp_E7XxPzBMl3FesDOU6J8S-n",
+        },
+        .opentelemetry_proto = .{
+            .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=v1.7.0#e6a52e33335afac8f8f1410d9d675b2abf39e6bf",
+            .hash = "opentelemetry_proto-1.7.0-S4Y0u-SAAAAtKJ3SYYS66deUvrAfNTroT7uouBISMAZm",
         },
     },
     .paths = .{

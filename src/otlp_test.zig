@@ -7,9 +7,9 @@ const ConfigOptions = otlp.ConfigOptions;
 
 const protobuf = @import("protobuf");
 
-const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics;
-const pbcommon = @import("opentelemetry-proto").common;
-const pbmetrics = @import("opentelemetry-proto").metrics;
+const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics_v1;
+const pbcommon = @import("opentelemetry-proto").common_v1;
+const pbmetrics = @import("opentelemetry-proto").metrics_v1;
 
 test "otlp HTTPClient send fails on non-retryable error" {
     const allocator = std.testing.allocator;

@@ -42,15 +42,5 @@ zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-filter="hist.record" -Db
 > as the results do not include CPU information.
 > Benchmarks are still useful for detecting improvements or regressions during local development.
 
-## Generating OTLP protobuf code
-
-Types for OTLP are generated from the official protobuf [definitions](https://github.com/open-telemetry/opentelemetry-proto/tree/main/opentelemetry/proto) using
-the code generation provided by [Arwalk/zig-protobuf](https://github.com/Arwalk/zig-protobuf) (thanks @Arwalk).
-
-Generated code must be committed and can be updated by running:
-
-```
-zig build gen-proto
-```
 
 
