@@ -23,17 +23,13 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .protobuf = .{
-            .url = "https://github.com/Arwalk/zig-protobuf/archive/da4d17264fcfdd793e71b3a8b466fb0f05bc6fd3.tar.gz",
-            .hash = "protobuf-2.0.0-0e82asubGwBS6OnkIzYh6-uiIV35Lbt4OHvmGTvcJNo_",
-        },
         .zbench = .{
             .url = "https://github.com/hendriknielaender/zBench/archive/v0.9.3.tar.gz",
             .hash = "zbench-0.9.3-YTdc79DoAABUp44km7nmp_E7XxPzBMl3FesDOU6J8S-n",
         },
         .opentelemetry_proto = .{
-            .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=v1.7.0#e6a52e33335afac8f8f1410d9d675b2abf39e6bf",
-            .hash = "opentelemetry_proto-1.7.0-S4Y0u-SAAAAtKJ3SYYS66deUvrAfNTroT7uouBISMAZm",
+            .url = "git+https://github.com/zig-o11y/opentelemetry-proto#6868d61476557a19f651964c85d7366efe81f80b",
+            .hash = "opentelemetry_proto-1.7.0-S4Y0u6GDAAB7TZRKgg9k9yZXxmLAQPxhIu06b_iKq9tz",
         },
     },
     .paths = .{
