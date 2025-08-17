@@ -68,6 +68,36 @@ const RandomIndicesPool = struct {
     }
 };
 
+test "Counter_Add_W/O_Attributes" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{
+        .name = "benchmark.counter",
+    });
+
+    const counter = try meter.createCounter(u64, .{
+        .name = "sample",
+        .description = "Sample",
+    });
+
+    const without_attributes = struct {
+        counter: *sdk.Counter(u64),
+
+        pub fn run(self: @This(), _: std.mem.Allocator) void {
+            self.counter.add(1, .{}) catch @panic("counter add failed");
+        }
+    }{ .counter = counter };
+
+    var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
+    defer bench.deinit();
+
+    try bench.addParam("Counter_Add_Without_Attributes", &without_attributes, .{});
+
+    const writer = std.io.getStdErr().writer();
+    try bench.run(writer);
+}
+
 test "Counter_Add_Sorted" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();

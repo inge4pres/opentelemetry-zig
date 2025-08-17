@@ -26,7 +26,7 @@ const ATTR_VALUES = [_][]const u8{
     "value_5", "value_6", "value_7", "value_8", "value_9",
 };
 
-test "Gauge_Add" {
+test "Gauge_Record" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
