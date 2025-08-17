@@ -32,6 +32,42 @@ const ATTR_VALUES = [_][]const u8{
     "value_5", "value_6", "value_7", "value_8", "value_9",
 };
 
+// Helper struct for pre-generated random indices
+const RandomIndicesPool = struct {
+    indices: [][4]u8,
+    counter: std.atomic.Value(u32),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, pool_size: usize) !RandomIndicesPool {
+        const indices = try allocator.alloc([4]u8, pool_size);
+        errdefer allocator.free(indices);
+
+        // Fill the pool with random indices
+        const rng = getThreadRng();
+        for (indices) |*idx_set| {
+            idx_set[0] = rng.random().intRangeAtMost(u8, 0, 9);
+            idx_set[1] = rng.random().intRangeAtMost(u8, 0, 9);
+            idx_set[2] = rng.random().intRangeAtMost(u8, 0, 9);
+            idx_set[3] = rng.random().intRangeAtMost(u8, 0, 9);
+        }
+
+        return RandomIndicesPool{
+            .indices = indices,
+            .counter = std.atomic.Value(u32).init(0),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *RandomIndicesPool) void {
+        self.allocator.free(self.indices);
+    }
+
+    pub fn getNext(self: *RandomIndicesPool) [4]u8 {
+        const idx = self.counter.fetchAdd(1, .monotonic) % self.indices.len;
+        return self.indices[idx];
+    }
+};
+
 test "Counter_Add_Sorted" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
@@ -49,25 +85,26 @@ test "Counter_Add_Sorted" {
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
+    // Pre-generate random indices to avoid RNG overhead during benchmark
+    var random_pool = try RandomIndicesPool.init(std.testing.allocator, 10000);
+    defer random_pool.deinit();
+
     const sorted_bench = struct {
         counter: *sdk.Counter(u64),
+        random_pool: *RandomIndicesPool,
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
-            const rng = getThreadRng();
-            const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
-            const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
-            const idx3 = rng.random().intRangeAtMost(usize, 0, 9);
-            const idx4 = rng.random().intRangeAtMost(usize, 0, 9);
+            const indices = self.random_pool.getNext();
 
             // Note: In Zig, attributes are already sorted by the SDK
             self.counter.add(1, .{
-                "attr1", ATTR_VALUES[idx1],
-                "attr2", ATTR_VALUES[idx2],
-                "attr3", ATTR_VALUES[idx3],
-                "attr4", ATTR_VALUES[idx4],
+                "attr1", ATTR_VALUES[indices[0]],
+                "attr2", ATTR_VALUES[indices[1]],
+                "attr3", ATTR_VALUES[indices[2]],
+                "attr4", ATTR_VALUES[indices[3]],
             }) catch @panic("counter add failed");
         }
-    }{ .counter = counter };
+    }{ .counter = counter, .random_pool = &random_pool };
 
     try bench.addParam("Counter_Add_Sorted", &sorted_bench, .{});
 
@@ -92,25 +129,26 @@ test "Counter_Add_Unsorted" {
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
+    // Pre-generate random indices to avoid RNG overhead during benchmark
+    var random_pool = try RandomIndicesPool.init(std.testing.allocator, 10000);
+    defer random_pool.deinit();
+
     const unsorted_bench = struct {
         counter: *sdk.Counter(u64),
+        random_pool: *RandomIndicesPool,
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
-            const rng = getThreadRng();
-            const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
-            const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
-            const idx3 = rng.random().intRangeAtMost(usize, 0, 9);
-            const idx4 = rng.random().intRangeAtMost(usize, 0, 9);
+            const indices = self.random_pool.getNext();
 
             // Intentionally unsorted attribute order
             self.counter.add(1, .{
-                "attr4", ATTR_VALUES[idx4],
-                "attr2", ATTR_VALUES[idx2],
-                "attr3", ATTR_VALUES[idx3],
-                "attr1", ATTR_VALUES[idx1],
+                "attr4", ATTR_VALUES[indices[3]],
+                "attr2", ATTR_VALUES[indices[1]],
+                "attr3", ATTR_VALUES[indices[2]],
+                "attr1", ATTR_VALUES[indices[0]],
             }) catch @panic("counter add failed");
         }
-    }{ .counter = counter };
+    }{ .counter = counter, .random_pool = &random_pool };
 
     try bench.addParam("Counter_Add_Unsorted", &unsorted_bench, .{});
 
@@ -135,16 +173,17 @@ test "Counter_Add_Non_Static_Values" {
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
+    // Pre-generate random indices to avoid RNG overhead during benchmark
+    var random_pool = try RandomIndicesPool.init(std.testing.allocator, 10000);
+    defer random_pool.deinit();
+
     const dynamic_bench = struct {
         counter: *sdk.Counter(u64),
         allocator: std.mem.Allocator,
+        random_pool: *RandomIndicesPool,
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
-            const rng = getThreadRng();
-            const idx1 = rng.random().intRangeAtMost(u8, 0, 9);
-            const idx2 = rng.random().intRangeAtMost(u8, 0, 9);
-            const idx3 = rng.random().intRangeAtMost(u8, 0, 9);
-            const idx4 = rng.random().intRangeAtMost(u8, 0, 9);
+            const indices = self.random_pool.getNext();
 
             // Create dynamic strings
             var buf1: [20]u8 = undefined;
@@ -152,10 +191,10 @@ test "Counter_Add_Non_Static_Values" {
             var buf3: [20]u8 = undefined;
             var buf4: [20]u8 = undefined;
 
-            const val1 = std.fmt.bufPrint(&buf1, "value_{}", .{idx1}) catch @panic("fmt failed");
-            const val2 = std.fmt.bufPrint(&buf2, "value_{}", .{idx2}) catch @panic("fmt failed");
-            const val3 = std.fmt.bufPrint(&buf3, "value_{}", .{idx3}) catch @panic("fmt failed");
-            const val4 = std.fmt.bufPrint(&buf4, "value_{}", .{idx4}) catch @panic("fmt failed");
+            const val1 = std.fmt.bufPrint(&buf1, "value_{}", .{indices[0]}) catch @panic("fmt failed");
+            const val2 = std.fmt.bufPrint(&buf2, "value_{}", .{indices[1]}) catch @panic("fmt failed");
+            const val3 = std.fmt.bufPrint(&buf3, "value_{}", .{indices[2]}) catch @panic("fmt failed");
+            const val4 = std.fmt.bufPrint(&buf4, "value_{}", .{indices[3]}) catch @panic("fmt failed");
 
             self.counter.add(1, .{
                 "attr1", val1,
@@ -167,6 +206,7 @@ test "Counter_Add_Non_Static_Values" {
     }{
         .counter = counter,
         .allocator = std.testing.allocator,
+        .random_pool = &random_pool,
     };
 
     try bench.addParam("Counter_Add_Non_Static_Values", &dynamic_bench, .{});
@@ -192,13 +232,16 @@ test "Counter_Overflow" {
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
+    // Initialize atomic counter for iteration tracking
+    var iteration_counter = std.atomic.Value(u32).init(0);
+
     const overflow_bench = struct {
         counter: *sdk.Counter(u64),
+        iteration_counter: *std.atomic.Value(u32),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
-            // Use random values to create unique attributes for each iteration
-            const rng = getThreadRng();
-            const iteration = rng.random().int(u32);
+            // Use atomic fetchAdd to get unique iteration number for each call
+            const iteration = self.iteration_counter.fetchAdd(1, .monotonic);
 
             // Create unique attributes for each iteration to force new time series
             var buf1: [20]u8 = undefined;
@@ -211,31 +254,9 @@ test "Counter_Overflow" {
                 "batch",     key2,
             }) catch @panic("counter add failed");
         }
-    }{ .counter = counter };
+    }{ .counter = counter, .iteration_counter = &iteration_counter };
 
     try bench.addParam("Counter_Overflow", &overflow_bench, .{});
-
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
-}
-
-test "ThreadLocal_Random_Generator" {
-    var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
-    defer bench.deinit();
-
-    const rng_bench = struct {
-        pub fn run(_: @This(), _: std.mem.Allocator) void {
-            const rng = getThreadRng();
-            // Generate 5 random numbers similar to Rust benchmark
-            _ = rng.random().intRangeAtMost(usize, 0, 9);
-            _ = rng.random().intRangeAtMost(usize, 0, 9);
-            _ = rng.random().intRangeAtMost(usize, 0, 9);
-            _ = rng.random().intRangeAtMost(usize, 0, 9);
-            _ = rng.random().intRangeAtMost(usize, 0, 9);
-        }
-    }{};
-
-    try bench.addParam("ThreadLocal_Random_Generator_5", &rng_bench, .{});
 
     const writer = std.io.getStdErr().writer();
     try bench.run(writer);
