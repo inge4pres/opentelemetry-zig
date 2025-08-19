@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.meter);
+
 const spec = @import("spec.zig");
 const builtin = @import("builtin");
 const Attribute = @import("../../attributes.zig").Attribute;
@@ -227,8 +229,8 @@ const Meter = struct {
         );
 
         if (self.instruments.contains(id)) {
-            std.debug.print(
-                "Instrument with identifying name {s} already exists in meter {s}\n",
+            log.warn(
+                "Instrument with identifying name {s} already exists in meter {s}",
                 .{ id, self.scope.name },
             );
             return spec.ResourceError.InstrumentExistsWithSameNameAndIdentifyingFields;
@@ -673,7 +675,7 @@ test "aggregated metrics do not duplicate data points" {
     defer std.testing.allocator.free(result_second);
 
     std.testing.expectEqual(0, result_second.len) catch |err| {
-        std.debug.print("bad result from AggregatedMetrics.fetch():\n{?}\n", .{result_second[0]});
+        log.err("bad result from AggregatedMetrics.fetch():\n{?}", .{result_second[0]});
         return err;
     };
 }

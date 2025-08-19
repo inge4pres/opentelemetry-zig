@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.instrument);
+
 const spec = @import("spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
@@ -94,7 +96,7 @@ pub const Instrument = struct {
             u32 => .{ .Counter_u32 = c },
             u64 => .{ .Counter_u64 = c },
             else => {
-                std.debug.print("Unsupported monotonic counter value type: {s}\n", .{@typeName(T)});
+                log.err("Unsupported monotonic counter value type: {s}", .{@typeName(T)});
                 return spec.FormatError.UnsupportedValueType;
             },
         };
@@ -110,7 +112,7 @@ pub const Instrument = struct {
             i32 => .{ .UpDownCounter_i32 = c },
             i64 => .{ .UpDownCounter_i64 = c },
             else => {
-                std.debug.print("Unsupported Up Down counter value type: {s}\n", .{@typeName(T)});
+                log.err("Unsupported Up Down counter value type: {s}", .{@typeName(T)});
                 return spec.FormatError.UnsupportedValueType;
             },
         };
@@ -131,7 +133,7 @@ pub const Instrument = struct {
             f32 => .{ .Histogram_f32 = h },
             f64 => .{ .Histogram_f64 = h },
             else => {
-                std.debug.print("Unsupported histogram value type: {s}\n", .{@typeName(T)});
+                log.err("Unsupported histogram value type: {s}", .{@typeName(T)});
                 return spec.FormatError.UnsupportedValueType;
             },
         };
@@ -149,7 +151,7 @@ pub const Instrument = struct {
             f32 => .{ .Gauge_f32 = g },
             f64 => .{ .Gauge_f64 = g },
             else => {
-                std.debug.print("Unsupported gauge value type: {s}\n", .{@typeName(T)});
+                log.err("Unsupported gauge value type: {s}", .{@typeName(T)});
                 return spec.FormatError.UnsupportedValueType;
             },
         };

@@ -1,6 +1,8 @@
 const std = @import("std");
 const http = std.http;
 
+const log = std.log.scoped(.otlp_test);
+
 const otlp = @import("otlp.zig");
 
 const ConfigOptions = otlp.ConfigOptions;
@@ -317,12 +319,12 @@ fn assertUncompressedProtobufMetricsBodyCanBeParsed(request: *http.Server.Reques
     }
 
     const proto_msg = pbcollector_metrics.ExportMetricsServiceRequest.decode(body, allocator) catch |err| {
-        std.debug.print("Error parsing proto: {}\n", .{err});
+        log.err("Error parsing proto: {}", .{err});
         return err;
     };
     defer proto_msg.deinit();
     if (proto_msg.resource_metrics.items.len != 1) {
-        std.debug.print("otlp HTTP test - decoded protobuf: {}\n", .{proto_msg});
+        log.debug("decoded protobuf: {}", .{proto_msg});
         return AssertionError.ProtobufBodyMismatch;
     }
     try request.respond("", .{ .status = .ok });
@@ -334,7 +336,7 @@ fn assertCompressionHeaderGzip(request: *http.Server.Request) anyerror!void {
     while (headers.next()) |header| {
         if (std.mem.eql(u8, header.name, "accept-encoding")) {
             if (!std.mem.eql(u8, header.value, "gzip")) {
-                std.debug.print("otlp HTTP test accept-encoding header mismatch, want 'gzip' got '{s}'\n", .{header.value});
+                log.err("accept-encoding header mismatch, want 'gzip' got '{s}'", .{header.value});
                 return AssertionError.CompressionMismatch;
             }
             accept_found = true;
@@ -345,14 +347,14 @@ fn assertCompressionHeaderGzip(request: *http.Server.Request) anyerror!void {
     while (headers2.next()) |header| {
         if (std.mem.eql(u8, header.name, "content-encoding")) {
             if (!std.mem.eql(u8, header.value, "gzip")) {
-                std.debug.print("otlp HTTP test content-encoding header mismatch, want 'gzip' got '{s}'\n", .{header.value});
+                log.err("content-encoding header mismatch, want 'gzip' got '{s}'", .{header.value});
                 return AssertionError.CompressionMismatch;
             }
             content_found = true;
         }
     }
     if (!content_found or !accept_found) {
-        std.debug.print("otlp HTTP test compression headers not found: content-encoding {} | accept-encoding {}\n", .{
+        log.err("compression headers not found: content-encoding {} | accept-encoding {}", .{
             content_found,
             accept_found,
         });
@@ -403,7 +405,7 @@ const HTTPTestServer = struct {
 
     fn processSingleRequest(self: *Self) void {
         const connection = self.net_server.accept() catch |err| {
-            std.debug.print("Error starting HTTP server: {}\n", .{err});
+            log.err("Error starting HTTP server: {}", .{err});
             return;
         };
         defer connection.stream.close();
@@ -412,12 +414,12 @@ const HTTPTestServer = struct {
         var server = http.Server.init(connection, &buf);
 
         var request = server.receiveHead() catch |err| {
-            std.debug.print("Error receiving request: {}\n", .{err});
+            log.err("Error receiving request: {}", .{err});
             return;
         };
 
         self.behavior(&request) catch |err| {
-            std.debug.print("OTLP HTTP test error applying mock behavior: {}\n", .{err});
+            log.err("error applying mock behavior: {}", .{err});
             @panic("HTTP test failure");
         };
     }
@@ -425,7 +427,7 @@ const HTTPTestServer = struct {
     fn processRequests(self: *Self, maxRequests: usize, reqCounter: *std.atomic.Value(usize)) void {
         while (reqCounter.load(.acquire) < maxRequests) {
             const connection = self.net_server.accept() catch |err| {
-                std.debug.print("Error starting HTTP server: {}\n", .{err});
+                log.err("Error starting HTTP server: {}", .{err});
                 return;
             };
             defer connection.stream.close();
@@ -436,12 +438,12 @@ const HTTPTestServer = struct {
             var server = http.Server.init(connection, &buf);
 
             var request = server.receiveHead() catch |err| {
-                std.debug.print("OTLP HTTP test error receiving retried request: {}\n", .{err});
+                log.err("error receiving retried request: {}", .{err});
                 return;
             };
             if (reqNumber < maxRequests - 1) {
                 self.behavior(&request) catch |err| {
-                    std.debug.print("OTLP HTTP test error applying mock behavior: {}\n", .{err});
+                    log.err("error applying mock behavior: {}", .{err});
                     return;
                 };
             } else {
@@ -450,7 +452,7 @@ const HTTPTestServer = struct {
                     "",
                     .{ .status = .ok },
                 ) catch |err| {
-                    std.debug.print("OTLP HTTP test error responding to request: {}\n", .{err});
+                    log.err("error responding to request: {}", .{err});
                     return;
                 };
                 return;

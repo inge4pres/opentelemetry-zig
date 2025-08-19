@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.stdout_exporter);
+
 const MetricExporter = @import("../exporter.zig").MetricExporter;
 const ExporterImpl = @import("../exporter.zig").ExporterImpl;
 
@@ -55,13 +57,13 @@ pub const StdoutExporter = struct {
 
         for (metrics) |m| {
             const fmt = std.fmt.allocPrint(self.allocator, "{?}\n", .{m}) catch |err| {
-                std.debug.print("Failed to format metrics: {?}\n", .{err});
+                log.err("Failed to format metrics: {?}", .{err});
                 return MetricReadError.ExportFailed;
             };
             defer self.allocator.free(fmt);
 
             self.file.writeAll(fmt) catch |err| {
-                std.debug.print("Failed to write to stdout: {?}\n", .{err});
+                log.err("Failed to write to stdout: {?}", .{err});
                 return MetricReadError.ExportFailed;
             };
         }

@@ -51,6 +51,8 @@ pub fn build(b: *std.Build) !void {
         .root_module = sdk_mod,
         .target = target,
         .optimize = optimize,
+        // Use custom test runner to capture log output
+        .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
         // Allow passing test filter using the build args.
         .filters = b.args orelse &[0][]const u8{},
     });

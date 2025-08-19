@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.reader);
+
 const pbcommon = @import("opentelemetry-proto").common;
 const pbresource = @import("opentelemetry-proto").resource;
 const pbmetrics = @import("opentelemetry-proto").metrics;
@@ -93,7 +95,7 @@ pub const MetricReader = struct {
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
                 const measurements = AggregatedMetrics.fetch(self.allocator, meter, self.aggregation) catch |err| {
-                    std.debug.print("MetricReader: error aggregating data points from meter {s}: {?}", .{ meter.scope.name, err });
+                    log.err("error aggregating data points from meter {s}: {?}", .{ meter.scope.name, err });
                     continue;
                 };
                 defer self.allocator.free(measurements);
@@ -123,7 +125,7 @@ pub const MetricReader = struct {
     pub fn shutdown(self: *Self) void {
         @atomicStore(bool, &self.hasShutDown, true, .release);
         self.collect() catch |e| {
-            std.debug.print("MetricReader shutdown: error while collecting metrics: {?}\n", .{e});
+            log.err("shutdown: error while collecting metrics: {?}", .{e});
         };
         self.exporter.shutdown();
         self.temporal_aggregation.deinit();

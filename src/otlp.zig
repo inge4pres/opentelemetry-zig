@@ -4,6 +4,8 @@ const std = @import("std");
 const http = std.http;
 const Uri = std.Uri;
 
+const log = std.log.scoped(.otlp);
+
 const proto = @import("opentelemetry-proto");
 
 const pbmetrics = proto.metrics_v1;
@@ -501,7 +503,7 @@ const HTTPClient = struct {
 
             defer retry_count += 1;
             const response = client.fetch(req_opts) catch |err| {
-                std.debug.print("OTLP transport (retry): error connecting to server: {}\n", .{err});
+                log.err("transport (retry): error connecting to server: {}", .{err});
                 continue;
             };
             switch (response.status) {
@@ -517,7 +519,7 @@ const HTTPClient = struct {
                     continue;
                 },
                 else => |status| {
-                    std.debug.print("OTLP transport (retry): request failed with status code: {}\n", .{status});
+                    log.err("transport (retry): request failed with status code: {}", .{status});
                     return;
                 },
             }
@@ -702,7 +704,7 @@ pub fn Export(
     defer client.deinit();
 
     const payload = otlp_payload.toOwnedSlice(allocator, config.protocol) catch |err| {
-        std.debug.print("OTLP transport: failed to encode payload via {s}: {?}\n", .{ @tagName(config.protocol), err });
+        log.err("failed to encode payload via {s}: {?}", .{ @tagName(config.protocol), err });
         return err;
     };
     defer allocator.free(payload);
@@ -714,7 +716,7 @@ pub fn Export(
         switch (err) {
             ExportError.RequestEnqueuedForRetry => return err,
             else => {
-                std.debug.print("OTLP transport: failed to send payload: {?}\n", .{err});
+                log.err("failed to send payload: {?}", .{err});
                 return err;
             },
         }

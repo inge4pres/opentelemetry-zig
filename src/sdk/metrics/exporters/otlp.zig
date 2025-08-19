@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.otlp_exporter);
+
 const Attribute = @import("../../../attributes.zig").Attribute;
 const Attributes = @import("../../../attributes.zig").Attributes;
 
@@ -67,14 +69,14 @@ pub const OTLPExporter = struct {
             self.allocator.free(data);
         }
         var resource_metrics = self.allocator.alloc(pbmetrics.ResourceMetrics, 1) catch |err| {
-            std.debug.print("OTLP export failed to allocate memory for resource metrics: {s}\n", .{@errorName(err)});
+            log.err("failed to allocate memory for resource metrics: {s}", .{@errorName(err)});
             return MetricReadError.OutOfMemory;
         };
 
         var scope_metrics = try self.allocator.alloc(pbmetrics.ScopeMetrics, data.len);
         for (data, 0..) |measurement, i| {
             var metrics = std.ArrayList(pbmetrics.Metric).initCapacity(self.allocator, 1) catch |err| {
-                std.debug.print("OTLP export failed to allocate memory for metrics: {s}\n", .{@errorName(err)});
+                log.err("failed to allocate memory for metrics: {s}", .{@errorName(err)});
                 return MetricReadError.OutOfMemory;
             };
             metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, measurement, self.temporality));
@@ -102,7 +104,7 @@ pub const OTLPExporter = struct {
         defer service_req.deinit();
 
         otlp.Export(self.allocator, self.config, otlp.Signal.Data{ .metrics = service_req }) catch |err| {
-            std.debug.print("OTLP export failed in transport: {s}", .{@errorName(err)});
+            log.err("failed in transport: {s}", .{@errorName(err)});
             return MetricReadError.ExportFailed;
         };
     }

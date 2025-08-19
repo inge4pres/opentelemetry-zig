@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const log = std.log.scoped(.exporter);
+
 const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
 const MetricReadError = @import("reader.zig").MetricReadError;
 const MetricReader = @import("reader.zig").MetricReader;
@@ -126,7 +128,7 @@ pub const MetricExporter = struct {
 
         // Call the exporter function to process metrics data.
         self.exporter.exportBatch(metrics) catch |e| {
-            std.debug.print("MetricExporter exportBatch failed: {?}\n", .{e});
+            log.err("exportBatch failed: {?}", .{e});
             return ExportResult.Failure;
         };
         return ExportResult.Success;
@@ -170,7 +172,7 @@ fn mockExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void 
         std.testing.allocator.free(metrics);
     }
     if (metrics.len != 1) {
-        std.debug.print("expectd just one metric, got {d}\n{any}\n", .{ metrics.len, metrics });
+        log.err("expected just one metric, got {d}\n{any}", .{ metrics.len, metrics });
         return MetricReadError.ExportFailed;
     } // only one instrument from a single meter is expected in this mock
 }
@@ -437,10 +439,10 @@ fn collectAndExport(
         if (reader.meterProvider) |_| {
             // This will call exporter.exportBatch() every interval.
             reader.collect() catch |e| {
-                std.debug.print("PeriodicExportingReader: collecting failed on reader: {?}\n", .{e});
+                log.err("PeriodicExportingReader: collecting failed on reader: {?}", .{e});
             };
         } else {
-            std.debug.print("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}\n", .{reader});
+            log.warn("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}", .{reader});
         }
         // timedWait returns an error when the timeout is reached waiting for a signal, so we catch it and continue.
         // This is a way of keeping the timer running, becaus no other wake up signal is sent other than
