@@ -10,6 +10,33 @@ Unit tests are executed as part of CI pipeline, you can run them locally while d
 zig build test
 ```
 
+### Test options
+
+The test build supports the following options:
+
+- `-Dtest-verbose=true`: Show verbose test output with timing information (instead of dots)
+- `-Dtest-fail-first=true`: Stop on first test failure
+- `-Dtest-show-logs=true`: Show captured log output for tests with warnings/errors
+
+To run only specific tests matching a pattern, use build args:
+
+```
+zig build test -- "counter"
+```
+
+Example usage:
+
+```
+# Run tests with verbose output (shows test names and timing)
+zig build test -Dtest-verbose=true
+
+# Run specific tests with verbose output and stop on first failure
+zig build test -Dtest-verbose=true -Dtest-fail-first=true -- "counter"
+
+# Show captured logs for tests with warnings/errors
+zig build test -Dtest-show-logs=true
+```
+
 ## Running benchmarks
 
 Benchmarks are executed as part of the pipeline on Pull Requests if the contain a label `run::benchmarks`.
@@ -24,17 +51,16 @@ zig build benchmarks -Doptimize=ReleaseFast
 
 The benchmark build supports the following options:
 
-- `-Dbenchmark-filter=<pattern>`: Filter benchmarks to run only those matching the specified pattern
 - `-Dbenchmark-output=<path>`: Path to write benchmark results to a file
 
-Example usage:
+To run only specific benchmarks matching a pattern, use build args:
 
 ```
 # Run only counter benchmarks
-zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-filter="counter"
+zig build benchmarks -Doptimize=ReleaseFast -- "counter"
 
 # Run a specific benchmark and save results
-zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-filter="hist.record" -Dbenchmark-output="results.txt"
+zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-output="results.txt" -- "hist.record"
 ```
 
 > [!NOTE]

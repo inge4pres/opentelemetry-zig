@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const test_options = @import("test_options");
 
 const Allocator = std.mem.Allocator;
 
@@ -112,8 +113,7 @@ pub fn main() !void {
     log_capture = &capture;
     defer log_capture = null;
 
-    const env = Env.init(allocator);
-    defer env.deinit(allocator);
+    const env = Env.init();
 
     var slowest = SlowTracker.init(allocator, 5);
     defer slowest.deinit();
@@ -152,13 +152,6 @@ pub fn main() !void {
         var status = Status.pass;
         slowest.startTiming();
 
-        const is_unnamed_test = isUnnamed(t);
-        if (env.filter) |f| {
-            if (!is_unnamed_test and std.mem.indexOf(u8, t.name, f) == null) {
-                continue;
-            }
-        }
-
         const friendly_name = blk: {
             const name = t.name;
             var it = std.mem.splitScalar(u8, name, '.');
@@ -195,8 +188,11 @@ pub fn main() !void {
             // For passing tests that logged warnings/errors, optionally show them in verbose mode
             if (env.verbose and captured_logs.len > 0) {
                 // Check if there are any warnings or errors in the captured logs
-                if (std.mem.indexOf(u8, captured_logs, "(warn)") != null or
-                    std.mem.indexOf(u8, captured_logs, "(err)") != null)
+                if (std.mem.indexOf(u8, captured_logs, "(warn):") != null or
+                    std.mem.indexOf(u8, captured_logs, "(err):") != null or
+                    std.mem.indexOf(u8, captured_logs, "(error):") != null or
+                    std.mem.indexOf(u8, captured_logs, "[warning]:") != null or
+                    std.mem.indexOf(u8, captured_logs, "[error]:") != null)
                 {
                     const ms = @as(f64, @floatFromInt(ns_taken)) / 1_000_000.0;
                     printer.status(status, "{s} ({d:.2}ms) [with log output]\n", .{ friendly_name, ms });
@@ -389,51 +385,18 @@ const Env = struct {
     verbose: bool,
     fail_first: bool,
     show_logs: bool,
-    filter: ?[]const u8,
 
-    fn init(allocator: Allocator) Env {
+    fn init() Env {
         return .{
-            .verbose = readEnvBool(allocator, "TEST_VERBOSE", false),
-            .fail_first = readEnvBool(allocator, "TEST_FAIL_FIRST", false),
-            .show_logs = readEnvBool(allocator, "TEST_SHOW_LOGS", false),
-            .filter = readEnv(allocator, "TEST_FILTER"),
+            .verbose = test_options.verbose,
+            .fail_first = test_options.fail_first,
+            .show_logs = test_options.show_logs,
         };
-    }
-
-    fn deinit(self: Env, allocator: Allocator) void {
-        if (self.filter) |f| {
-            allocator.free(f);
-        }
-    }
-
-    fn readEnv(allocator: Allocator, key: []const u8) ?[]const u8 {
-        const v = std.process.getEnvVarOwned(allocator, key) catch |err| {
-            if (err == error.EnvironmentVariableNotFound) {
-                return null;
-            }
-            std.log.warn("failed to get env var {s} due to err {}", .{ key, err });
-            return null;
-        };
-        return v;
-    }
-
-    fn readEnvBool(allocator: Allocator, key: []const u8, deflt: bool) bool {
-        const value = readEnv(allocator, key) orelse return deflt;
-        defer allocator.free(value);
-        return std.ascii.eqlIgnoreCase(value, "true");
     }
 };
 
 // Don't override panic for now - just track the current test
 // pub const panic = ...
-
-fn isUnnamed(t: std.builtin.TestFn) bool {
-    const marker = ".test_";
-    const test_name = t.name;
-    const index = std.mem.indexOf(u8, test_name, marker) orelse return false;
-    _ = std.fmt.parseInt(u32, test_name[index + marker.len ..], 10) catch return false;
-    return true;
-}
 
 fn isSetup(t: std.builtin.TestFn) bool {
     return std.mem.endsWith(u8, t.name, "tests:beforeAll");

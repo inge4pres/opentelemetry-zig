@@ -4,8 +4,10 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const test_verbose = b.option(bool, "test-verbose", "Show verbose test output") orelse false;
+    const test_fail_first = b.option(bool, "test-fail-first", "Stop on first test failure") orelse false;
+    const test_show_logs = b.option(bool, "test-show-logs", "Show captured log output for tests") orelse false;
     const benchmark_output = b.option([]const u8, "benchmark-output", "Path to write benchmark results to a file");
-    const benchmark_filter = b.option([]const u8, "benchmark-filter", "Filter to run only specific benchmarks");
 
     // Dependencies section
     // Benchmarks lib
@@ -57,6 +59,13 @@ pub fn build(b: *std.Build) !void {
         .filters = b.args orelse &[0][]const u8{},
     });
 
+    // Pass test options as build options
+    const test_options = b.addOptions();
+    test_options.addOption(bool, "verbose", test_verbose);
+    test_options.addOption(bool, "fail_first", test_fail_first);
+    test_options.addOption(bool, "show_logs", test_show_logs);
+    sdk_unit_tests.root_module.addOptions("test_options", test_options);
+
     const run_sdk_unit_tests = b.addRunArtifact(sdk_unit_tests);
 
     test_step.dependOn(&run_sdk_unit_tests.step);
@@ -104,7 +113,6 @@ pub fn build(b: *std.Build) !void {
         b.path(b.pathJoin(&.{ "benchmarks", "metrics" })),
         sdk_mod,
         benchmark_mod,
-        benchmark_filter,
     ) catch |err| {
         std.debug.print("Error building metrics benchmarks: {}\n", .{err});
         return err;
@@ -184,7 +192,6 @@ fn buildBenchmarks(
     bench_dir: std.Build.LazyPath,
     otel_mod: *std.Build.Module,
     benchmark_mod: *std.Build.Module,
-    benchmark_filter: ?[]const u8,
 ) ![]*std.Build.Step.Compile {
     var bench_tests = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer bench_tests.deinit();
@@ -212,12 +219,9 @@ fn buildBenchmarks(
             const test_step = b.addTest(.{
                 .name = name,
                 .root_module = b_mod,
+                // Allow passing benchmark filter using the build args.
+                .filters = b.args orelse &[0][]const u8{},
             });
-
-            // Apply benchmark filter if provided
-            if (benchmark_filter) |filter| {
-                test_step.filters = b.allocator.dupe([]const u8, &.{filter}) catch unreachable;
-            }
 
             try bench_tests.append(test_step);
         }
