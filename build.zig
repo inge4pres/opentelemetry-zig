@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) !void {
     const test_fail_first = b.option(bool, "test-fail-first", "Stop on first test failure") orelse false;
     const test_show_logs = b.option(bool, "test-show-logs", "Show captured log output for tests") orelse false;
     const benchmark_output = b.option([]const u8, "benchmark-output", "Path to write benchmark results to a file");
+    const benchmark_debug = b.option(bool, "benchmark-debug", "Enable debug build mode for benchmarks") orelse false;
 
     // Dependencies section
     // Benchmarks lib
@@ -108,12 +109,7 @@ pub fn build(b: *std.Build) !void {
 
     const benchmark_mod = benchmarks_dep.module("zbench");
 
-    const metrics_benchmarks = buildBenchmarks(
-        b,
-        b.path(b.pathJoin(&.{ "benchmarks", "metrics" })),
-        sdk_mod,
-        benchmark_mod,
-    ) catch |err| {
+    const metrics_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", "metrics" })), sdk_mod, benchmark_mod, benchmark_debug) catch |err| {
         std.debug.print("Error building metrics benchmarks: {}\n", .{err});
         return err;
     };
@@ -192,6 +188,7 @@ fn buildBenchmarks(
     bench_dir: std.Build.LazyPath,
     otel_mod: *std.Build.Module,
     benchmark_mod: *std.Build.Module,
+    debug_mode: bool,
 ) ![]*std.Build.Step.Compile {
     var bench_tests = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
     errdefer bench_tests.deinit();
@@ -209,7 +206,8 @@ fn buildBenchmarks(
                 .target = otel_mod.resolved_target.?,
                 // We set the optimization level to ReleaseFast for benchmarks
                 // because we want to have the best performance.
-                .optimize = .ReleaseFast,
+                .optimize = if (debug_mode) .Debug else .ReleaseFast,
+                .strip = !debug_mode,
                 .imports = &.{
                     .{ .name = "opentelemetry-sdk", .module = otel_mod },
                     .{ .name = "benchmark", .module = benchmark_mod },
