@@ -5,6 +5,8 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+
 /// A value recorded with an optional set of attributes.
 /// It represents a single data point collected from an instrument.
 pub fn DataPoint(comptime T: type) type {
@@ -234,10 +236,7 @@ test "MeasurementsData.dedupByAttributes" {
 /// A set of data points with a series of metadata coming from the meter and the instrument.
 /// Holds the data collected by a single instrument inside a meter.
 pub const Measurements = struct {
-    meterName: []const u8,
-    meterVersion: ?[]const u8,
-    meterAttributes: ?[]Attribute = null,
-    meterSchemaUrl: ?[]const u8 = null,
+    scope: InstrumentationScope,
 
     instrumentKind: Kind,
     instrumentOptions: InstrumentOptions,

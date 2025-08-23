@@ -89,17 +89,19 @@ test "exporters/in_memory" {
     var underTest: std.ArrayListUnmanaged(Measurements) = .empty;
 
     try underTest.append(allocator, Measurements{
-        .meterName = "first-meter",
-        .meterVersion = "1.0",
-        .meterAttributes = null,
+        .scope = .{
+            .name = "first-meter",
+            .version = "1.0",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-abc" },
         .data = .{ .int = counter_measures },
     });
     try underTest.append(allocator, Measurements{
-        .meterName = "another-meter",
-        .meterVersion = "1.0",
-        .meterAttributes = null,
+        .scope = .{
+            .name = "another-meter",
+            .version = "1.0",
+        },
         .instrumentKind = .Histogram,
         .instrumentOptions = .{ .name = "histogram-abc" },
         .data = .{ .double = hist_measures },

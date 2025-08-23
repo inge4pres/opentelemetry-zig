@@ -192,8 +192,10 @@ test "metric exporter no-op" {
     var measure = [1]DataPoint(i64){.{ .value = 42 }};
     const measurement: []DataPoint(i64) = measure[0..];
     var metrics = [1]Measurements{.{
-        .meterName = "my-meter",
-        .meterVersion = "1.0",
+        .scope = .{
+            .name = "my-meter",
+            .version = "1.0",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "my-counter" },
         .data = .{ .int = measurement },
@@ -233,8 +235,10 @@ test "metric exporter force flush succeeds" {
     var measure = [1]DataPoint(i64){.{ .value = 42 }};
     const dataPoints: []DataPoint(i64) = measure[0..];
     var metrics = [1]Measurements{Measurements{
-        .meterName = "my-meter",
-        .meterVersion = "1.0",
+        .scope = .{
+            .name = "my-meter",
+            .version = "1.0",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "my-counter" },
         .data = .{ .int = dataPoints },
@@ -258,8 +262,10 @@ test "metric exporter force flush fails" {
     var measure = [1]DataPoint(i64){.{ .value = 42 }};
     const dataPoints: []DataPoint(i64) = measure[0..];
     var metrics = [1]Measurements{Measurements{
-        .meterName = "my-meter",
-        .meterVersion = "1.0",
+        .scope = .{
+            .name = "my-meter",
+            .version = "1.0",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "my-counter" },
         .data = .{ .int = dataPoints },
@@ -513,9 +519,9 @@ test "e2e periodic exporting metric reader" {
     // There are 2 measurements: a counter and a histogram.
     try std.testing.expectEqual(2, data.len);
     // Meter attributes are added.
-    try std.testing.expectEqual("test-reader", data[0].meterName);
-    try std.testing.expectEqual(1, data[0].meterAttributes.?.len);
-    try std.testing.expectEqual("wonderful", data[0].meterAttributes.?[0].key);
+    try std.testing.expectEqual("test-reader", data[0].scope.name);
+    try std.testing.expectEqual(1, data[0].scope.attributes.?.len);
+    try std.testing.expectEqual("wonderful", data[0].scope.attributes.?[0].key);
     // Counter has 2 data points.
     try std.testing.expectEqual(2, data[0].data.int.len);
 }

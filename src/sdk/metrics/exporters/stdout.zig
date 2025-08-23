@@ -86,17 +86,17 @@ test "exporters/stdout" {
     var underTest: std.ArrayListUnmanaged(Measurements) = .empty;
 
     try underTest.append(allocator, Measurements{
-        .meterName = "first-meter",
-        .meterVersion = "1.0",
-        .meterAttributes = null,
+        .scope = .{
+            .name = "first-meter",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-abc" },
         .data = .{ .int = counter_measures },
     });
     try underTest.append(allocator, Measurements{
-        .meterName = "another-meter",
-        .meterVersion = "1.0",
-        .meterAttributes = null,
+        .scope = .{
+            .name = "another-meter",
+        },
         .instrumentKind = .Histogram,
         .instrumentOptions = .{ .name = "histogram-abc" },
         .data = .{ .double = hist_measures },
@@ -131,5 +131,5 @@ test "exporters/stdout" {
     const read = try std.fs.cwd().readFile(filename, buf);
 
     // first 52 bytes from the debug output are constant when using {?} in fmt.allocPrint
-    try std.testing.expectEqualStrings("api.metrics.measurement.Measurements{ .meterName = {", read[0..52]);
+    try std.testing.expectEqualStrings("api.metrics.measurement.Measurements{ .scope = scope", read[0..52]);
 }

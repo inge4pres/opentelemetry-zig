@@ -81,14 +81,14 @@ pub const OTLPExporter = struct {
             };
             metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, measurement, self.temporality));
 
-            const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.meterAttributes);
+            const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.scope.attributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{
                 .scope = pbcommon.InstrumentationScope{
-                    .name = ManagedString.managed(measurement.meterName),
-                    .version = if (measurement.meterVersion) |version| ManagedString.managed(version) else .Empty,
+                    .name = ManagedString.managed(measurement.scope.name),
+                    .version = if (measurement.scope.version) |version| ManagedString.managed(version) else .Empty,
                     .attributes = attributes.values,
                 },
-                .schema_url = if (measurement.meterSchemaUrl) |s| ManagedString.managed(s) else .Empty,
+                .schema_url = if (measurement.scope.schema_url) |s| ManagedString.managed(s) else .Empty,
                 .metrics = metrics,
             };
         }
@@ -239,9 +239,9 @@ test "exporters/otlp conversion for NumberDataPoint" {
     }
 
     const metric = try toProtobufMetric(allocator, Measurements{
-        .meterName = "test-meter",
-        .meterVersion = "1.0",
-        .meterAttributes = null,
+        .scope = .{
+            .name = "test-meter",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-abc" },
         .data = .{ .int = data_points },
@@ -287,9 +287,9 @@ test "exporters/otlp conversion for HistogramDataPoint" {
     }
 
     const metric = try toProtobufMetric(allocator, Measurements{
-        .meterName = "test-meter",
-        .meterVersion = "1.0",
-        .meterAttributes = null,
+        .scope = .{
+            .name = "test-meter",
+        },
         .instrumentKind = .Histogram,
         .instrumentOptions = .{ .name = "histogram-abc" },
         .data = .{ .histogram = data_points },

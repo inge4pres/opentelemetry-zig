@@ -547,10 +547,12 @@ pub const AggregatedMetrics = struct {
             // only if there are data points.
             if (aggregated_data) |agg| {
                 try results.append(Measurements{
-                    .meterName = meter.scope.name,
-                    .meterVersion = meter.scope.version,
-                    .meterSchemaUrl = meter.scope.schema_url,
-                    .meterAttributes = meter.scope.attributes,
+                    .scope = .{
+                        .name = meter.scope.name,
+                        .version = meter.scope.version,
+                        .schema_url = meter.scope.schema_url,
+                        .attributes = meter.scope.attributes,
+                    },
                     .instrumentKind = instr.*.kind,
                     .instrumentOptions = instr.*.opts,
                     .data = agg,
@@ -644,8 +646,8 @@ test "aggregated metrics fetch to owned slice" {
     }
 
     try std.testing.expectEqual(1, result.len);
-    try std.testing.expectEqualStrings(meter.scope.name, result[0].meterName);
-    try std.testing.expectEqualStrings(meter.scope.schema_url.?, result[0].meterSchemaUrl.?);
+    try std.testing.expectEqualStrings(meter.scope.name, result[0].scope.name);
+    try std.testing.expectEqualStrings(meter.scope.schema_url.?, result[0].scope.schema_url.?);
     try std.testing.expectEqualStrings("test-counter", result[0].instrumentOptions.name);
     try std.testing.expectEqual(4, result[0].data.int[0].value);
 }

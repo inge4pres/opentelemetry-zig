@@ -88,12 +88,7 @@ fn processCumulativeDataPoints(
     for (0..array_len) |idx| {
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
-            .scope = InstrumentationScope{
-                .name = measurements.meterName,
-                .version = measurements.meterVersion,
-                .schema_url = measurements.meterSchemaUrl,
-                .attributes = measurements.meterAttributes,
-            },
+            .scope = measurements.scope,
             .instrument_name = measurements.instrumentOptions.name,
             .instrument_kind = measurements.instrumentKind,
             .datapoint_attributes = dp.attributes,
@@ -127,12 +122,7 @@ fn processDeltaDataPoints(
     for (0..array_len) |idx| {
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
-            .scope = InstrumentationScope{
-                .name = measurements.meterName,
-                .version = measurements.meterVersion,
-                .schema_url = measurements.meterSchemaUrl,
-                .attributes = measurements.meterAttributes,
-            },
+            .scope = measurements.scope,
             .instrument_name = measurements.instrumentOptions.name,
             .instrument_kind = measurements.instrumentKind,
             .datapoint_attributes = dp.attributes,
@@ -195,8 +185,9 @@ test "temporal aggregator process cumulative without timestamps returns error" {
 
     var m1 = Measurements{
         .data = .{ .int = data_points },
-        .meterName = "test",
-        .meterVersion = "0.0.1",
+        .scope = .{
+            .name = "test",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "test" },
     };
@@ -224,15 +215,17 @@ test "temporal aggregator process delta temporality with timestamps" {
 
     var m1 = Measurements{
         .data = .{ .int = data_points[0..2] },
-        .meterName = "test",
-        .meterVersion = "0.0.1",
+        .scope = .{
+            .name = "test",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "test" },
     };
     var m2 = Measurements{
         .data = .{ .int = data_points[2..] },
-        .meterName = "test",
-        .meterVersion = "0.0.1",
+        .scope = .{
+            .name = "test",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "test" },
     };
@@ -274,15 +267,17 @@ test "temporal aggregator process cumulative temporality with timestamps" {
 
     var m1 = Measurements{
         .data = .{ .int = data_points[0..2] },
-        .meterName = "test",
-        .meterVersion = "0.0.1",
+        .scope = .{
+            .name = "test",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "test" },
     };
     var m2 = Measurements{
         .data = .{ .int = data_points[2..] },
-        .meterName = "test",
-        .meterVersion = "0.0.1",
+        .scope = .{
+            .name = "test",
+        },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "test" },
     };
