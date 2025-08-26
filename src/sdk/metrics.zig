@@ -3,4 +3,5 @@ test {
     _ = @import("metrics/reader.zig");
     _ = @import("metrics/view.zig");
     _ = @import("metrics/temporality.zig");
+    _ = @import("metrics/aggregation.zig");
 }

@@ -8,7 +8,7 @@ pub const Aggregation = enum {
     Sum,
     LastValue,
     ExplicitBucketHistogram,
-    // TODO add ExponentialBucketHistogram
+    ExponentialBucketHistogram,
 };
 
 /// Default aggregation for a given kind of instrument.

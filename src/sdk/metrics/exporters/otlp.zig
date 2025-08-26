@@ -14,6 +14,9 @@ const Measurements = measure.Measurements;
 const DataPoint = measure.DataPoint;
 const HistogramPoint = measure.HistogramDataPoint;
 
+const aggregation = @import("../aggregation.zig");
+const ExponentialHistogramPoint = aggregation.ExponentialHistogramDataPoint;
+
 const view = @import("../view.zig");
 
 const protobuf = @import("protobuf");
@@ -131,11 +134,20 @@ fn toProtobufMetric(
                 },
             },
 
-            .Histogram => pbmetrics.Metric.data_union{
-                .histogram = pbmetrics.Histogram{
-                    .data_points = try histogramDataPoints(allocator, measurements.data.histogram),
-                    .aggregation_temporality = temporailty(kind).toProto(),
+            .Histogram => switch (measurements.data) {
+                .histogram => pbmetrics.Metric.data_union{
+                    .histogram = pbmetrics.Histogram{
+                        .data_points = try histogramDataPoints(allocator, measurements.data.histogram),
+                        .aggregation_temporality = temporailty(kind).toProto(),
+                    },
                 },
+                .exponential_histogram => pbmetrics.Metric.data_union{
+                    .exponential_histogram = pbmetrics.ExponentialHistogram{
+                        .data_points = try exponentialHistogramDataPoints(allocator, measurements.data.exponential_histogram),
+                        .aggregation_temporality = temporailty(kind).toProto(),
+                    },
+                },
+                .int, .double => unreachable, // Histogram instruments should not produce int/double data at export time
             },
 
             .Gauge, .ObservableGauge => pbmetrics.Metric.data_union{
@@ -143,7 +155,7 @@ fn toProtobufMetric(
                     .data_points = switch (measurements.data) {
                         .int => try numberDataPoints(allocator, i64, measurements.data.int),
                         .double => try numberDataPoints(allocator, f64, measurements.data.double),
-                        .histogram => std.ArrayList(pbmetrics.NumberDataPoint).init(allocator),
+                        .histogram, .exponential_histogram => std.ArrayList(pbmetrics.NumberDataPoint).init(allocator),
                     },
                 },
             },
@@ -219,6 +231,50 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
             .explicit_bounds = std.ArrayList(f64).fromOwnedSlice(allocator, bounds),
             // TODO support exemplars
             .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
+        });
+    }
+    return a;
+}
+
+fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(ExponentialHistogramPoint)) !std.ArrayList(pbmetrics.ExponentialHistogramDataPoint) {
+    var a = try std.ArrayList(pbmetrics.ExponentialHistogramDataPoint).initCapacity(allocator, data_points.len);
+    for (data_points) |dp| {
+        const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
+
+        // Convert positive buckets
+        var positive_buckets: ?pbmetrics.ExponentialHistogramDataPoint.Buckets = null;
+        if (dp.value.positive_bucket_counts.len > 0) {
+            positive_buckets = pbmetrics.ExponentialHistogramDataPoint.Buckets{
+                .offset = dp.value.positive_offset,
+                .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.positive_bucket_counts)),
+            };
+        }
+
+        // Convert negative buckets
+        var negative_buckets: ?pbmetrics.ExponentialHistogramDataPoint.Buckets = null;
+        if (dp.value.negative_bucket_counts.len > 0) {
+            negative_buckets = pbmetrics.ExponentialHistogramDataPoint.Buckets{
+                .offset = dp.value.negative_offset,
+                .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.negative_bucket_counts)),
+            };
+        }
+
+        a.appendAssumeCapacity(pbmetrics.ExponentialHistogramDataPoint{
+            .attributes = attrs.values,
+            .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
+            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.time.nanoTimestamp()),
+            .count = dp.value.count,
+            .sum = dp.value.sum,
+            .scale = dp.value.scale,
+            .zero_count = dp.value.zero_count,
+            .positive = positive_buckets,
+            .negative = negative_buckets,
+            .min = dp.value.min,
+            .max = dp.value.max,
+            .zero_threshold = 0.0, // Default zero threshold
+            // TODO support exemplars
+            .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
+            .flags = 0,
         });
     }
     return a;
@@ -315,6 +371,78 @@ test "exporters/otlp conversion for HistogramDataPoint" {
     try std.testing.expectEqual(expected_attrs, .{
         metric.data.?.histogram.data_points.items[0].attributes.items[0].key,
         metric.data.?.histogram.data_points.items[0].attributes.items[0].value.?.value.?.string_value,
+    });
+}
+
+test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
+    const allocator = std.testing.allocator;
+    const num: usize = 2;
+    var data_points = try allocator.alloc(DataPoint(ExponentialHistogramPoint), num);
+    defer {
+        for (data_points) |*dp| dp.deinit(allocator);
+        allocator.free(data_points);
+    }
+
+    const anyval: []const u8 = "::anyval::";
+    var positive_bucket_counts = [_]u64{ 1, 2, 3 };
+    var negative_bucket_counts = [_]u64{ 0, 1, 0 };
+    for (0..num) |i| {
+        data_points[i] = try DataPoint(ExponentialHistogramPoint).new(allocator, ExponentialHistogramPoint{
+            .count = i + 1,
+            .sum = @as(f64, @floatFromInt((i + 1) * 10)),
+            .min = 1.0,
+            .max = 100.0,
+            .scale = 20,
+            .zero_count = 0,
+            .positive_offset = 0,
+            .positive_bucket_counts = try allocator.dupe(u64, &positive_bucket_counts),
+            .negative_offset = -1,
+            .negative_bucket_counts = try allocator.dupe(u64, &negative_bucket_counts),
+        }, .{ "key", anyval });
+    }
+
+    const metric = try toProtobufMetric(allocator, Measurements{
+        .scope = .{
+            .name = "test-meter",
+        },
+        .instrumentKind = .Histogram,
+        .instrumentOptions = .{ .name = "exponential-histogram-abc" },
+        .data = .{ .exponential_histogram = data_points },
+    }, view.DefaultTemporality);
+    defer metric.deinit();
+
+    try std.testing.expectEqual(num, metric.data.?.exponential_histogram.data_points.items.len);
+    try std.testing.expectEqual(ManagedString.managed("exponential-histogram-abc"), metric.name);
+
+    const first_dp = metric.data.?.exponential_histogram.data_points.items[0];
+    try std.testing.expectEqual(@as(u64, 1), first_dp.count);
+    try std.testing.expectEqual(@as(f64, 10.0), first_dp.sum.?);
+    try std.testing.expectEqual(@as(i32, 20), first_dp.scale);
+    try std.testing.expectEqual(@as(u64, 0), first_dp.zero_count);
+    try std.testing.expectEqual(@as(f64, 1.0), first_dp.min.?);
+    try std.testing.expectEqual(@as(f64, 100.0), first_dp.max.?);
+
+    // Check positive buckets
+    try std.testing.expect(first_dp.positive != null);
+    try std.testing.expectEqual(@as(i32, 0), first_dp.positive.?.offset);
+    try std.testing.expectEqual(@as(usize, 3), first_dp.positive.?.bucket_counts.items.len);
+    try std.testing.expectEqual(@as(u64, 1), first_dp.positive.?.bucket_counts.items[0]);
+    try std.testing.expectEqual(@as(u64, 2), first_dp.positive.?.bucket_counts.items[1]);
+    try std.testing.expectEqual(@as(u64, 3), first_dp.positive.?.bucket_counts.items[2]);
+
+    // Check negative buckets
+    try std.testing.expect(first_dp.negative != null);
+    try std.testing.expectEqual(@as(i32, -1), first_dp.negative.?.offset);
+    try std.testing.expectEqual(@as(usize, 3), first_dp.negative.?.bucket_counts.items.len);
+
+    const attrs = Attributes.with(data_points[0].attributes);
+    const expected_attrs = .{
+        ManagedString.managed(attrs.attributes.?[0].key),
+        ManagedString.managed(anyval),
+    };
+    try std.testing.expectEqual(expected_attrs, .{
+        first_dp.attributes.items[0].key,
+        first_dp.attributes.items[0].value.?.value.?.string_value,
     });
 }
 

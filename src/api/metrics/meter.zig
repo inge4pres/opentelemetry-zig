@@ -10,6 +10,8 @@ const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 const DataPoint = @import("measurement.zig").DataPoint;
 const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
+const aggregation = @import("../../sdk/metrics/aggregation.zig");
+const ExponentialHistogramDataPoint = aggregation.ExponentialHistogramDataPoint;
 
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 const Measurements = @import("measurement.zig").Measurements;
@@ -472,7 +474,7 @@ pub const AggregatedMetrics = struct {
         return allocator.dupe(DataPoint(T), deduped.values());
     }
 
-    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation: view.Aggregation) !?MeasurementsData {
+    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation_type: view.Aggregation) !?MeasurementsData {
         // If there are no data points, we can return early.
         if (data_points.isEmpty()) return null;
 
@@ -492,7 +494,7 @@ pub const AggregatedMetrics = struct {
         const current_time: u64 = @intCast(std.time.nanoTimestamp());
 
         // Processing pipeline is split by aggregation type
-        const aggregated: ?MeasurementsData = switch (aggregation) {
+        const aggregated: ?MeasurementsData = switch (aggregation_type) {
             .Drop => null,
             .Sum => switch (data_points) {
                 .int => MeasurementsData{ .int = try sum(i64, data_points.int, current_time, allocator) },
@@ -500,29 +502,67 @@ pub const AggregatedMetrics = struct {
                 // Sum aggregation is not supported for histograms data points.
                 // FIXME we should probably return an error here.
                 // Specification does not seem to be clear...
-                .histogram => null,
+                .histogram, .exponential_histogram => null,
             },
             .LastValue => switch (data_points) {
                 .int => MeasurementsData{ .int = try lastValue(i64, data_points.int, current_time, allocator) },
                 .double => MeasurementsData{ .double = try lastValue(f64, data_points.double, current_time, allocator) },
-                // Sum aggregation is not supported for histograms data points.
+                // LastValue aggregation is not supported for histograms data points.
                 // FIXME we should probably return an error here.
                 // Specification does not seem to be clear...
-                .histogram => null,
+                .histogram, .exponential_histogram => null,
             },
-            // Currently the histogram are already aggregated when recording.
-            // Hence, we do not need to do anything here other than returning a copy of the data points.
             .ExplicitBucketHistogram => switch (data_points) {
-                .int, .double => null,
-                .histogram => {
+                .exponential_histogram => null,
+                .int => blk: {
+                    // Use default histogram buckets for explicit bucket aggregation
+                    const default_buckets = [_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
+                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, &default_buckets, true);
+                    break :blk MeasurementsData{ .histogram = aggregated };
+                },
+                .double => blk: {
+                    // Use default histogram buckets for explicit bucket aggregation
+
+                    const default_buckets = [_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
+                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, &default_buckets, true);
+                    break :blk MeasurementsData{ .histogram = aggregated };
+                },
+                .histogram => blk: {
+                    // Legacy support - if somehow we still get pre-aggregated histogram data, just pass it through
                     const ret = try allocator.alloc(DataPoint(HistogramDataPoint), data_points.histogram.len);
                     for (data_points.histogram, 0..) |dp, i| {
                         var d = try dp.deepCopy(allocator);
-                        // Add timestamps that will be used in temporal aggregation.
                         d.timestamps = .{ .time_ns = current_time };
                         ret[i] = d;
                     }
-                    return MeasurementsData{ .histogram = ret };
+                    break :blk MeasurementsData{ .histogram = ret };
+                },
+            },
+            .ExponentialBucketHistogram => switch (data_points) {
+                .histogram => null,
+                .int => blk: {
+                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, 20, // Default scale
+                        1024, // Default max bucket count
+                        true // Record min/max
+                    );
+                    break :blk MeasurementsData{ .exponential_histogram = aggregated };
+                },
+                .double => blk: {
+                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, 20, // Default scale
+                        1024, // Default max bucket count
+                        true // Record min/max
+                    );
+                    break :blk MeasurementsData{ .exponential_histogram = aggregated };
+                },
+                .exponential_histogram => blk: {
+                    // Legacy support - if somehow we still get pre-aggregated exponential histogram data, just pass it through
+                    const ret = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), data_points.exponential_histogram.len);
+                    for (data_points.exponential_histogram, 0..) |dp, i| {
+                        var d = try dp.deepCopy(allocator);
+                        d.timestamps = .{ .time_ns = current_time };
+                        ret[i] = d;
+                    }
+                    break :blk MeasurementsData{ .exponential_histogram = ret };
                 },
             },
         };

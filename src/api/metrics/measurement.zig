@@ -4,6 +4,7 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
+const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
 
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
@@ -29,6 +30,10 @@ pub fn DataPoint(comptime T: type) type {
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             switch (T) {
                 HistogramDataPoint => allocator.free(self.value.bucket_counts),
+                ExponentialHistogramDataPoint => {
+                    allocator.free(self.value.positive_bucket_counts);
+                    allocator.free(self.value.negative_bucket_counts);
+                },
                 else => {},
             }
             if (self.attributes) |a| allocator.free(a);
@@ -44,6 +49,18 @@ pub fn DataPoint(comptime T: type) type {
                         .count = self.value.count,
                         .min = self.value.min,
                         .max = self.value.max,
+                    },
+                    ExponentialHistogramDataPoint => ExponentialHistogramDataPoint{
+                        .sum = self.value.sum,
+                        .count = self.value.count,
+                        .min = self.value.min,
+                        .max = self.value.max,
+                        .scale = self.value.scale,
+                        .zero_count = self.value.zero_count,
+                        .positive_offset = self.value.positive_offset,
+                        .positive_bucket_counts = try allocator.dupe(u64, self.value.positive_bucket_counts),
+                        .negative_offset = self.value.negative_offset,
+                        .negative_bucket_counts = try allocator.dupe(u64, self.value.negative_bucket_counts),
                     },
                     else => self.value,
                 },
@@ -97,6 +114,7 @@ pub const MeasurementsData = union(enum) {
     int: []DataPoint(i64),
     double: []DataPoint(f64),
     histogram: []DataPoint(HistogramDataPoint),
+    exponential_histogram: []DataPoint(ExponentialHistogramDataPoint),
 
     /// Returns true if there are no datapoints.
     pub fn isEmpty(self: MeasurementsData) bool {
@@ -122,6 +140,7 @@ pub const MeasurementsData = union(enum) {
             .int => |list| self.int = try mergeDataPoints(i64, list, other.int, allocator),
             .double => |list| self.double = try mergeDataPoints(f64, list, other.double, allocator),
             .histogram => |list| self.histogram = try mergeDataPoints(HistogramDataPoint, list, other.histogram, allocator),
+            .exponential_histogram => |list| self.exponential_histogram = try mergeDataPoints(ExponentialHistogramDataPoint, list, other.exponential_histogram, allocator),
         }
     }
 
@@ -147,6 +166,7 @@ pub const MeasurementsData = union(enum) {
             .int => |list| self.int = try pruneByAttributes(i64, list, allocator),
             .double => |list| self.double = try pruneByAttributes(f64, list, allocator),
             .histogram => |list| self.histogram = try pruneByAttributes(HistogramDataPoint, list, allocator),
+            .exponential_histogram => |list| self.exponential_histogram = try pruneByAttributes(ExponentialHistogramDataPoint, list, allocator),
         };
     }
 

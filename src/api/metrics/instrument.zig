@@ -394,108 +394,32 @@ pub fn Histogram(comptime T: type) type {
                 self.data_points.clearRetainingCapacity();
             }
 
-            // Perform aggregation: group raw data points by attributes and compute histogram statistics
-            var aggregated_state = std.HashMap(
-                Attributes,
-                HistogramDataPoint,
-                Attributes.HashContext,
-                std.hash_map.default_max_load_percentage,
-            ).init(allocator);
-            defer {
-                var state_iter = aggregated_state.iterator();
-                while (state_iter.next()) |v| {
-                    if (v.key_ptr.attributes) |attrs| allocator.free(attrs);
-                    allocator.free(v.value_ptr.bucket_counts);
-                }
-                aggregated_state.deinit();
-            }
-
-            // Aggregate raw measurements by attributes
-            for (self.data_points.items) |dp| {
-                const attributes = Attributes.with(dp.attributes);
-
-                const result = try aggregated_state.getOrPut(attributes);
-                if (!result.found_existing) {
-                    // Create a new entry in the state for these attributes:
-                    // - bucket counts are allocated and initialized to 0.
-                    // - all other fields are set to null or empty.
-                    var buckets = try allocator.alloc(u64, self.buckets.len);
-                    for (0..self.buckets.len) |i| {
-                        buckets[i] = 0;
+            // Return raw data points without aggregation
+            // Aggregation will be performed later in AggregateMetrics.fetch()
+            switch (T) {
+                u16, u32, u64, i16, i32, i64 => {
+                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
+                        data[idx] = .{
+                            .value = @intCast(m.value),
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                        };
                     }
-                    result.value_ptr.* = HistogramDataPoint{
-                        .explicit_bounds = self.buckets,
-                        .bucket_counts = buckets,
-                        .sum = null,
-                        .count = 0,
-                        .min = null,
-                        .max = null,
-                    };
-                    // Duplicate the attributes for the new entry
-                    result.key_ptr.* = Attributes.with(try attributes.dupe(allocator));
-                }
-
-                // Now update the aggregated value with the current data point.
-                var state_entry = result.value_ptr;
-
-                const f64_val: f64 = switch (T) {
-                    u16, u32, u64, i16, i32, i64 => @as(f64, @floatFromInt(dp.value)),
-                    f32, f64 => @as(f64, dp.value),
-                    // Other compile-time checks ensure we don't get here.
-                    else => unreachable,
-                };
-
-                // addition will fail in (the unlikely) case of overflow
-                // sum
-                state_entry.sum = switch (T) {
-                    // we don't set sum when the value can be negative
-                    i16, i32, i64 => null,
-                    u16, u32, u64, f32, f64 => if (state_entry.sum) |curr| curr + f64_val else f64_val,
-                    else => unreachable,
-                };
-                // total count of observations
-                state_entry.count = try std.math.add(u64, state_entry.count, 1);
-                // min and max
-                if (self.options.recordMinMax) {
-                    state_entry.min = if (state_entry.min) |curr| @min(curr, f64_val) else f64_val;
-                    state_entry.max = if (state_entry.max) |curr| @max(curr, f64_val) else f64_val;
-                }
-                // Find the value for the bucket that the value falls in.
-                // If the value is greater than the last bucket, it goes in the last bucket.
-                // If the value is less than the first bucket, it goes in the first bucket.
-                // Otherwise, it goes in each bucket for which the boundary is greater than or equal the value.
-                for (self.buckets, 0..) |boundary, i| {
-                    if (f64_val <= boundary) {
-                        state_entry.bucket_counts[i] += 1;
+                    return .{ .int = data };
+                },
+                f32, f64 => {
+                    var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
+                    for (self.data_points.items, 0..) |m, idx| {
+                        data[idx] = .{
+                            .value = @floatCast(m.value),
+                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                        };
                     }
-                }
+                    return .{ .double = data };
+                },
+                // inner types are filtered before this point
+                else => unreachable,
             }
-
-            // Convert aggregated state to final data points
-            var data_points = try allocator.alloc(DataPoint(HistogramDataPoint), aggregated_state.count());
-            var iter = aggregated_state.iterator();
-            var idx: usize = 0;
-            while (iter.next()) |entry| {
-                var bcounts = try allocator.alloc(u64, self.buckets.len);
-                for (entry.value_ptr.bucket_counts, 0..) |b, i| {
-                    bcounts[i] = b;
-                }
-                const val = HistogramDataPoint{
-                    .bucket_counts = bcounts[0..],
-                    .explicit_bounds = entry.value_ptr.explicit_bounds,
-                    .sum = entry.value_ptr.sum,
-                    .count = entry.value_ptr.count,
-                    .min = entry.value_ptr.min,
-                    .max = entry.value_ptr.max,
-                };
-                data_points[idx] = DataPoint(HistogramDataPoint){
-                    .value = val,
-                    .attributes = try entry.key_ptr.dupe(allocator),
-                };
-                idx += 1;
-            }
-
-            return .{ .histogram = data_points };
         }
     };
 }
@@ -626,20 +550,21 @@ test "histogram records value without explicit buckets" {
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    // After recording, we need to fetch the aggregated measurements to get histogram data
+    // After recording, we get raw measurements data (int/double values, not pre-aggregated histogram)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.histogram) |*dp| {
+        for (measurements.int) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.histogram);
+        std.testing.allocator.free(measurements.int);
     }
 
-    try std.testing.expectEqual(1, measurements.histogram.len);
-    const aggregated_datapoint = measurements.histogram[0];
-    std.debug.assert(aggregated_datapoint.value.bucket_counts.len == spec.defaultHistogramBucketBoundaries.len + 1);
-    const expected_counts = &[_]u64{ 0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3 };
-    try std.testing.expectEqualSlices(u64, expected_counts, aggregated_datapoint.value.bucket_counts);
+    // We should have 3 raw data points corresponding to the 3 recorded values
+    try std.testing.expectEqual(3, measurements.int.len);
+    // Verify the raw values are stored correctly
+    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
+    try std.testing.expectEqual(@as(i64, 5), measurements.int[1].value);
+    try std.testing.expectEqual(@as(i64, 15), measurements.int[2].value);
 }
 
 test "histogram records value with explicit buckets" {
@@ -654,21 +579,21 @@ test "histogram records value with explicit buckets" {
 
     try std.testing.expectEqual(3, histogram.data_points.items.len);
 
-    // After recording, we need to fetch the aggregated measurements to get histogram data
+    // After recording, we get raw measurements data (int values, not pre-aggregated histogram)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.histogram) |*dp| {
+        for (measurements.int) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.histogram);
+        std.testing.allocator.free(measurements.int);
     }
 
-    try std.testing.expectEqual(1, measurements.histogram.len);
-    const aggregated_datapoint = measurements.histogram[0];
-    const counts = aggregated_datapoint.value.bucket_counts;
-    std.debug.assert(counts.len == 5);
-    const expected_counts = &[_]u64{ 1, 2, 3, 3, 3 };
-    try std.testing.expectEqualSlices(u64, expected_counts, counts);
+    // We should have 3 raw data points corresponding to the 3 recorded values
+    try std.testing.expectEqual(3, measurements.int.len);
+    // Verify the raw values are stored correctly
+    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
+    try std.testing.expectEqual(@as(i64, 5), measurements.int[1].value);
+    try std.testing.expectEqual(@as(i64, 15), measurements.int[2].value);
 }
 
 test "histogram keeps track of bucket counts by attribute" {
@@ -683,22 +608,21 @@ test "histogram keeps track of bucket counts by attribute" {
 
     try std.testing.expectEqual(2, histogram.data_points.items.len);
 
-    // After recording, we need to fetch the aggregated measurements to get histogram data
+    // After recording, we get raw measurements data (not aggregated histogram data)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.histogram) |*dp| {
+        for (measurements.int) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.histogram);
+        std.testing.allocator.free(measurements.int);
     }
 
-    try std.testing.expectEqual(2, measurements.histogram.len);
+    // Now we get raw integer data points instead of histogram buckets
+    try std.testing.expectEqual(2, measurements.int.len);
 
-    // Find the data points by checking bucket counts (order must be preserved)
-    const first_dp = measurements.histogram[0];
-    try std.testing.expectEqualSlices(u64, &.{ 1, 1, 1, 1, 1 }, first_dp.value.bucket_counts);
-    const second_dp = measurements.histogram[1];
-    try std.testing.expectEqualSlices(u64, &.{ 0, 0, 0, 1, 1 }, second_dp.value.bucket_counts);
+    // Check that the raw values are preserved
+    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
+    try std.testing.expectEqual(@as(i64, 1000), measurements.int[1].value);
 }
 
 test "histogram keeps track of count, sum and min/max by attribute" {
@@ -714,28 +638,35 @@ test "histogram keeps track of count, sum and min/max by attribute" {
 
     std.debug.assert(histogram.data_points.items.len == 3);
 
-    // After recording, we need to fetch the aggregated measurements to get histogram data
+    // After recording, we get raw measurements data (not aggregated histogram data)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.histogram) |*dp| {
+        for (measurements.int) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.histogram);
+        std.testing.allocator.free(measurements.int);
     }
 
-    try std.testing.expectEqual(2, measurements.histogram.len);
+    // We get raw integer data points, grouped by attributes
+    try std.testing.expectEqual(3, measurements.int.len);
 
-    // ordering depends from the hash of the key, and it's deterministic
-    const no_attrs = measurements.histogram[1];
-    const with_attrs = measurements.histogram[0];
+    // Check that the raw values are preserved (order may vary by attribute hash)
+    var found_1 = false;
+    var found_5 = false;
+    var found_15 = false;
 
-    try std.testing.expectEqual(.{ 1.0, 1.0 }, .{ no_attrs.value.min.?, no_attrs.value.max.? });
-    try std.testing.expectEqual(1.0, no_attrs.value.sum.?);
-    try std.testing.expectEqual(@as(u64, 1), no_attrs.value.count);
+    for (measurements.int) |dp| {
+        switch (dp.value) {
+            1 => found_1 = true,
+            5 => found_5 = true,
+            15 => found_15 = true,
+            else => unreachable,
+        }
+    }
 
-    try std.testing.expectEqual(.{ 5.0, 15.0 }, .{ with_attrs.value.min.?, with_attrs.value.max.? });
-    try std.testing.expectEqual(20.0, with_attrs.value.sum.?);
-    try std.testing.expectEqual(@as(u64, 2), with_attrs.value.count);
+    try std.testing.expect(found_1);
+    try std.testing.expect(found_5);
+    try std.testing.expect(found_15);
 }
 
 test "gauge instrument records value without attributes" {
@@ -920,16 +851,18 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
 
     const fetched = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (fetched.histogram) |*m| {
+        for (fetched.int) |*m| {
             m.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(fetched.histogram);
+        std.testing.allocator.free(fetched.int);
     }
-    // Assert that we have 1 aggregated data point (since both recordings have same attributes)
-    try std.testing.expectEqual(1, fetched.histogram.len);
+    // Assert that we have 2 raw data points (since both recordings have same attributes but are separate records)
+    try std.testing.expectEqual(2, fetched.int.len);
 
-    // The aggregated bucket counts should reflect both recordings
-    try std.testing.expectEqualSlices(u64, &.{ 1, 1, 2, 2, 2 }, fetched.histogram[0].value.bucket_counts);
+    // Check that we have the raw values recorded
+    const values = [_]i64{ fetched.int[0].value, fetched.int[1].value };
+    try std.testing.expect(std.mem.containsAtLeast(i64, &values, 1, &[_]i64{1}));
+    try std.testing.expect(std.mem.containsAtLeast(i64, &values, 1, &[_]i64{20}));
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {

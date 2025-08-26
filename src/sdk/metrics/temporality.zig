@@ -151,7 +151,7 @@ pub fn process(self: *TemporalAggregator, measurements: *Measurements, temporali
             switch (measurements.data) {
                 // Histogram data points are impossible to implement as .Delta at the moment, because the aggregation is computed on raw data points.
                 // TODO either return an error or implement the .Delta temporality for histogram data points.
-                .histogram => return,
+                .histogram, .exponential_histogram => return,
                 .int => |datapoints| try processDeltaDataPoints(i64, &self.ints, measurements, datapoints.ptr, datapoints.len),
                 .double => |datapoints| try processDeltaDataPoints(f64, &self.doubles, measurements, datapoints.ptr, datapoints.len),
             }
@@ -159,7 +159,7 @@ pub fn process(self: *TemporalAggregator, measurements: *Measurements, temporali
         .Cumulative => {
             switch (measurements.data) {
                 // TODO update here when the histogram attributes are implemented as an aggregation from raw data points rather than pre-computing them.
-                .histogram => return,
+                .histogram, .exponential_histogram => return,
                 .int => |datapoints| try processCumulativeDataPoints(i64, &self.ints, measurements, datapoints.ptr, datapoints.len),
                 .double => |datapoints| try processCumulativeDataPoints(f64, &self.doubles, measurements, datapoints.ptr, datapoints.len),
             }
