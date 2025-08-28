@@ -121,7 +121,7 @@ pub const Instrument = struct {
 
     pub fn histogram(self: *Self, comptime T: type) !*Histogram(T) {
         const h = try self.allocator.create(Histogram(T));
-        h.* = try Histogram(T).init(self.allocator, self.opts.histogramOpts);
+        h.* = Histogram(T).init(self.allocator);
         errdefer self.allocator.destroy(h);
         self.data = switch (T) {
             u16 => .{ .Histogram_u16 = h },
@@ -237,16 +237,6 @@ pub const InstrumentOptions = struct {
     unit: ?[]const u8 = null,
     // Advisory parameters are in development, we don't support them yet, so we set to null.
     advisory: ?[]Attribute = null,
-
-    histogramOpts: ?HistogramOptions = null,
-};
-
-/// HistogramOptions is used to configure the histogram instrument.
-pub const HistogramOptions = struct {
-    /// ExplicitBuckets is used to specify the bucket boundaries.
-    /// Do not set to rely on the specification default buckets.
-    explicitBuckets: ?[]const f64 = null,
-    recordMinMax: bool = true,
 };
 
 /// A Counter is a monotonically increasing value used to record cumulative events.
@@ -320,44 +310,18 @@ pub fn Counter(comptime T: type) type {
 pub fn Histogram(comptime T: type) type {
     return struct {
         const Self = @This();
-        // Define a maximum number of buckets that can be used to record measurements.
-        const maxBuckets = 1024;
 
         allocator: std.mem.Allocator,
         lock: std.Thread.Mutex,
-
-        options: HistogramOptions,
-        // Holds the counts of the values falling in each bucket for the histogram.
-        // The buckets are defined by the user if explcitily provided, otherwise the default SDK specification
-        // buckets are used.
-        // Buckets are always defined as f64.
-        buckets: []const f64,
 
         /// Keeps track of the raw recorded values for each set of attributes.
         /// The measurements are cleared after each collection cycle.
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        fn init(allocator: std.mem.Allocator, options: ?HistogramOptions) !Self {
-            // Use the default options if none are provided.
-            const opts = options orelse HistogramOptions{};
-
-            // Buckets
-            const desired_buckets = opts.explicitBuckets orelse spec.defaultHistogramBucketBoundaries;
-            // Buckets are part of the options, so we validate them from there.
-            try spec.validateExplicitBuckets(desired_buckets);
-            var buckets: []f64 = try allocator.alloc(f64, desired_buckets.len + 1);
-            for (desired_buckets, 0..) |b, i| {
-                buckets[i] = b;
-            }
-            // Set +Inf as last entry in the buckets.
-            // We always have to have the +Inf bucket as last for compatibility with OpenMetrics.
-            buckets[desired_buckets.len] = std.math.inf(f64);
-
+        fn init(allocator: std.mem.Allocator) Self {
             return Self{
                 .allocator = allocator,
                 .lock = std.Thread.Mutex{},
-                .options = opts,
-                .buckets = buckets,
                 .data_points = .empty,
             };
         }
@@ -367,7 +331,6 @@ pub fn Histogram(comptime T: type) type {
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
-            self.allocator.free(self.buckets);
             self.data_points.deinit(self.allocator);
         }
 
@@ -571,7 +534,7 @@ test "histogram records value with explicit buckets" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
     try histogram.record(1, .{});
     try histogram.record(5, .{});
@@ -600,7 +563,7 @@ test "histogram keeps track of bucket counts by attribute" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
     const val: []const u8 = "some-value";
     try histogram.record(1, .{ "some-key", val });
@@ -629,7 +592,7 @@ test "histogram keeps track of count, sum and min/max by attribute" {
     const mp = try MeterProvider.default();
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram", .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+    var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
     const val: []const u8 = "some-val";
     try histogram.record(1, .{});
@@ -825,7 +788,7 @@ test "histogram thread-safety" {
 
     const meter = try mp.getMeter(.{ .name = "test-meter" });
 
-    var h = try meter.createHistogram(u64, .{ .name = name, .histogramOpts = .{ .explicitBuckets = &.{ 1.0, 10.0, 100.0, 1000.0 } } });
+    var h = try meter.createHistogram(u64, .{ .name = name });
 
     const val: []const u8 = "same-val";
     try h.record(20, .{ "same-key", val });

@@ -179,7 +179,7 @@ pub fn aggregateExponentialBucketHistogram(
 
         const result = try aggregated_state.getOrPut(attributes);
         if (!result.found_existing) {
-            result.value_ptr.* = ExponentialHistogramState.init(max_scale);
+            result.value_ptr.* = ExponentialHistogramState.init(allocator, max_scale);
             // Duplicate the attributes for the new entry
             result.key_ptr.* = Attributes.with(try attributes.dupe(allocator));
         }
@@ -191,7 +191,7 @@ pub fn aggregateExponentialBucketHistogram(
             else => unreachable,
         };
 
-        try result.value_ptr.addValue(allocator, f64_val, max_size, record_min_max, T);
+        try result.value_ptr.addValue(f64_val, max_size, record_min_max, T);
     }
 
     // Convert aggregated state to final data points
@@ -222,7 +222,7 @@ const ExponentialHistogramState = struct {
     positive_buckets: std.AutoArrayHashMap(i32, u64),
     negative_buckets: std.AutoArrayHashMap(i32, u64),
 
-    fn init(scale: i32) ExponentialHistogramState {
+    fn init(allocator: std.mem.Allocator, scale: i32) ExponentialHistogramState {
         return ExponentialHistogramState{
             .scale = scale,
             .sum = null,
@@ -230,8 +230,8 @@ const ExponentialHistogramState = struct {
             .min = null,
             .max = null,
             .zero_count = 0,
-            .positive_buckets = std.AutoArrayHashMap(i32, u64).init(std.heap.page_allocator),
-            .negative_buckets = std.AutoArrayHashMap(i32, u64).init(std.heap.page_allocator),
+            .positive_buckets = std.AutoArrayHashMap(i32, u64).init(allocator),
+            .negative_buckets = std.AutoArrayHashMap(i32, u64).init(allocator),
         };
     }
 
@@ -243,13 +243,11 @@ const ExponentialHistogramState = struct {
 
     fn addValue(
         self: *ExponentialHistogramState,
-        allocator: std.mem.Allocator,
         value: f64,
         max_size: u32,
         record_min_max: bool,
         comptime T: type,
     ) !void {
-        _ = allocator;
         _ = max_size; // TODO: implement scale reduction when bucket count exceeds max_size
 
         // Update basic statistics

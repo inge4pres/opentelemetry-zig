@@ -187,7 +187,7 @@ test "identifying fields for instruments change with unit" {
 
 // Represents the default histogram bucket boundaries as documented in the OpenTelemetry specification.
 // See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation
-pub const defaultHistogramBucketBoundaries: []const f64 = &[_]f64{ 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0 };
+pub const default_histogram_explicit_bucket_boundaries: []const f64 = &[_]f64{ 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0 };
 
 /// Validate the histogram option to use explicit bucket boundaries is conformant to the OpenTelemetry specification.
 /// Bucket boundaries must be between 0 and a positive real number, and in increasing order.
@@ -206,7 +206,7 @@ pub fn validateExplicitBuckets(buckets: []const f64) FormatError!void {
 }
 
 test "validate default buckets" {
-    const err = validateExplicitBuckets(defaultHistogramBucketBoundaries);
+    const err = validateExplicitBuckets(default_histogram_explicit_bucket_boundaries);
     try std.testing.expectEqual({}, err);
 }
 

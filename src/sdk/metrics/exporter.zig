@@ -495,11 +495,6 @@ test "e2e periodic exporting metric reader" {
     var histogram = try meter.createHistogram(f64, .{
         .name = "latency",
         .description = "a test histogram",
-        .histogramOpts = .{ .explicitBuckets = &.{
-            1.0,
-            10.0,
-            100.0,
-        } },
     });
     try histogram.record(1.4, .{});
     try histogram.record(10.4, .{});

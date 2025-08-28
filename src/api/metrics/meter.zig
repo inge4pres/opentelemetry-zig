@@ -494,7 +494,7 @@ pub const AggregatedMetrics = struct {
         const current_time: u64 = @intCast(std.time.nanoTimestamp());
 
         // Processing pipeline is split by aggregation type
-        const aggregated: ?MeasurementsData = switch (aggregation_type) {
+        const aggregated: ?MeasurementsData = switch (aggregation_type.getType()) {
             .Drop => null,
             .Sum => switch (data_points) {
                 .int => MeasurementsData{ .int = try sum(i64, data_points.int, current_time, allocator) },
@@ -515,16 +515,15 @@ pub const AggregatedMetrics = struct {
             .ExplicitBucketHistogram => switch (data_points) {
                 .exponential_histogram => null,
                 .int => blk: {
-                    // Use default histogram buckets for explicit bucket aggregation
-                    const default_buckets = [_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
-                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, &default_buckets, true);
+                    const config = aggregation_type.ExplicitBucketHistogram;
+                    const buckets = config.buckets orelse &[_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
+                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, buckets, config.record_min_max);
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
                 .double => blk: {
-                    // Use default histogram buckets for explicit bucket aggregation
-
-                    const default_buckets = [_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
-                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, &default_buckets, true);
+                    const config = aggregation_type.ExplicitBucketHistogram;
+                    const buckets = config.buckets orelse &[_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
+                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, buckets, config.record_min_max);
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
                 .histogram => blk: {
@@ -541,17 +540,13 @@ pub const AggregatedMetrics = struct {
             .ExponentialBucketHistogram => switch (data_points) {
                 .histogram => null,
                 .int => blk: {
-                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, 20, // Default scale
-                        1024, // Default max bucket count
-                        true // Record min/max
-                    );
+                    const config = aggregation_type.ExponentialBucketHistogram;
+                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, config.max_scale, config.max_size, config.record_min_max);
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
                 .double => blk: {
-                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, 20, // Default scale
-                        1024, // Default max bucket count
-                        true // Record min/max
-                    );
+                    const config = aggregation_type.ExponentialBucketHistogram;
+                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, config.max_scale, config.max_size, config.record_min_max);
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
                 .exponential_histogram => blk: {
