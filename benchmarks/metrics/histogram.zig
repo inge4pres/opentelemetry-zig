@@ -36,6 +36,17 @@ test "Histogram_Record" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
+    // Add a view with custom explicit buckets for the histogram
+    try mp.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "response_time",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
+        } },
+        .temporality = .Cumulative,
+    });
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.histogram",
     });
@@ -44,9 +55,6 @@ test "Histogram_Record" {
         .name = "response_time",
         .description = "Response time in milliseconds",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
@@ -84,6 +92,17 @@ test "Histogram_Record_With_Non_Static_Values" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
+    // Add a view with custom explicit buckets for the histogram
+    try mp.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "response_time",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
+        } },
+        .temporality = .Cumulative,
+    });
+
     const meter = try mp.getMeter(.{
         .name = "benchmark.histogram",
     });
@@ -92,9 +111,6 @@ test "Histogram_Record_With_Non_Static_Values" {
         .name = "response_time",
         .description = "Response time in milliseconds",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
@@ -144,23 +160,31 @@ test "Histogram_Record_With_Many_Buckets" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
-    const meter = try mp.getMeter(.{
-        .name = "benchmark.histogram.many_buckets",
-    });
-
     // Create histogram with 50 buckets similar to Rust benchmarks
     var buckets: [50]f64 = undefined;
     for (&buckets, 0..) |*bucket, i| {
         bucket.* = @as(f64, @floatFromInt(i)) * 10.0;
     }
 
+    // Add a view with many buckets for the histogram
+    try mp.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "response_time_many_buckets",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &buckets,
+        } },
+        .temporality = .Cumulative,
+    });
+
+    const meter = try mp.getMeter(.{
+        .name = "benchmark.histogram.many_buckets",
+    });
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "response_time_many_buckets",
         .description = "Response time with many buckets",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &buckets,
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
@@ -193,6 +217,18 @@ test "Histogram_Record_With_Many_Buckets" {
 test "Histogram_Concurrent" {
     const mp = try setupSDK(std.testing.allocator);
     defer mp.shutdown();
+
+    // Add a view with custom explicit buckets for the histogram
+    try mp.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "histogram_concurrent",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &[_]f64{ 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0 },
+        } },
+        .temporality = .Cumulative,
+    });
+
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark-concurrent",
     });
@@ -201,9 +237,6 @@ test "Histogram_Concurrent" {
         .name = "histogram_concurrent",
         .description = "A histogram for concurrent benchmarking",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &[_]f64{ 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0 },
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
@@ -260,6 +293,18 @@ const ConcurrentHistogramBench = struct {
 test "Histogram_Record_Varied_Values" {
     const mp = try setupSDK(std.testing.allocator);
     defer mp.shutdown();
+
+    // Add a view with custom explicit buckets for the histogram
+    try mp.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "benchmark_histogram_varied",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &[_]f64{ 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0 },
+        } },
+        .temporality = .Cumulative,
+    });
+
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
     });
@@ -268,9 +313,6 @@ test "Histogram_Record_Varied_Values" {
         .name = "benchmark_histogram_varied",
         .description = "Histogram for benchmarking varied values",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &[_]f64{ 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0 },
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);

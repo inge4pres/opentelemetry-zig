@@ -203,6 +203,18 @@ test "AddTenAttr" {
 test "RecordHistogram10Bounds" {
     const provider = try setupMeter(std.testing.allocator);
     defer provider.shutdown();
+
+    // Add a view with custom explicit buckets for the histogram
+    try provider.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "test_histogram",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
+        } },
+        .temporality = .Cumulative,
+    });
+
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -210,9 +222,6 @@ test "RecordHistogram10Bounds" {
     const histogram = try meter.createHistogram(f64, .{
         .name = "test_histogram",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0 },
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
@@ -239,9 +248,6 @@ test "RecordHistogram10Bounds" {
 test "RecordHistogram50Bounds" {
     const provider = try setupMeter(std.testing.allocator);
     defer provider.shutdown();
-    const meter = try provider.getMeter(.{
-        .name = "benchmark.general",
-    });
 
     // Create 50 bucket boundaries
     var buckets: [50]f64 = undefined;
@@ -249,12 +255,24 @@ test "RecordHistogram50Bounds" {
         bucket.* = @as(f64, @floatFromInt(i)) * 2.0;
     }
 
+    // Add a view with 50 custom explicit buckets for the histogram
+    try provider.addView(sdk.View.View{
+        .instrument_selector = sdk.View.InstrumentSelector{
+            .name = "test_histogram_50",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &buckets,
+        } },
+        .temporality = .Cumulative,
+    });
+
+    const meter = try provider.getMeter(.{
+        .name = "benchmark.general",
+    });
+
     const histogram = try meter.createHistogram(f64, .{
         .name = "test_histogram_50",
         .unit = "ms",
-        .histogramOpts = .{
-            .explicitBuckets = &buckets,
-        },
     });
 
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
