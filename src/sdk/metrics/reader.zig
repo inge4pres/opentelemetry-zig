@@ -94,7 +94,7 @@ pub const MetricReader = struct {
             // Measurements can be ported to protobuf structs during OTLP export.
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
-                const measurements = AggregatedMetrics.fetch(self.allocator, meter, self.aggregation) catch |err| {
+                const measurements = AggregatedMetrics.fetch(self.allocator, meter, mp.views.items, self.aggregation) catch |err| {
                     log.err("error aggregating data points from meter {s}: {?}", .{ meter.scope.name, err });
                     continue;
                 };

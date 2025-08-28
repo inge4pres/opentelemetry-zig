@@ -1,6 +1,8 @@
 const std = @import("std");
 const http = std.http;
 const sdk = @import("opentelemetry-sdk");
+const view = sdk.View;
+const Kind = sdk.Kind;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -66,7 +68,6 @@ const MonitoredHTTPServer = struct {
                 .name = "http.server.request_duration_ms",
                 .description = "The duration of HTTP requests, in milliseconds",
                 .unit = "ms",
-                .histogramOpts = .{ .explicitBuckets = &.{ 0.02, 0.1, 0.5, 2.5 } },
             }),
         };
     }
@@ -102,6 +103,18 @@ const OTel = struct {
 fn setupTelemetry(allocator: std.mem.Allocator) !OTel {
     const mp = try sdk.MeterProvider.default();
     errdefer mp.shutdown();
+
+    // Create a view for histogram instruments with explicit bucket aggregation
+    const http_latency_view = view.View{
+        .instrument_selector = .{ .kind = .Histogram },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &.{ 0.02, 0.1, 0.5, 2.5 },
+        } },
+        .temporality = .Cumulative,
+    };
+
+    // Register the view with the meter provider
+    try mp.addView(http_latency_view);
 
     const me = try sdk.MetricExporter.InMemory(allocator, null, null);
     var in_mem = me.in_memory;

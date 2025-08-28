@@ -27,6 +27,7 @@ pub const Counter = @import("api/metrics/instrument.zig").Counter;
 pub const UpDownCounter = @import("api/metrics/instrument.zig").Counter;
 pub const Histogram = @import("api/metrics/instrument.zig").Histogram;
 pub const Gauge = @import("api/metrics/instrument.zig").Gauge;
+pub const View = @import("sdk/metrics/view.zig");
 
 pub const Context = @import("api/context.zig").Context;
 pub const ContextKey = @import("api/context.zig").ContextKey;

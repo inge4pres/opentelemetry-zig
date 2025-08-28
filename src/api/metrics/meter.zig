@@ -39,6 +39,7 @@ pub const MeterProvider = struct {
         std.hash_map.default_max_load_percentage,
     ),
     readers: std.ArrayListUnmanaged(*MetricReader),
+    views: std.ArrayListUnmanaged(view.View),
 
     const Self = @This();
 
@@ -49,6 +50,7 @@ pub const MeterProvider = struct {
             .allocator = alloc,
             .meters = .empty,
             .readers = .empty,
+            .views = .empty,
         };
 
         return provider;
@@ -65,6 +67,7 @@ pub const MeterProvider = struct {
             .allocator = gpa,
             .meters = .empty,
             .readers = .empty,
+            .views = .empty,
         };
 
         return provider;
@@ -80,6 +83,7 @@ pub const MeterProvider = struct {
         }
         self.meters.deinit(self.allocator);
         self.readers.deinit(self.allocator);
+        self.views.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -106,6 +110,42 @@ pub const MeterProvider = struct {
         }
         m.meterProvider = self;
         try self.readers.append(self.allocator, m);
+    }
+
+    /// Register a view with this meter provider
+    pub fn addView(self: *Self, new_view: view.View) !void {
+        try self.views.append(self.allocator, new_view);
+    }
+
+    /// Find the view that matches the given instrument and meter scope
+    /// Returns the first matching view, or null if no view matches
+    pub fn findView(self: *Self, instrument: *const Instrument, scope: *const InstrumentationScope) ?*view.View {
+        for (self.views.items) |*v| {
+            if (v.matches(instrument, scope)) {
+                return v;
+            }
+        }
+        return null;
+    }
+
+    /// Get the aggregation to use for the given instrument and meter scope
+    /// Uses the view system to determine the appropriate aggregation
+    pub fn getAggregation(self: *Self, instrument: *const Instrument, scope: *const InstrumentationScope) view.Aggregation {
+        if (self.findView(instrument, scope)) |v| {
+            return v.aggregation;
+        }
+        // No view matches, use default aggregation
+        return view.DefaultAggregation(instrument.kind);
+    }
+
+    /// Get the temporality to use for the given instrument and meter scope
+    /// Uses the view system to determine the appropriate temporality
+    pub fn getTemporality(self: *Self, instrument: *const Instrument, scope: *const InstrumentationScope) view.Temporality {
+        if (self.findView(instrument, scope)) |v| {
+            return v.temporality;
+        }
+        // No view matches, use default temporality
+        return view.DefaultTemporality(instrument.kind);
     }
 };
 
@@ -516,13 +556,13 @@ pub const AggregatedMetrics = struct {
                 .exponential_histogram => null,
                 .int => blk: {
                     const config = aggregation_type.ExplicitBucketHistogram;
-                    const buckets = config.buckets orelse &[_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
+                    const buckets = config.buckets;
                     const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, buckets, config.record_min_max);
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
                 .double => blk: {
                     const config = aggregation_type.ExplicitBucketHistogram;
-                    const buckets = config.buckets orelse &[_]f64{ 0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000 };
+                    const buckets = config.buckets;
                     const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, buckets, config.record_min_max);
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
@@ -567,7 +607,8 @@ pub const AggregatedMetrics = struct {
     /// Fetch the aggreagted metrics from the meter.
     /// Each instrument is an entry of the slice.
     /// Caller owns the returned memory and it should be freed using the AggregatedMetrics allocator.
-    pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, aggregationBy: view.AggregationSelector) ![]Measurements {
+    /// If aggregation_override is provided, it takes precedence over the view system.
+    pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, views: []const view.View, aggregation_override: ?view.AggregationSelector) ![]Measurements {
         meter.mx.lock();
         defer meter.mx.unlock();
 
@@ -577,7 +618,14 @@ pub const AggregatedMetrics = struct {
         while (iter.next()) |instr| {
             // Get the data points from the instrument and reset their state,
             const data_points: MeasurementsData = try instr.*.getInstrumentsData(allocator);
-            const aggregated_data = try aggregate(allocator, data_points, aggregationBy(instr.*.kind));
+
+            // Determine aggregation: override takes precedence over view system
+            const aggregation_type = if (aggregation_override) |override_fn|
+                override_fn(instr.*.kind)
+            else
+                aggregationForViews(views, instr.*, &meter.scope);
+
+            const aggregated_data = try aggregate(allocator, data_points, aggregation_type);
             // then fill the result with the aggregated data points
             // only if there are data points.
             if (aggregated_data) |agg| {
@@ -595,6 +643,17 @@ pub const AggregatedMetrics = struct {
             }
         }
         return try results.toOwnedSlice();
+    }
+
+    // Get the aggregation to use for the given instrument and meter scope from a views slice.
+    // Uses the view system to determine the appropriate aggregation.
+    fn aggregationForViews(views: []const view.View, instrument: *const Instrument, scope: *const InstrumentationScope) view.Aggregation {
+        for (views) |*v| {
+            if (v.matches(instrument, scope)) {
+                return v.aggregation;
+            }
+        }
+        return view.DefaultAggregation(instrument.kind);
     }
 };
 
@@ -671,7 +730,7 @@ test "aggregated metrics fetch to owned slice" {
     try counter.add(1, .{});
     try counter.add(3, .{});
 
-    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
     defer {
         for (result) |m| {
             var data = m;
@@ -696,7 +755,7 @@ test "aggregated metrics do not duplicate data points" {
     try counter.add(1, .{});
     try counter.add(3, .{});
 
-    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
     defer {
         for (result) |m| {
             var data = m;
@@ -708,7 +767,7 @@ test "aggregated metrics do not duplicate data points" {
     try std.testing.expectEqual(1, result.len);
     try std.testing.expectEqual(1, result[0].data.int.len);
 
-    const result_second = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    const result_second = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
     defer std.testing.allocator.free(result_second);
 
     std.testing.expectEqual(0, result_second.len) catch |err| {
@@ -717,7 +776,7 @@ test "aggregated metrics do not duplicate data points" {
     };
 }
 
-test "aggregatedmetrics have timestamps" {
+test "aggregated metrics have timestamps" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
@@ -726,7 +785,7 @@ test "aggregatedmetrics have timestamps" {
     try counter.add(1, .{});
     try counter.add(3, .{});
 
-    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, view.DefaultAggregation);
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
     defer {
         for (result) |m| {
             var data = m;
@@ -739,4 +798,98 @@ test "aggregatedmetrics have timestamps" {
     try std.testing.expectEqual(4, result[0].data.int[0].value);
     try std.testing.expect(result[0].data.int[0].timestamps.?.start_time_ns.? > 0);
     try std.testing.expect(result[0].data.int[0].timestamps.?.time_ns > 0);
+}
+
+test "aggregated metrics with custom views" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    var counter = try meter.createCounter(u64, .{ .name = "test_counter" });
+    try counter.add(1, .{});
+
+    // Test with empty views slice (should use default aggregation)
+    const empty_views: []const view.View = &[_]view.View{};
+    const result_no_views = try AggregatedMetrics.fetch(std.testing.allocator, meter, empty_views, null);
+    defer {
+        for (result_no_views) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result_no_views);
+    }
+    try std.testing.expectEqual(1, result_no_views.len);
+    try std.testing.expectEqual(1, result_no_views[0].data.int[0].value);
+
+    // Create a view that drops this specific metric
+    try mp.addView(view.View{
+        .instrument_selector = view.InstrumentSelector{
+            .name = "test_counter",
+        },
+        .aggregation = .Drop,
+        .temporality = .Cumulative,
+    });
+
+    // Test with views from MeterProvider (should drop metric)
+    const result_with_views = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
+    defer std.testing.allocator.free(result_with_views);
+    try std.testing.expectEqual(0, result_with_views.len);
+}
+
+test "meter provider view system" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    // Create a view that matches histograms and uses explicit bucket aggregation
+    const histogram_view = view.View{
+        .instrument_selector = .{ .kind = .Histogram },
+        .aggregation = .{ .ExplicitBucketHistogram = .{ .buckets = &.{ 0.1, 1.0, 10.0 } } },
+        .temporality = .Cumulative,
+    };
+
+    try mp.addView(histogram_view);
+
+    const meter = try mp.getMeter(.{ .name = "test" });
+
+    // Create real instruments through the meter (proper way)
+    var histogram = try meter.createHistogram(f64, .{ .name = "test-histogram" });
+    var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+
+    // Get the underlying instruments from the meter's registry
+    var hist_instr: ?*Instrument = null;
+    var counter_instr: ?*Instrument = null;
+
+    // Find the instruments in the meter's registry
+    var iter = meter.instruments.iterator();
+    while (iter.next()) |entry| {
+        const instr = entry.value_ptr.*;
+        if (std.mem.eql(u8, instr.opts.name, "test-histogram")) {
+            hist_instr = instr;
+        } else if (std.mem.eql(u8, instr.opts.name, "test-counter")) {
+            counter_instr = instr;
+        }
+    }
+
+    try std.testing.expect(hist_instr != null);
+    try std.testing.expect(counter_instr != null);
+
+    // The histogram should get the custom aggregation from the view
+    const hist_aggregation = mp.getAggregation(hist_instr.?, &meter.scope);
+    try std.testing.expectEqual(view.AggregationType.ExplicitBucketHistogram, hist_aggregation.getType());
+    try std.testing.expectEqual(@as(usize, 3), hist_aggregation.ExplicitBucketHistogram.buckets.len);
+
+    // The counter should get the default aggregation (no view matches)
+    const counter_aggregation = mp.getAggregation(counter_instr.?, &meter.scope);
+    try std.testing.expectEqual(view.AggregationType.Sum, counter_aggregation.getType());
+
+    // Test temporality as well
+    const hist_temporality = mp.getTemporality(hist_instr.?, &meter.scope);
+    try std.testing.expectEqual(view.Temporality.Cumulative, hist_temporality);
+
+    const counter_temporality = mp.getTemporality(counter_instr.?, &meter.scope);
+    try std.testing.expectEqual(view.Temporality.Cumulative, counter_temporality); // Default for counters
+
+    // Verify the instruments work
+    try histogram.record(5.0, .{});
+    try counter.add(1, .{});
 }

@@ -332,7 +332,7 @@ test "metric exporter builder stdout" {
     );
     defer {
         metric_exporter.stdout.deinit();
-        metric_exporter.exporter.shutdown();
+        // Note: Don't call shutdown here - the MetricReader will handle it
     }
 
     const metric_reader = try MetricReader.init(std.testing.allocator, metric_exporter.exporter);
