@@ -116,37 +116,6 @@ pub const MeterProvider = struct {
     pub fn addView(self: *Self, new_view: view.View) !void {
         try self.views.append(self.allocator, new_view);
     }
-
-    /// Find the view that matches the given instrument and meter scope
-    /// Returns the first matching view, or null if no view matches
-    pub fn findView(self: *Self, instrument: *const Instrument, scope: *const InstrumentationScope) ?*view.View {
-        for (self.views.items) |*v| {
-            if (v.matches(instrument, scope)) {
-                return v;
-            }
-        }
-        return null;
-    }
-
-    /// Get the aggregation to use for the given instrument and meter scope
-    /// Uses the view system to determine the appropriate aggregation
-    pub fn getAggregation(self: *Self, instrument: *const Instrument, scope: *const InstrumentationScope) view.Aggregation {
-        if (self.findView(instrument, scope)) |v| {
-            return v.aggregation;
-        }
-        // No view matches, use default aggregation
-        return view.DefaultAggregation(instrument.kind);
-    }
-
-    /// Get the temporality to use for the given instrument and meter scope
-    /// Uses the view system to determine the appropriate temporality
-    pub fn getTemporality(self: *Self, instrument: *const Instrument, scope: *const InstrumentationScope) view.Temporality {
-        if (self.findView(instrument, scope)) |v| {
-            return v.temporality;
-        }
-        // No view matches, use default temporality
-        return view.DefaultTemporality(instrument.kind);
-    }
 };
 
 /// Meter is a named instance that is used to record measurements.
@@ -473,6 +442,7 @@ test "meter provider with arena allocator" {
 const view = @import("../../sdk/metrics/view.zig");
 
 /// AggregatedMetrics is a collection of metrics that have been aggregated using the
+/// MeterProvider's view configured by users or falling back to the
 /// MetricReader's temporality and aggregation functions.
 pub const AggregatedMetrics = struct {
     fn sum(comptime T: type, data_points: []DataPoint(T), current_time: u64, allocator: std.mem.Allocator) ![]DataPoint(T) {
@@ -623,7 +593,7 @@ pub const AggregatedMetrics = struct {
             const aggregation_type = if (aggregation_override) |override_fn|
                 override_fn(instr.*.kind)
             else
-                aggregationForViews(views, instr.*, &meter.scope);
+                view.aggregationForViews(views, instr.*, &meter.scope);
 
             const aggregated_data = try aggregate(allocator, data_points, aggregation_type);
             // then fill the result with the aggregated data points
@@ -643,17 +613,6 @@ pub const AggregatedMetrics = struct {
             }
         }
         return try results.toOwnedSlice();
-    }
-
-    // Get the aggregation to use for the given instrument and meter scope from a views slice.
-    // Uses the view system to determine the appropriate aggregation.
-    fn aggregationForViews(views: []const view.View, instrument: *const Instrument, scope: *const InstrumentationScope) view.Aggregation {
-        for (views) |*v| {
-            if (v.matches(instrument, scope)) {
-                return v.aggregation;
-            }
-        }
-        return view.DefaultAggregation(instrument.kind);
     }
 };
 
@@ -836,7 +795,7 @@ test "aggregated metrics with custom views" {
     try std.testing.expectEqual(0, result_with_views.len);
 }
 
-test "meter provider view system" {
+test "view associated with meter provider" {
     const mp = try MeterProvider.init(std.testing.allocator);
     defer mp.shutdown();
 
@@ -874,22 +833,72 @@ test "meter provider view system" {
     try std.testing.expect(counter_instr != null);
 
     // The histogram should get the custom aggregation from the view
-    const hist_aggregation = mp.getAggregation(hist_instr.?, &meter.scope);
+    const hist_aggregation = view.aggregationForViews(mp.views.items, hist_instr.?, &meter.scope);
     try std.testing.expectEqual(view.AggregationType.ExplicitBucketHistogram, hist_aggregation.getType());
     try std.testing.expectEqual(@as(usize, 3), hist_aggregation.ExplicitBucketHistogram.buckets.len);
 
     // The counter should get the default aggregation (no view matches)
-    const counter_aggregation = mp.getAggregation(counter_instr.?, &meter.scope);
+    const counter_aggregation = view.aggregationForViews(mp.views.items, counter_instr.?, &meter.scope);
     try std.testing.expectEqual(view.AggregationType.Sum, counter_aggregation.getType());
 
     // Test temporality as well
-    const hist_temporality = mp.getTemporality(hist_instr.?, &meter.scope);
+    const hist_temporality = view.temporalityForViews(mp.views.items, hist_instr.?, &meter.scope);
     try std.testing.expectEqual(view.Temporality.Cumulative, hist_temporality);
 
-    const counter_temporality = mp.getTemporality(counter_instr.?, &meter.scope);
+    const counter_temporality = view.temporalityForViews(mp.views.items, counter_instr.?, &meter.scope);
     try std.testing.expectEqual(view.Temporality.Cumulative, counter_temporality); // Default for counters
 
     // Verify the instruments work
     try histogram.record(5.0, .{});
     try counter.add(1, .{});
+}
+
+test "view is additive processing with conflicts" {
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    var histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });
+    try histogram.record(1.0, .{});
+
+    // Add first view with specific aggregation
+    try mp.addView(view.View{
+        .instrument_selector = view.InstrumentSelector{
+            .name = "test_histogram",
+        },
+        .aggregation = .{ .ExplicitBucketHistogram = .{
+            .buckets = &[_]f64{ 1.0, 2.0, 5.0 },
+        } },
+        .temporality = .Cumulative,
+        .name = "renamed_histogram",
+    });
+
+    // Add second view with conflicting aggregation (should log warning)
+    try mp.addView(view.View{
+        .instrument_selector = view.InstrumentSelector{
+            .name = "test_histogram",
+        },
+        .aggregation = .{
+            .ExplicitBucketHistogram = .{
+                .buckets = &[_]f64{ 0.5, 1.0, 2.0, 5.0, 10.0 }, // Different buckets - should cause conflict
+            },
+        },
+        .temporality = .Delta, // Different temporality - should cause conflict
+        .name = "another_name", // Different name - should cause conflict
+    });
+
+    // Test that the last view's configuration is used (additive behavior)
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
+    defer {
+        for (result) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result);
+    }
+
+    // Should still have 1 histogram (not dropped)
+    try std.testing.expectEqual(1, result.len);
+    // Data should be present
+    try std.testing.expect(result[0].data.histogram.len > 0);
 }

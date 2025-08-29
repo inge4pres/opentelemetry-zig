@@ -1,7 +1,10 @@
 const std = @import("std");
 
+const log = std.log.scoped(.view);
+
 const pbmetrics = @import("opentelemetry-proto").metrics_v1;
 const instrument = @import("../../api/metrics/instrument.zig");
+const Instrument = instrument.Instrument;
 const spec = @import("../../api/metrics/spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
@@ -226,3 +229,118 @@ pub fn TemporalityCumulative(_: instrument.Kind) Temporality {
 pub fn TemporalityDelta(_: instrument.Kind) Temporality {
     return .Delta;
 }
+
+/// Helper struct to accumulate view configurations additively
+pub const CombinedViewConfig = struct {
+    aggregation: ?Aggregation = null,
+    temporality: ?Temporality = null,
+    name: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    attribute_filter: ?AttributeFilter = null,
+    default_kind: instrument.Kind,
+
+    const Self = @This();
+
+    pub fn init(kind: instrument.Kind) Self {
+        return Self{
+            .default_kind = kind,
+        };
+    }
+
+    pub fn applyView(self: *Self, v: *const View) void {
+        // Apply aggregation with conflict detection
+        if (self.aggregation) |existing_agg| {
+            if (!aggregationEqual(existing_agg, v.aggregation)) {
+                log.warn("View aggregation conflict detected: existing={}, new={}", .{ existing_agg, v.aggregation });
+            }
+        }
+        self.aggregation = v.aggregation;
+
+        // Apply temporality with conflict detection
+        if (self.temporality) |existing_temp| {
+            if (existing_temp != v.temporality) {
+                log.warn("View temporality conflict detected: existing={}, new={}", .{ existing_temp, v.temporality });
+            }
+        }
+        self.temporality = v.temporality;
+
+        // Apply name override (last one wins)
+        if (v.name) |new_name| {
+            if (self.name) |existing_name| {
+                if (!std.mem.eql(u8, existing_name, new_name)) {
+                    log.warn("View name conflict detected: existing={s}, new={s}", .{ existing_name, new_name });
+                }
+            }
+            self.name = new_name;
+        }
+
+        // Apply description override (longer one wins)
+        if (v.description) |new_desc| {
+            if (self.description) |existing_desc| {
+                if (new_desc.len > existing_desc.len) self.description = new_desc;
+            } else self.description = new_desc;
+        }
+
+        // Apply attribute filter (last one wins, could be enhanced to merge filters)
+        if (v.attribute_filter) |new_filter| {
+            if (self.attribute_filter != null) {
+                log.warn("View attribute filter conflict detected: overriding existing filter", .{});
+            }
+            self.attribute_filter = new_filter;
+        }
+    }
+
+    pub fn combinedAggregation(self: Self) Aggregation {
+        return self.aggregation orelse DefaultAggregation(self.default_kind);
+    }
+
+    pub fn combinedTemporality(self: Self) Temporality {
+        return self.temporality orelse DefaultTemporality(self.default_kind);
+    }
+
+    fn aggregationEqual(a: Aggregation, b: Aggregation) bool {
+        return switch (a) {
+            .Drop => b == .Drop,
+            .Sum => b == .Sum,
+            .LastValue => b == .LastValue,
+            .ExplicitBucketHistogram => |aconfig| switch (b) {
+                .ExplicitBucketHistogram => |bconfig| std.mem.eql(f64, aconfig.buckets, bconfig.buckets) and aconfig.record_min_max == bconfig.record_min_max,
+                else => false,
+            },
+            .ExponentialBucketHistogram => |aconfig| switch (b) {
+                .ExponentialBucketHistogram => |bconfig| aconfig.max_scale == bconfig.max_scale and aconfig.max_size == bconfig.max_size and aconfig.record_min_max == bconfig.record_min_max,
+                else => false,
+            },
+        };
+    }
+};
+
+/// Get the aggregation to use for the given instrument and meter scope from a views slice.
+/// Uses the view system to determine the appropriate aggregation, applying all matching views additively.
+pub fn aggregationForViews(views: []const View, instr: *const Instrument, scope: *const InstrumentationScope) Aggregation {
+    var combined_config = CombinedViewConfig.init(instr.kind);
+
+    for (views) |*v| {
+        if (v.matches(instr, scope)) {
+            combined_config.applyView(v);
+        }
+    }
+
+    return combined_config.combinedAggregation();
+}
+
+/// Get the temporality to use for the given instrument and meter scope from a views slice.
+/// Uses the view system to determine the appropriate temporality, applying all matching views additively.
+pub fn temporalityForViews(views: []const View, instr: *const Instrument, scope: *const InstrumentationScope) Temporality {
+    var combined_config = CombinedViewConfig.init(instr.kind);
+
+    for (views) |*v| {
+        if (v.matches(instr, scope)) {
+            combined_config.applyView(v);
+        }
+    }
+
+    return combined_config.combinedTemporality();
+}
+
+const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
