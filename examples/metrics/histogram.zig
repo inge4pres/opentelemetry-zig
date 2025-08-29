@@ -14,7 +14,8 @@ const Kind = sdk.Kind;
 /// response sizes, or any metric where you want to understand the distribution pattern.
 pub fn main() !void {
     // Allocate memory for the metrics SDK
-    const buf = try std.heap.page_allocator.alloc(u8, 4 << 20);
+    const METRICS_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB buffer for metrics collection
+    const buf = try std.heap.page_allocator.alloc(u8, METRICS_BUFFER_SIZE);
     var fba = std.heap.FixedBufferAllocator.init(buf);
 
     // Create meter provider
