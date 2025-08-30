@@ -41,6 +41,8 @@ pub const MeterProvider = struct {
     readers: std.ArrayListUnmanaged(*MetricReader),
     views: std.ArrayListUnmanaged(view.View),
 
+    mx: std.Thread.Mutex = std.Thread.Mutex{},
+
     const Self = @This();
 
     /// Create a new custom meter provider, using the specified allocator.
@@ -76,6 +78,8 @@ pub const MeterProvider = struct {
     /// Delete the meter provider and free up the memory allocated for it,
     /// as well as its owned Meters.
     pub fn shutdown(self: *Self) void {
+        self.mx.lock();
+
         // TODO call shutdown on all readers.
         var meters = self.meters.valueIterator();
         while (meters.next()) |m| {
@@ -84,6 +88,9 @@ pub const MeterProvider = struct {
         self.meters.deinit(self.allocator);
         self.readers.deinit(self.allocator);
         self.views.deinit(self.allocator);
+
+        // Unlock before destroying the struct
+        self.mx.unlock();
         self.allocator.destroy(self);
     }
 
@@ -93,6 +100,9 @@ pub const MeterProvider = struct {
     /// If a meter with the same name already exists, it will be returned.
     /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#get-a-meter
     pub fn getMeter(self: *Self, scope: InstrumentationScope) !*Meter {
+        self.mx.lock();
+        defer self.mx.unlock();
+
         const i = Meter{
             .scope = scope,
             .instruments = .empty,
@@ -105,6 +115,9 @@ pub const MeterProvider = struct {
     }
 
     pub fn addReader(self: *Self, m: *MetricReader) !void {
+        self.mx.lock();
+        defer self.mx.unlock();
+
         if (m.meterProvider != null) {
             return spec.ResourceError.MetricReaderAlreadyAttached;
         }
@@ -114,6 +127,9 @@ pub const MeterProvider = struct {
 
     /// Register a view with this meter provider
     pub fn addView(self: *Self, new_view: view.View) !void {
+        self.mx.lock();
+        defer self.mx.unlock();
+
         try self.views.append(self.allocator, new_view);
     }
 };
