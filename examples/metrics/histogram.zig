@@ -139,7 +139,7 @@ fn explicitBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterProvid
     }
 }
 
-fn exponentialBucketHistogramExample(_: std.mem.Allocator, mp: *MeterProvider, meter: anytype) !void {
+fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterProvider, meter: anytype) !void {
     // NOTE: Exponential bucket histogram aggregation is currently experiencing memory issues
     // in this SDK implementation due to allocator usage in ExponentialHistogramState.
     // This example demonstrates the API but does not actually collect data to avoid crashes.
@@ -155,6 +155,16 @@ fn exponentialBucketHistogramExample(_: std.mem.Allocator, mp: *MeterProvider, m
 
     // Register the view with the meter provider
     try mp.addView(exponential_view);
+
+    // Create an in-memory exporter (no aggregation selector needed - views handle this)
+    const me = try sdk.MetricExporter.InMemory(allocator, null, null);
+    defer me.in_memory.deinit();
+
+    const mr = try sdk.MetricReader.init(allocator, me.exporter);
+    defer mr.shutdown();
+
+    // Register the metric reader to the meter provider
+    try mp.addReader(mr);
 
     // Create a histogram for memory usage measurements (exponential buckets work well for memory data)
     const memory_usage_histogram = try meter.createHistogram(u32, .{
@@ -175,8 +185,7 @@ fn exponentialBucketHistogramExample(_: std.mem.Allocator, mp: *MeterProvider, m
     try memory_usage_histogram.record(1048576, .{ "component", @as([]const u8, "cache") });
 
     std.debug.print("Values recorded successfully. Collection would produce exponential histogram data.\n", .{});
-    std.debug.print("(Skipping actual collection due to current memory allocation issue)\n", .{});
 
-    // Note: We don't register the reader with the meter provider or collect data
-    // because that's where the memory error occurs. The API usage above is correct.
+    // Collect the metrics
+    try mr.collect();
 }
