@@ -9,13 +9,13 @@ const context = @import("../context.zig");
 pub const SpanContext = struct {
     trace_id: trace.TraceID,
     span_id: trace.SpanID,
-    trace_flags: u8,
+    trace_flags: trace.TraceFlags,
     trace_state: TraceState,
     is_remote: bool,
 
     const Self = @This();
 
-    pub fn init(trace_id: trace.TraceID, span_id: trace.SpanID, trace_flags: u8, trace_state: TraceState, is_remote: bool) Self {
+    pub fn init(trace_id: trace.TraceID, span_id: trace.SpanID, trace_flags: trace.TraceFlags, trace_state: TraceState, is_remote: bool) Self {
         return Self{
             .trace_id = trace_id,
             .span_id = span_id,
@@ -46,7 +46,7 @@ pub const SpanContext = struct {
     }
 
     /// Returns the trace flags
-    pub fn getTraceFlags(self: Self) u8 {
+    pub fn getTraceFlags(self: Self) trace.TraceFlags {
         return self.trace_flags;
     }
 
@@ -225,7 +225,32 @@ pub const Span = struct {
         };
     }
 
+    /// Create a non-recording Span from a SpanContext
+    /// This is used for wrapping a SpanContext to expose it as a Span interface
+    pub fn fromSpanContext(span_context: SpanContext) Self {
+        // Use a dummy allocator since non-recording spans don't allocate
+        var dummy_allocator = std.heap.FixedBufferAllocator.init(&[_]u8{});
+        return Self{
+            .span_context = span_context,
+            .name = "", // Non-recording spans don't have meaningful names
+            .kind = .Internal,
+            .start_time_unix_nano = 0,
+            .end_time_unix_nano = 0,
+            .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(dummy_allocator.allocator()),
+            .events = std.ArrayList(Event).init(dummy_allocator.allocator()),
+            .links = std.ArrayList(Link).init(dummy_allocator.allocator()),
+            .status = null,
+            .is_recording = false, // Non-recording spans are never recording
+            .allocator = dummy_allocator.allocator(),
+        };
+    }
+
     pub fn deinit(self: *Self) void {
+        // Don't try to deinit if this is a non-recording span with a dummy allocator
+        if (!self.is_recording and self.attributes.count() == 0 and self.events.items.len == 0 and self.links.items.len == 0) {
+            return;
+        }
+
         self.attributes.deinit();
         for (self.events.items) |*event| {
             event.deinit();
@@ -392,7 +417,8 @@ test "SpanContext creation and validation" {
     var trace_state = TraceState.init(allocator);
     defer trace_state.deinit();
 
-    const span_context = SpanContext.init(trace_id, span_id, 0, trace_state, false);
+    const trace_flags = @import("../trace.zig").TraceFlags.default();
+    const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
 
     try std.testing.expect(span_context.isValid());
     try std.testing.expect(!span_context.isRemote());
@@ -408,7 +434,8 @@ test "Span operations" {
     var trace_state = TraceState.init(allocator);
     defer trace_state.deinit();
 
-    const span_context = SpanContext.init(trace_id, span_id, 0, trace_state, false);
+    const trace_flags = @import("../trace.zig").TraceFlags.default();
+    const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
     var span = Span.init(allocator, span_context, "test-span", .Server);
     defer span.deinit();
 

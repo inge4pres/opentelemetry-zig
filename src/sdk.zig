@@ -15,6 +15,10 @@ test {
     _ = @import("api.zig");
 }
 
+// Export the entire API module for easy access
+pub const api = @import("api.zig");
+
+// Direct exports for convenience
 pub const MeterProvider = @import("api/metrics/meter.zig").MeterProvider;
 pub const MetricReader = @import("sdk/metrics/reader.zig").MetricReader;
 pub const MetricExporter = @import("sdk/metrics/exporter.zig").MetricExporter;
@@ -23,19 +27,12 @@ pub const StdoutExporter = @import("sdk/metrics/exporters/stdout.zig").StdoutExp
 pub const OTLPExporter = @import("sdk/metrics/exporters/otlp.zig").OTLPExporter;
 pub const otlp = @import("otlp.zig");
 
+// Attribute system exports
+pub const Attribute = @import("attributes.zig").Attribute;
+pub const Attributes = @import("attributes.zig").Attributes;
+
 pub const Counter = @import("api/metrics/instrument.zig").Counter;
 pub const UpDownCounter = @import("api/metrics/instrument.zig").Counter;
 pub const Histogram = @import("api/metrics/instrument.zig").Histogram;
 pub const Gauge = @import("api/metrics/instrument.zig").Gauge;
 pub const View = @import("sdk/metrics/view.zig");
-
-pub const Context = @import("api/context.zig").Context;
-pub const ContextKey = @import("api/context.zig").ContextKey;
-pub const Token = @import("api/context.zig").Token;
-pub const DetachError = @import("api/context.zig").DetachError;
-pub const createKey = @import("api/context.zig").createKey;
-pub const Key = @import("api/context.zig").Key;
-pub const getCurrentContext = @import("api/context.zig").getCurrentContext;
-pub const attachContext = @import("api/context.zig").attachContext;
-pub const detachContext = @import("api/context.zig").detachContext;
-pub const cleanupContext = @import("api/context.zig").cleanup;

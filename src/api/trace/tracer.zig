@@ -111,14 +111,47 @@ pub const Tracer = struct {
         // Use tracer's scope for proper tracer implementation
         _ = self.scope; // TODO: use scope for proper tracer implementation
 
-        // For this basic implementation, create a simple span context with dummy IDs
-        // In a real implementation, this would use proper ID generation
-        const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
-        const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
-        const trace_state = trace.TraceState.init(allocator);
+        var parent_span_context: ?trace.SpanContext = null;
+        var trace_id: trace.TraceID = undefined;
 
-        const span_context = trace.SpanContext.init(trace_id, span_id, 0, // trace_flags
-            trace_state, false // is_remote
+        // Determine parent context
+        if (options.parent_context) |parent_ctx| {
+            parent_span_context = trace.extractSpanContext(parent_ctx);
+        }
+
+        // Determine trace ID based on parent
+        if (parent_span_context) |parent_sc| {
+            trace_id = parent_sc.trace_id;
+        } else {
+            // Generate new trace ID for root span - in real implementation use proper ID generator
+            var rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))));
+            var trace_bytes: [16]u8 = undefined;
+            rng.random().bytes(&trace_bytes);
+            // Ensure at least one byte is non-zero
+            if (trace.TraceID.init(trace_bytes).isValid() == false) {
+                trace_bytes[0] = 1;
+            }
+            trace_id = trace.TraceID.init(trace_bytes);
+        }
+
+        // Generate span ID - in real implementation use proper ID generator
+        var rng2 = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp() + 1)))));
+        var span_bytes: [8]u8 = undefined;
+        rng2.random().bytes(&span_bytes);
+        // Ensure at least one byte is non-zero
+        if (trace.SpanID.init(span_bytes).isValid() == false) {
+            span_bytes[0] = 1;
+        }
+        const span_id = trace.SpanID.init(span_bytes); // Create trace state - inherit from parent if available
+        var trace_state: trace.TraceState = undefined;
+        if (parent_span_context) |parent_sc| {
+            trace_state = parent_sc.trace_state;
+        } else {
+            trace_state = trace.TraceState.init(allocator);
+        }
+
+        const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), // trace_flags - TODO: implement proper sampling
+            trace_state, false // is_remote - spans created locally are not remote
         );
 
         var span = trace.Span.init(allocator, span_context, name, options.kind);
