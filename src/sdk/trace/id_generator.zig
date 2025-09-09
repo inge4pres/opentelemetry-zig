@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const trace = @import("../../api/trace.zig");
+
 /// IDGenerator is the interface that generates traceID/spanID.
 pub const IDGenerator = struct {
     ptr: *anyopaque,
@@ -29,7 +30,7 @@ pub const TraceSpanID = struct {
     span_id: trace.SpanID,
 };
 
-/// RandomIDGenerator generates traceID/spanID randomly.
+/// An implementation of IDGenerator that generates traceID/spanID randomly.
 pub const RandomIDGenerator = struct {
     const Self = @This();
 

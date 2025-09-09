@@ -82,12 +82,12 @@ pub const StdoutExporter = GenericWriterExporter(std.io.Writer(std.fs.File, std.
 
 /// InmemoryExporter exports spans to in-memory buffer.
 /// it is designed for testing GenericWriterExporter.
-pub const InmemoryExporter = GenericWriterExporter(std.ArrayList(u8).Writer);
+pub const InMemoryExporter = GenericWriterExporter(std.ArrayList(u8).Writer);
 
 test "GenericWriterExporter" {
     var out_buf = std.ArrayList(u8).init(std.testing.allocator);
     defer out_buf.deinit();
-    var inmemory_exporter = InmemoryExporter.init(out_buf.writer());
+    var inmemory_exporter = InMemoryExporter.init(out_buf.writer());
     var exporter = inmemory_exporter.asSpanExporter();
 
     // Create a proper span for testing
@@ -105,5 +105,10 @@ test "GenericWriterExporter" {
 
     // Since JSON output can be complex, just check that something was written
     try std.testing.expect(out_buf.items.len > 0);
-    std.debug.print("Exported JSON: {s}\n", .{out_buf.items});
+
+    // Assert that the output contains expected span data
+    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "test-span") != null);
+    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "Internal") != null);
+    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "trace_id") != null);
+    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "span_id") != null);
 }
