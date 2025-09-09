@@ -2,25 +2,23 @@ const std = @import("std");
 
 const trace = @import("../../api/trace.zig");
 
-/// IDGenerator is the interface that generates traceID/spanID.
-pub const IDGenerator = struct {
-    ptr: *anyopaque,
-    vtable: *const VTable,
+/// Compile-time dispatch to generate traceID/spanID.
+pub const IDGenerator = union(enum) {
+    Random: RandomIDGenerator,
+    TimeBased: TimeBasedIDGenerator,
 
     const Self = @This();
 
-    /// VTable defines the methods that the SpanExporter's instance must implement.
-    pub const VTable = struct {
-        newIDsFn: *const fn (ctx: *anyopaque) TraceSpanID,
-        newSpanIDFn: *const fn (ctx: *anyopaque, trace_id: trace.TraceID) trace.SpanID,
-    };
-
     pub fn newIDs(self: Self) TraceSpanID {
-        return self.vtable.newIDsFn(self.ptr);
+        return switch (self) {
+            inline else => |gen| gen.newIDs(),
+        };
     }
 
     pub fn newSpanID(self: Self, trace_id: trace.TraceID) trace.SpanID {
-        return self.vtable.newSpanIDFn(self.ptr, trace_id);
+        return switch (self) {
+            inline else => |gen| gen.newSpanID(trace_id),
+        };
     }
 };
 
@@ -42,19 +40,7 @@ pub const RandomIDGenerator = struct {
         };
     }
 
-    pub fn asIDGenerator(self: *Self) IDGenerator {
-        return .{
-            .ptr = self,
-            .vtable = &.{
-                .newIDsFn = newIDs,
-                .newSpanIDFn = newSpanID,
-            },
-        };
-    }
-
-    pub fn newIDs(ctx: *anyopaque) TraceSpanID {
-        const self: *Self = @ptrCast(@alignCast(ctx));
-
+    pub fn newIDs(self: Self) TraceSpanID {
         var trace_span_id = TraceSpanID{
             .trace_id = trace.TraceID.init(undefined),
             .span_id = trace.SpanID.init(undefined),
@@ -84,9 +70,7 @@ pub const RandomIDGenerator = struct {
         return trace_span_id;
     }
 
-    pub fn newSpanID(ctx: *anyopaque, _: trace.TraceID) trace.SpanID {
-        const self: *Self = @ptrCast(@alignCast(ctx));
-
+    pub fn newSpanID(self: Self, _: trace.TraceID) trace.SpanID {
         while (true) {
             var raw_span_id: [8]u8 = undefined;
             self.random.bytes(raw_span_id[0..raw_span_id.len]);
@@ -96,8 +80,6 @@ pub const RandomIDGenerator = struct {
                 return span_id;
             }
         }
-
-        unreachable;
     }
 };
 
@@ -105,12 +87,9 @@ test "RandomIDGenerator newIDs" {
     const seed = 0;
     var default_prng = std.Random.DefaultPrng.init(seed);
     var random_generator = RandomIDGenerator.init(default_prng.random());
-    var generator = random_generator.asIDGenerator();
 
-    const n = 1000;
-
-    for (0..n) |_| {
-        const trace_span_id = generator.newIDs();
+    for (0..1000) |_| {
+        const trace_span_id = random_generator.newIDs();
 
         try std.testing.expect(trace_span_id.trace_id.isValid());
         try std.testing.expect(trace_span_id.span_id.isValid());
@@ -121,12 +100,58 @@ test "RandomIDGenerator newSpanID" {
     const seed = 0;
     var default_prng = std.Random.DefaultPrng.init(seed);
     var random_generator = RandomIDGenerator.init(default_prng.random());
-    var generator = random_generator.asIDGenerator();
 
-    const n = 1000;
+    for (0..1000) |_| {
+        const span_id = random_generator.newSpanID(trace.TraceID.init(undefined));
 
-    for (0..n) |_| {
-        const span_id = generator.newSpanID(trace.TraceID.init(undefined));
+        try std.testing.expect(span_id.isValid());
+    }
+}
+
+pub const TimeBasedIDGenerator = struct {
+    magic: i64 = 0xDEADBEEF,
+
+    const Self = @This();
+
+    pub fn newIDs(self: Self) TraceSpanID {
+        const timestamp = std.time.nanoTimestamp();
+        const trace_id: i128 = timestamp ^ self.magic;
+        const span_id: i64 = @truncate(timestamp & trace_id);
+        return TraceSpanID{
+            .trace_id = trace.TraceID.init(std.mem.toBytes(trace_id)),
+            .span_id = trace.SpanID.init(std.mem.toBytes(span_id)),
+        };
+    }
+
+    pub fn newSpanID(self: Self, trace_id: trace.TraceID) trace.SpanID {
+        const lower: i64 = @truncate(std.time.nanoTimestamp() ^ self.magic);
+
+        // Mix with trace_id to reduce collision
+        var lower_array = std.mem.toBytes(lower);
+        const trace_origin = trace_id.value[8..];
+        for (4..8) |i| {
+            lower_array[i] ^= trace_origin[i];
+        }
+        return trace.SpanID.init(lower_array);
+    }
+};
+
+test "TimeBasedIDGenerator newIDs" {
+    var time_based_generator = TimeBasedIDGenerator{};
+
+    for (0..1000) |_| {
+        const trace_span_id = time_based_generator.newIDs();
+
+        try std.testing.expect(trace_span_id.trace_id.isValid());
+        try std.testing.expect(trace_span_id.span_id.isValid());
+    }
+}
+
+test "TimeBasedIDGenerator newSpanID" {
+    var time_based_generator = TimeBasedIDGenerator{ .magic = 0xFFFFFFFFFFFF };
+
+    for (0..1000) |_| {
+        const span_id = time_based_generator.newSpanID(trace.TraceID.init(undefined));
 
         try std.testing.expect(span_id.isValid());
     }

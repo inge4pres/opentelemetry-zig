@@ -5,6 +5,8 @@ const SpanProcessor = @import("span_processor.zig").SpanProcessor;
 const IDGenerator = @import("id_generator.zig").IDGenerator;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
+const RandomIDGenerator = @import("id_generator.zig").RandomIDGenerator;
+
 /// SDK TracerProvider that implements the same interface as API TracerProvider but with SDK functionality
 pub const TracerProvider = struct {
     const Self = @This();
@@ -285,10 +287,9 @@ test "TracerProvider basic functionality" {
     // Create ID generator
     const seed = 0;
     var default_prng = std.Random.DefaultPrng.init(seed);
-    var random_generator = @import("id_generator.zig").RandomIDGenerator.init(default_prng.random());
-    const id_generator = random_generator.asIDGenerator();
+    const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, id_generator);
+    var provider = try TracerProvider.init(allocator, IDGenerator{ .Random = random_generator });
     defer provider.shutdown(); // shutdown handles all cleanup including self-destruction
 
     // Get a tracer
@@ -352,10 +353,9 @@ test "TracerProvider with processors" {
     // Create ID generator
     const seed = 0;
     var default_prng = std.Random.DefaultPrng.init(seed);
-    var random_generator = @import("id_generator.zig").RandomIDGenerator.init(default_prng.random());
-    const id_generator = random_generator.asIDGenerator();
+    const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, id_generator);
+    var provider = try TracerProvider.init(allocator, IDGenerator{ .Random = random_generator });
     defer provider.shutdown(); // shutdown handles all cleanup including self-destruction
 
     // Add a mock processor
