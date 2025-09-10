@@ -18,6 +18,9 @@ test {
 // Export the entire API module for easy access
 pub const api = @import("api.zig");
 
+// SDK exports
+pub const trace = @import("sdk/trace.zig");
+
 // Direct exports for convenience
 pub const MeterProvider = @import("api/metrics/meter.zig").MeterProvider;
 pub const MetricReader = @import("sdk/metrics/reader.zig").MetricReader;

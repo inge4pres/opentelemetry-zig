@@ -7,9 +7,24 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Initialize tracer provider with proper resource management
-    var tracer_provider = try sdk.api.trace.TracerProvider.default();
+    // Create SDK components for realistic tracing
+
+    // 1. Create an ID generator for trace and span IDs
+    var prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+    const id_generator = sdk.trace.IDGenerator{
+        .Random = sdk.trace.RandomIDGenerator.init(prng.random()),
+    };
+
+    // 2. Create a tracer provider with the ID generator
+    var tracer_provider = try sdk.trace.TracerProvider.init(allocator, id_generator);
     defer tracer_provider.shutdown();
+
+    // 3. Create a stdout exporter and simple processor for output
+    var stdout_exporter = sdk.trace.StdoutExporter.init(std.io.getStdOut().writer());
+    var simple_processor = sdk.trace.SimpleProcessor.init(allocator, stdout_exporter.asSpanExporter());
+
+    // 4. Add the processor to the provider
+    try tracer_provider.addSpanProcessor(simple_processor.asSpanProcessor());
 
     // Create multiple tracers for different services
     const user_tracer = try tracer_provider.getTracer(.{
@@ -33,7 +48,7 @@ pub fn main() !void {
         .version = "1.0.0",
     });
 
-    std.debug.print("Tracer instances - Same instance returned: {}\n", .{user_tracer == user_tracer_2});
+    std.debug.print("SDK Tracer instances - Same instance returned: {}\n", .{user_tracer == user_tracer_2});
 
     // Create spans with different tracers to simulate different services
     const user_attributes = try sdk.Attributes.from(allocator, .{
@@ -82,7 +97,12 @@ pub fn main() !void {
     try payment_span.addEvent("Payment authorized", null, null);
     try db_span.addEvent("Query executed successfully", null, null);
 
-    std.debug.print("Multiple tracers example completed successfully!\n", .{});
+    // End spans using SDK tracer method for proper processing
+    user_tracer.endSpan(&user_span);
+    payment_tracer.endSpan(&payment_span);
+    database_tracer.endSpan(&db_span);
+
+    std.debug.print("Multiple tracers SDK example completed successfully!\n", .{});
     std.debug.print("- User service tracer: {} (version 1.0.0)\n", .{user_tracer});
     std.debug.print("- Payment service tracer: {} (version 2.1.0)\n", .{payment_tracer});
     std.debug.print("- Database service tracer: {} (version 1.5.0)\n", .{database_tracer});
