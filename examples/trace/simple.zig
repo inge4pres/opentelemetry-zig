@@ -1,5 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
+const trace = sdk.trace;
+const trace_api = sdk.api.trace;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -10,17 +12,17 @@ pub fn main() !void {
 
     // 1. Create an ID generator for trace and span IDs
     var prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
-    const id_generator = sdk.trace.IDGenerator{
-        .Random = sdk.trace.RandomIDGenerator.init(prng.random()),
+    const id_generator = trace.IDGenerator{
+        .Random = trace.RandomIDGenerator.init(prng.random()),
     };
 
     // 2. Create a tracer provider with the ID generator
-    var tracer_provider = try sdk.trace.TracerProvider.init(allocator, id_generator);
+    var tracer_provider = try trace.TracerProvider.init(allocator, id_generator);
     defer tracer_provider.shutdown();
 
     // 3. Create a stdout exporter and simple processor
-    var stdout_exporter = sdk.trace.StdoutExporter.init(std.io.getStdOut().writer());
-    var simple_processor = sdk.trace.SimpleProcessor.init(allocator, stdout_exporter.asSpanExporter());
+    var stdout_exporter = trace.StdOutExporter.init(std.io.getStdOut().writer());
+    var simple_processor = trace.SimpleProcessor.init(allocator, stdout_exporter.asSpanExporter());
 
     // 4. Add the processor to the provider
     try tracer_provider.addSpanProcessor(simple_processor.asSpanProcessor());
@@ -52,7 +54,7 @@ pub fn main() !void {
     try span.addEvent("Processing request", null, event_attributes);
 
     // Set span status
-    span.setStatus(sdk.api.trace.Status.ok());
+    span.setStatus(trace_api.Status.ok());
 
     // Set additional attributes using setAttribute (which takes AttributeValue)
     try span.setAttribute("user.id", .{ .string = "user123" });
