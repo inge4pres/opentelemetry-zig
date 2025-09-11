@@ -67,7 +67,11 @@ pub const TracerProvider = struct {
         defer self.mutex.unlock();
 
         // Create a key for the tracer based on scope
-        const key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ scope.name, scope.version orelse "unknown" });
+        const key = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}:{s}",
+            .{ scope.name, scope.version orelse "unknown" },
+        );
         defer self.allocator.free(key);
 
         if (self.tracers.get(key)) |existing_tracer| {
