@@ -143,6 +143,23 @@ pub fn build(b: *std.Build) !void {
         benchmarks_step.dependOn(&run_metrics_benchmark.step);
     }
 
+    const trace_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", "trace" })), sdk_mod, benchmark_mod, benchmark_debug) catch |err| {
+        std.debug.print("Error building trace benchmarks: {}\n", .{err});
+        return err;
+    };
+    defer b.allocator.free(trace_benchmarks);
+    for (trace_benchmarks) |step| {
+        const run_trace_benchmark = b.addRunArtifact(step);
+
+        // If output file is specified, redirect stderr to file
+        if (benchmark_output) |output_path| {
+            // Set stderr to write to file
+            run_trace_benchmark.setEnvironmentVariable("BENCHMARK_OUTPUT_FILE", output_path);
+        }
+
+        benchmarks_step.dependOn(&run_trace_benchmark.step);
+    }
+
     // Documentation webiste with autodoc
     const install_docs = b.addInstallDirectory(.{
         .source_dir = sdk_lib.getEmittedDocs(),

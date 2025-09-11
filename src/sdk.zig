@@ -32,6 +32,7 @@ pub const otlp = @import("otlp.zig");
 
 // Attribute system exports
 pub const Attribute = @import("attributes.zig").Attribute;
+pub const AttributeValue = @import("attributes.zig").AttributeValue;
 pub const Attributes = @import("attributes.zig").Attributes;
 
 pub const Counter = @import("api/metrics/instrument.zig").Counter;
