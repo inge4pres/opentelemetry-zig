@@ -31,9 +31,9 @@ pub const SpanKind = span.SpanKind;
 pub const Status = span.Status;
 pub const SpanContext = span.SpanContext;
 pub const TraceState = span.TraceState;
-pub const Event = @import("trace/event.zig").Event;
+pub const Event = @import("trace/span.zig").Span.Event;
 pub const Code = @import("trace/code.zig").Code;
-pub const Link = @import("trace/link.zig").Link;
+pub const Link = @import("trace/span.zig").Span.Link;
 pub const TraceFlags = @import("trace/trace_flags.zig").TraceFlags;
 
 // TODO: Context keys for span propagation - currently disabled due to comptime issues
@@ -115,7 +115,6 @@ pub fn setCurrentSpan(allocator: std.mem.Allocator, active_span: Span) !context.
 test {
     _ = @import("trace/code.zig");
     _ = @import("trace/config.zig");
-    _ = @import("trace/event.zig");
     _ = @import("trace/link.zig");
     _ = @import("trace/span.zig");
     _ = @import("trace/tracer.zig");

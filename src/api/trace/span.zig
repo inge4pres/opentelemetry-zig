@@ -4,6 +4,8 @@ const attribute = @import("../../attributes.zig");
 const trace = @import("../trace.zig");
 const context = @import("../context.zig");
 
+const Code = @import("code.zig").Code;
+
 /// SpanContext represents the portion of a Span which must be serialized and propagated.
 /// SpanContexts are immutable.
 pub const SpanContext = struct {
@@ -393,7 +395,7 @@ pub const SpanKind = enum {
 
 /// Status represents the status of a Span
 pub const Status = struct {
-    code: @import("code.zig").Code,
+    code: Code,
     description: []const u8,
 
     pub fn unset() Status {
@@ -455,7 +457,7 @@ test "Span operations" {
 
     // Test setting status
     span.setStatus(Status.ok());
-    try std.testing.expectEqual(@import("code.zig").Code.Ok, span.status.?.code);
+    try std.testing.expectEqual(.Ok, span.status.?.code);
 
     // Test ending span
     span.end(null);
