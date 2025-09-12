@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics = sdk.metrics;
+const MeterProvider = metrics.MeterProvider;
 const benchmark = @import("benchmark");
 
 // Benchmark configuration
@@ -33,7 +34,7 @@ test "AddNoAttrs" {
     defer bench.deinit();
 
     const no_attrs = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             self.counter.add(1, .{}) catch @panic("counter add failed");
         }
@@ -61,7 +62,7 @@ test "AddOneAttr" {
     defer bench.deinit();
 
     const one_attr = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const val1: []const u8 = "value1";
             self.counter.add(1, .{
@@ -92,7 +93,7 @@ test "AddThreeAttr" {
     defer bench.deinit();
 
     const three_attr = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const val1: []const u8 = "value1";
             const val2: []const u8 = "value2";
@@ -127,7 +128,7 @@ test "AddFiveAttr" {
     defer bench.deinit();
 
     const five_attr = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const val1: []const u8 = "value1";
             const val2: []const u8 = "value2";
@@ -166,7 +167,7 @@ test "AddTenAttr" {
     defer bench.deinit();
 
     const ten_attr = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const val01: []const u8 = "value01";
             const val02: []const u8 = "value02";
@@ -205,8 +206,8 @@ test "RecordHistogram10Bounds" {
     defer provider.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
-    try provider.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try provider.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "test_histogram",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -228,7 +229,7 @@ test "RecordHistogram10Bounds" {
     defer bench.deinit();
 
     const hist_bench = struct {
-        histogram: *sdk.Histogram(f64),
+        histogram: *metrics.Histogram(f64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const status: []const u8 = "ok";
             const method: []const u8 = "GET";
@@ -256,8 +257,8 @@ test "RecordHistogram50Bounds" {
     }
 
     // Add a view with 50 custom explicit buckets for the histogram
-    try provider.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try provider.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "test_histogram_50",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -279,7 +280,7 @@ test "RecordHistogram50Bounds" {
     defer bench.deinit();
 
     const hist_bench = struct {
-        histogram: *sdk.Histogram(f64),
+        histogram: *metrics.Histogram(f64),
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const status: []const u8 = "ok";
             const method: []const u8 = "GET";
@@ -313,7 +314,7 @@ test "AddSingleUseAttrs" {
     defer bench.deinit();
 
     const single_use = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Use timestamp to create unique attribute value for each iteration
@@ -352,7 +353,7 @@ test "GaugeRecordVaried" {
     defer bench.deinit();
 
     const gauge_varied = struct {
-        gauge: *sdk.Gauge(f64),
+        gauge: *metrics.Gauge(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Simulate CPU usage between 0% and 100%

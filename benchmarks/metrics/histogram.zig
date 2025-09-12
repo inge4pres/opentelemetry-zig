@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics = sdk.metrics;
+const MeterProvider = metrics.MeterProvider;
 const benchmark = @import("benchmark");
 
 // Thread-local random number generator
@@ -20,7 +21,7 @@ const bench_config = benchmark.Config{
     .track_allocations = true,
 };
 
-fn setupSDK(allocator: std.mem.Allocator) !*sdk.MeterProvider {
+fn setupSDK(allocator: std.mem.Allocator) !*MeterProvider {
     const mp = try MeterProvider.init(allocator);
     errdefer mp.shutdown();
     return mp;
@@ -37,8 +38,8 @@ test "Histogram_Record" {
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
-    try mp.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try mp.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "response_time",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -61,7 +62,7 @@ test "Histogram_Record" {
     defer bench.deinit();
 
     const static_bench = struct {
-        histogram: *sdk.Histogram(f64),
+        histogram: *metrics.Histogram(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -93,8 +94,8 @@ test "Histogram_Record_With_Non_Static_Values" {
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
-    try mp.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try mp.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "response_time",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -117,7 +118,7 @@ test "Histogram_Record_With_Non_Static_Values" {
     defer bench.deinit();
 
     const dynamic_bench = struct {
-        histogram: *sdk.Histogram(f64),
+        histogram: *metrics.Histogram(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -167,8 +168,8 @@ test "Histogram_Record_With_Many_Buckets" {
     }
 
     // Add a view with many buckets for the histogram
-    try mp.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try mp.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "response_time_many_buckets",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -191,7 +192,7 @@ test "Histogram_Record_With_Many_Buckets" {
     defer bench.deinit();
 
     const many_buckets_bench = struct {
-        histogram: *sdk.Histogram(f64),
+        histogram: *metrics.Histogram(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -219,8 +220,8 @@ test "Histogram_Concurrent" {
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
-    try mp.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try mp.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "histogram_concurrent",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -250,7 +251,7 @@ test "Histogram_Concurrent" {
 }
 
 const ConcurrentHistogramBench = struct {
-    histogram: *sdk.Histogram(f64),
+    histogram: *metrics.Histogram(f64),
 
     pub fn run(self: @This(), _: std.mem.Allocator) void {
         const t1 = std.Thread.spawn(.{}, recordFast, .{self.histogram}) catch @panic("spawn failed");
@@ -262,7 +263,7 @@ const ConcurrentHistogramBench = struct {
         t3.join();
     }
 
-    fn recordFast(histogram: *sdk.Histogram(f64)) void {
+    fn recordFast(histogram: *metrics.Histogram(f64)) void {
         const attr1: []const u8 = "fast";
         const attr2: []const u8 = "p50";
         histogram.record(2.5, .{
@@ -271,7 +272,7 @@ const ConcurrentHistogramBench = struct {
         }) catch @panic("record failed");
     }
 
-    fn recordMedium(histogram: *sdk.Histogram(f64)) void {
+    fn recordMedium(histogram: *metrics.Histogram(f64)) void {
         const attr1: []const u8 = "medium";
         const attr2: []const u8 = "p90";
         histogram.record(45.0, .{
@@ -280,7 +281,7 @@ const ConcurrentHistogramBench = struct {
         }) catch @panic("record failed");
     }
 
-    fn recordSlow(histogram: *sdk.Histogram(f64)) void {
+    fn recordSlow(histogram: *metrics.Histogram(f64)) void {
         const attr1: []const u8 = "slow";
         const attr2: []const u8 = "p99";
         histogram.record(250.0, .{
@@ -295,8 +296,8 @@ test "Histogram_Record_Varied_Values" {
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
-    try mp.addView(sdk.View.View{
-        .instrument_selector = sdk.View.InstrumentSelector{
+    try mp.addView(metrics.View.View{
+        .instrument_selector = metrics.View.InstrumentSelector{
             .name = "benchmark_histogram_varied",
         },
         .aggregation = .{ .ExplicitBucketHistogram = .{
@@ -319,7 +320,7 @@ test "Histogram_Record_Varied_Values" {
     defer bench.deinit();
 
     const varied_bench = struct {
-        histogram: *sdk.Histogram(f64),
+        histogram: *metrics.Histogram(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const test_attr: []const u8 = "varied";

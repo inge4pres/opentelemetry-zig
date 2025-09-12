@@ -1,10 +1,12 @@
 const std = @import("std");
 const benchmark = @import("benchmark");
 
-const MetricReader = @import("opentelemetry-sdk").MetricReader;
-const MeterProvider = @import("opentelemetry-sdk").MeterProvider;
-const InMemory = @import("opentelemetry-sdk").InMemoryExporter;
-const MetricExporter = @import("opentelemetry-sdk").MetricExporter;
+const metrics = @import("opentelemetry-sdk").metrics;
+
+const MetricReader = metrics.MetricReader;
+const MeterProvider = metrics.MeterProvider;
+const InMemory = metrics.InMemoryExporter;
+const MetricExporter = metrics.MetricExporter;
 
 const ReaderBench = struct {
     reader: *MetricReader,

@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics = sdk.metrics;
+const MeterProvider = metrics.MeterProvider;
 const benchmark = @import("benchmark");
 
 // Benchmark configuration
@@ -10,7 +11,7 @@ const bench_config = benchmark.Config{
     .track_allocations = false,
 };
 
-fn setupSDK(allocator: std.mem.Allocator) !*sdk.MeterProvider {
+fn setupSDK(allocator: std.mem.Allocator) !*MeterProvider {
     const mp = try MeterProvider.init(allocator);
     errdefer mp.shutdown();
     return mp;
@@ -33,7 +34,7 @@ test "UpDownCounter_Add_WithoutAttributes" {
     defer bench.deinit();
 
     const bench_instance = struct {
-        counter: *sdk.Counter(i64),
+        counter: *metrics.Counter(i64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             self.counter.add(1, .{}) catch @panic("add failed");
@@ -63,7 +64,7 @@ test "UpDownCounter_Add_WithAttributes" {
     defer bench.deinit();
 
     const bench_instance = struct {
-        counter: *sdk.Counter(i64),
+        counter: *metrics.Counter(i64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const attr1: []const u8 = "updown_value1";
@@ -107,7 +108,7 @@ test "UpDownCounter_Concurrent" {
 }
 
 const ConcurrentUpDownBench = struct {
-    counter: *sdk.Counter(i64),
+    counter: *metrics.Counter(i64),
 
     pub fn run(self: @This(), _: std.mem.Allocator) void {
         const t1 = std.Thread.spawn(.{}, addPositive, .{self.counter}) catch @panic("spawn failed");
@@ -119,7 +120,7 @@ const ConcurrentUpDownBench = struct {
         t3.join();
     }
 
-    fn addPositive(counter: *sdk.Counter(i64)) void {
+    fn addPositive(counter: *metrics.Counter(i64)) void {
         const t1_thread: []const u8 = "t1";
         const up_dir: []const u8 = "up";
         counter.add(1, .{
@@ -128,7 +129,7 @@ const ConcurrentUpDownBench = struct {
         }) catch @panic("add failed");
     }
 
-    fn addNegative(counter: *sdk.Counter(i64)) void {
+    fn addNegative(counter: *metrics.Counter(i64)) void {
         const t2_thread: []const u8 = "t2";
         const down_dir: []const u8 = "down";
         counter.add(-1, .{
@@ -137,7 +138,7 @@ const ConcurrentUpDownBench = struct {
         }) catch @panic("add failed");
     }
 
-    fn addWithoutAttrs(counter: *sdk.Counter(i64)) void {
+    fn addWithoutAttrs(counter: *metrics.Counter(i64)) void {
         counter.add(1, .{}) catch @panic("add failed");
     }
 };
@@ -159,7 +160,7 @@ test "UpDownCounter_MixedOperations" {
     defer bench.deinit();
 
     const mixed_ops = struct {
-        counter: *sdk.Counter(i64),
+        counter: *metrics.Counter(i64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const op1: []const u8 = "batch_up";
@@ -197,7 +198,7 @@ test "UpDownCounterMixedOps" {
     defer bench.deinit();
 
     const mixed_ops = struct {
-        counter: *sdk.Counter(i64),
+        counter: *metrics.Counter(i64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Use random to alternate between positive and negative values

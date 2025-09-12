@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics = sdk.metrics;
+const MeterProvider = metrics.MeterProvider;
 const benchmark = @import("benchmark");
 
 // Thread-local random number generator
@@ -44,7 +45,7 @@ test "Gauge_Record" {
     defer bench.deinit();
 
     const gauge_bench = struct {
-        gauge: *sdk.Gauge(f64),
+        gauge: *metrics.Gauge(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -88,7 +89,7 @@ test "Gauge_Record_Realistic_Values" {
     defer bench.deinit();
 
     const realistic_bench = struct {
-        gauge: *sdk.Gauge(f64),
+        gauge: *metrics.Gauge(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -130,7 +131,7 @@ test "Gauge_Record_Non_Static_Values" {
     defer bench.deinit();
 
     const dynamic_bench = struct {
-        gauge: *sdk.Gauge(f64),
+        gauge: *metrics.Gauge(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
@@ -182,7 +183,7 @@ test "Gauge_Record_Varied_Values" {
     defer bench.deinit();
 
     const varied_bench = struct {
-        gauge: *sdk.Gauge(f64),
+        gauge: *metrics.Gauge(f64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             const sim_attr: []const u8 = "cpu_usage";

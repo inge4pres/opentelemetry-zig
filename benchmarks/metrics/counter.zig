@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics = sdk.metrics;
+const MeterProvider = metrics.MeterProvider;
 const benchmark = @import("benchmark");
 
 // Thread-local random number generator
@@ -20,7 +21,7 @@ const bench_config = benchmark.Config{
     .track_allocations = false,
 };
 
-fn setupSDK(allocator: std.mem.Allocator) !*sdk.MeterProvider {
+fn setupSDK(allocator: std.mem.Allocator) !*metrics.MeterProvider {
     const mp = try MeterProvider.init(allocator);
     errdefer mp.shutdown();
     return mp;
@@ -82,7 +83,7 @@ test "Counter_Add_W/O_Attributes" {
     });
 
     const without_attributes = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             self.counter.add(1, .{}) catch @panic("counter add failed");
@@ -120,7 +121,7 @@ test "Counter_Add_Sorted" {
     defer random_pool.deinit();
 
     const sorted_bench = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         random_pool: *RandomIndicesPool,
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -164,7 +165,7 @@ test "Counter_Add_Unsorted" {
     defer random_pool.deinit();
 
     const unsorted_bench = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         random_pool: *RandomIndicesPool,
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -208,7 +209,7 @@ test "Counter_Add_Non_Static_Values" {
     defer random_pool.deinit();
 
     const dynamic_bench = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         allocator: std.mem.Allocator,
         random_pool: *RandomIndicesPool,
 
@@ -266,7 +267,7 @@ test "Counter_Overflow" {
     var iteration_counter = std.atomic.Value(u32).init(0);
 
     const overflow_bench = struct {
-        counter: *sdk.Counter(u64),
+        counter: *metrics.Counter(u64),
         iteration_counter: *std.atomic.Value(u32),
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
@@ -316,7 +317,7 @@ test "Counter_Concurrent" {
 }
 
 const ConcurrentCounterBench = struct {
-    counter: *sdk.Counter(u64),
+    counter: *metrics.Counter(u64),
 
     pub fn run(self: @This(), _: std.mem.Allocator) void {
         const t1 = std.Thread.spawn(.{}, addWithAttrs, .{self.counter}) catch @panic("spawn failed");
@@ -328,7 +329,7 @@ const ConcurrentCounterBench = struct {
         t3.join();
     }
 
-    fn addWithAttrs(counter: *sdk.Counter(u64)) void {
+    fn addWithAttrs(counter: *metrics.Counter(u64)) void {
         const attr1: []const u8 = "thread1";
         const attr2: []const u8 = "concurrent";
         counter.add(1, .{
@@ -337,11 +338,11 @@ const ConcurrentCounterBench = struct {
         }) catch @panic("add failed");
     }
 
-    fn addWithoutAttrs(counter: *sdk.Counter(u64)) void {
+    fn addWithoutAttrs(counter: *metrics.Counter(u64)) void {
         counter.add(1, .{}) catch @panic("add failed");
     }
 
-    fn addWithDifferentAttrs(counter: *sdk.Counter(u64)) void {
+    fn addWithDifferentAttrs(counter: *metrics.Counter(u64)) void {
         const attr1: []const u8 = "thread3";
         const attr2: []const u8 = "concurrent";
         const attr3: []const u8 = "test";

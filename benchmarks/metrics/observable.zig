@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics = sdk.metrics;
+const MeterProvider = metrics.MeterProvider;
 const benchmark = @import("benchmark");
 
 // Benchmark configuration
@@ -22,7 +23,7 @@ test "ObservableCounter_Create" {
 
 const ObservableCounterBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
-        const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+        const provider = metrics.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
         defer provider.shutdown();
 
         const meter = provider.getMeter(.{
@@ -50,7 +51,7 @@ test "ObservableUpDownCounter_Create" {
 
 const ObservableUpDownBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
-        const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+        const provider = metrics.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
         defer provider.shutdown();
 
         const meter = provider.getMeter(.{
@@ -77,7 +78,7 @@ test "ObservableGauge_Create" {
 
 const ObservableGaugeBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
-        const provider = sdk.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+        const provider = metrics.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
         defer provider.shutdown();
 
         const meter = provider.getMeter(.{
