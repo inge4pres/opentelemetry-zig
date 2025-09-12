@@ -49,7 +49,8 @@ pub fn main() !void {
         .version = "1.0.0",
     });
 
-    std.debug.print("SDK Tracer instances - Same instance returned: {}\n", .{user_tracer == user_tracer_2});
+    // Verify SDK returns the same tracer instance for identical name/version
+    std.debug.assert(user_tracer == user_tracer_2);
 
     // Create spans with different tracers to simulate different services
     const user_attributes = try sdk.Attributes.from(allocator, .{
@@ -102,9 +103,4 @@ pub fn main() !void {
     user_tracer.endSpan(&user_span);
     payment_tracer.endSpan(&payment_span);
     database_tracer.endSpan(&db_span);
-
-    std.debug.print("Multiple tracers SDK example completed successfully!\n", .{});
-    std.debug.print("- User service tracer: {} (version 1.0.0)\n", .{user_tracer});
-    std.debug.print("- Payment service tracer: {} (version 2.1.0)\n", .{payment_tracer});
-    std.debug.print("- Database service tracer: {} (version 1.5.0)\n", .{database_tracer});
 }

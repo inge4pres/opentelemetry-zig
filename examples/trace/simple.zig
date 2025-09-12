@@ -65,7 +65,9 @@ pub fn main() !void {
     // End the span explicitly by calling the tracer's endSpan method
     tracer.endSpan(&span);
 
-    std.debug.print("Span created and finished successfully using SDK!\n", .{});
-    std.debug.print("Trace ID: {any}\n", .{span.span_context.trace_id.value});
-    std.debug.print("Span ID: {any}\n", .{span.span_context.span_id.value});
+    // Verify span was created successfully with valid IDs (not all zeros)
+    const zero_trace_id = [_]u8{0} ** 16;
+    const zero_span_id = [_]u8{0} ** 8;
+    std.debug.assert(!std.mem.eql(u8, &span.span_context.trace_id.value, &zero_trace_id));
+    std.debug.assert(!std.mem.eql(u8, &span.span_context.span_id.value, &zero_span_id));
 }
