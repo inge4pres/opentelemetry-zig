@@ -1,8 +1,9 @@
 const std = @import("std");
 const http = std.http;
 const sdk = @import("opentelemetry-sdk");
-const view = sdk.View;
-const Kind = sdk.Kind;
+const metrics_sdk = sdk.metrics;
+const view = metrics_sdk.View;
+const Kind = metrics_sdk.Kind;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -52,10 +53,10 @@ const MonitoredHTTPServer = struct {
 
     net_server: std.net.Server,
 
-    request_counter: *sdk.Counter(u64),
-    response_latency: *sdk.Histogram(f64),
+    request_counter: *metrics_sdk.Counter(u64),
+    response_latency: *metrics_sdk.Histogram(f64),
 
-    pub fn init(mp: *sdk.MeterProvider, ip: []const u8, port: u16) !Self {
+    pub fn init(mp: *metrics_sdk.MeterProvider, ip: []const u8, port: u16) !Self {
         const addr = try std.net.Address.parseIp(ip, port);
         const meter = try mp.getMeter(.{ .name = "standard/http.server" });
         return Self{
@@ -95,13 +96,13 @@ const MonitoredHTTPServer = struct {
 };
 
 const OTel = struct {
-    meter_provider: *sdk.MeterProvider,
-    metric_reader: *sdk.MetricReader,
-    in_memory_exporter: *sdk.InMemoryExporter,
+    meter_provider: *metrics_sdk.MeterProvider,
+    metric_reader: *metrics_sdk.MetricReader,
+    in_memory_exporter: *metrics_sdk.InMemoryExporter,
 };
 
 fn setupTelemetry(allocator: std.mem.Allocator) !OTel {
-    const mp = try sdk.MeterProvider.default();
+    const mp = try metrics_sdk.MeterProvider.default();
     errdefer mp.shutdown();
 
     // Create a view for histogram instruments with explicit bucket aggregation
@@ -116,11 +117,11 @@ fn setupTelemetry(allocator: std.mem.Allocator) !OTel {
     // Register the view with the meter provider
     try mp.addView(http_latency_view);
 
-    const me = try sdk.MetricExporter.InMemory(allocator, null, null);
+    const me = try metrics_sdk.MetricExporter.InMemory(allocator, null, null);
     var in_mem = me.in_memory;
     errdefer in_mem.deinit();
 
-    const mr = try sdk.MetricReader.init(allocator, me.exporter);
+    const mr = try metrics_sdk.MetricReader.init(allocator, me.exporter);
     try mp.addReader(mr);
 
     return .{

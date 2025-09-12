@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics_sdk = sdk.metrics;
+const MeterProvider = metrics_sdk.MeterProvider;
 
 pub fn main() !void {
     // Use the builtin meter provider
@@ -15,11 +16,11 @@ pub fn main() !void {
     var fba = std.heap.FixedBufferAllocator.init(buf);
 
     // Declare an in-memory exporter
-    const me = try sdk.MetricExporter.InMemory(fba.allocator(), null, null);
+    const me = try metrics_sdk.MetricExporter.InMemory(fba.allocator(), null, null);
     defer me.in_memory.deinit();
 
     // Create an exporter and a a metric reader to aggregate the metrics
-    const mr = try sdk.MetricReader.init(fba.allocator(), me.exporter);
+    const mr = try metrics_sdk.MetricReader.init(fba.allocator(), me.exporter);
     defer mr.shutdown();
 
     // Register the metric reader to the meter provider

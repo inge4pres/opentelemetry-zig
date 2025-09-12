@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const MeterProvider = sdk.MeterProvider;
+const metrics_sdk = sdk.metrics;
+const MeterProvider = metrics_sdk.MeterProvider;
 
 const otlp = sdk.otlp;
 const otlp_stub = @import("otlp-stub");
@@ -55,19 +56,19 @@ pub fn main() !void {
 }
 
 const OTel = struct {
-    meter_provider: *sdk.MeterProvider,
-    metric_reader: *sdk.MetricReader,
-    otlp_exporter: *sdk.OTLPExporter,
+    meter_provider: *metrics_sdk.MeterProvider,
+    metric_reader: *metrics_sdk.MetricReader,
+    otlp_exporter: *metrics_sdk.OTLPExporter,
 };
 
 fn setupTelemetry(allocator: std.mem.Allocator, opts: *otlp.ConfigOptions) !OTel {
-    const mp = try sdk.MeterProvider.default();
+    const mp = try metrics_sdk.MeterProvider.default();
     errdefer mp.shutdown();
 
-    const me = try sdk.MetricExporter.OTLP(allocator, null, null, opts);
+    const me = try metrics_sdk.MetricExporter.OTLP(allocator, null, null, opts);
     errdefer me.otlp.deinit();
 
-    const mr = try sdk.MetricReader.init(allocator, me.exporter);
+    const mr = try metrics_sdk.MetricReader.init(allocator, me.exporter);
     try mp.addReader(mr);
 
     return .{
