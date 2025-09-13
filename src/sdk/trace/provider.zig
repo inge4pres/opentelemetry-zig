@@ -233,8 +233,8 @@ pub const SDKTracer = struct {
             false,
         );
 
-        // Create the span
-        var span = trace.Span.init(allocator, span_context, span_name, options.kind);
+        // Create the span with instrumentation scope
+        var span = trace.Span.init(allocator, span_context, span_name, options.kind, self.scope);
         span.is_recording = true; // SDK spans are recording by default
 
         // Set attributes if provided

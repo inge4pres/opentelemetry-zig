@@ -2,6 +2,7 @@ const std = @import("std");
 const trace = @import("../../api/trace.zig");
 const context = @import("../../api/context.zig");
 const SpanExporter = @import("span_exporter.zig").SpanExporter;
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 /// SpanProcessor is responsible for processing spans as they are started and ended.
 pub const SpanProcessor = struct {
@@ -333,7 +334,8 @@ test "SimpleProcessor basic functionality" {
     defer trace_state.deinit();
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
     // Make the span recording
@@ -408,7 +410,8 @@ test "BatchingProcessor basic functionality" {
         ts.* = trace.TraceState.init(allocator);
 
         const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), ts.*, false);
-        span.* = trace.Span.init(allocator, span_context, "test-span", .Internal);
+        const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+        span.* = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
         span.is_recording = true;
     }
     defer {

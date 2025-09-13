@@ -109,8 +109,6 @@ pub const Tracer = struct {
     /// Create a new Span
     pub fn startSpan(self: Self, allocator: std.mem.Allocator, name: []const u8, options: StartOptions) !trace.Span {
         // Use tracer's scope for proper tracer implementation
-        _ = self.scope; // TODO: use scope for proper tracer implementation
-
         var parent_span_context: ?trace.SpanContext = null;
         var trace_id: trace.TraceID = undefined;
 
@@ -154,7 +152,7 @@ pub const Tracer = struct {
             trace_state, false // is_remote - spans created locally are not remote
         );
 
-        var span = trace.Span.init(allocator, span_context, name, options.kind);
+        var span = trace.Span.init(allocator, span_context, name, options.kind, self.scope);
 
         // Set start timestamp if provided
         if (options.start_timestamp) |timestamp| {

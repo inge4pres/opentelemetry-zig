@@ -6,6 +6,8 @@ const context = @import("../context.zig");
 
 const Code = @import("code.zig").Code;
 
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+
 /// SpanContext represents the portion of a Span which must be serialized and propagated.
 /// SpanContexts are immutable.
 pub const SpanContext = struct {
@@ -172,6 +174,7 @@ pub const Span = struct {
     status: ?Status,
     is_recording: bool,
     allocator: std.mem.Allocator,
+    scope: InstrumentationScope,
 
     const Self = @This();
 
@@ -211,7 +214,7 @@ pub const Span = struct {
         }
     };
 
-    pub fn init(allocator: std.mem.Allocator, span_context: SpanContext, name: []const u8, kind: SpanKind) Self {
+    pub fn init(allocator: std.mem.Allocator, span_context: SpanContext, name: []const u8, kind: SpanKind, scope: InstrumentationScope) Self {
         return Self{
             .span_context = span_context,
             .name = name,
@@ -224,6 +227,7 @@ pub const Span = struct {
             .status = null,
             .is_recording = true,
             .allocator = allocator,
+            .scope = scope,
         };
     }
 
@@ -244,6 +248,12 @@ pub const Span = struct {
             .status = null,
             .is_recording = false, // Non-recording spans are never recording
             .allocator = dummy_allocator.allocator(),
+            .scope = InstrumentationScope{
+                .name = "unknown",
+                .version = null,
+                .schema_url = null,
+                .attributes = null,
+            },
         };
     }
 
@@ -438,7 +448,8 @@ test "Span operations" {
 
     const trace_flags = @import("../trace.zig").TraceFlags.default();
     const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
-    var span = Span.init(allocator, span_context, "test-span", .Server);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var span = Span.init(allocator, span_context, "test-span", .Server, scope);
     defer span.deinit();
 
     try std.testing.expect(span.isRecording());
@@ -476,6 +487,30 @@ test "TraceState operations" {
     defer new_state.entries.deinit();
 
     try std.testing.expectEqualStrings("value1", new_state.get("key1").?);
+}
+
+test "Span with InstrumentationScope" {
+    const allocator = std.testing.allocator;
+
+    const trace_id = @import("../trace.zig").TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id = @import("../trace.zig").SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+    var trace_state = TraceState.init(allocator);
+    defer trace_state.deinit();
+
+    const trace_flags = @import("../trace.zig").TraceFlags.default();
+    const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
+
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var span = Span.init(allocator, span_context, "test-span", .Server, scope);
+    defer span.deinit();
+
+    try std.testing.expect(span.isRecording());
+    try std.testing.expectEqualStrings("test-span", span.name);
+    try std.testing.expectEqual(SpanKind.Server, span.kind);
+
+    // Test that instrumentation scope is properly set
+    try std.testing.expectEqualStrings("test-lib", span.scope.name);
+    try std.testing.expectEqualStrings("1.0.0", span.scope.version.?);
 }
 
 test "TraceState validation" {

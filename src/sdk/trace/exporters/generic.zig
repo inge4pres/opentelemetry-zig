@@ -3,6 +3,7 @@ const std = @import("std");
 const trace = @import("../../../api/trace.zig");
 const SpanExporter = @import("../span_exporter.zig").SpanExporter;
 const Code = @import("../../../api/trace/code.zig").Code;
+const InstrumentationScope = @import("../../../scope.zig").InstrumentationScope;
 
 /// Serializable representation of a span for export purposes
 const SerializableSpan = struct {
@@ -97,7 +98,8 @@ test "GenericWriterExporter" {
     defer trace_state.deinit();
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
-    var test_span = trace.Span.init(std.testing.allocator, span_context, "test-span", .Internal);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var test_span = trace.Span.init(std.testing.allocator, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
     var spans = [_]trace.Span{test_span};

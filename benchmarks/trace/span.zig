@@ -7,6 +7,7 @@ const BatchingProcessor = sdk.trace.BatchingProcessor;
 const SpanExporter = sdk.trace.SpanExporter;
 const benchmark = @import("benchmark");
 const trace = sdk.api.trace;
+const InstrumentationScope = sdk.InstrumentationScope;
 
 // Thread-local random number generator
 threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
@@ -74,7 +75,8 @@ fn createTestSpan(allocator: std.mem.Allocator, name: []const u8, index: u8) tra
     const trace_state = trace.TraceState.init(allocator);
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
-    var span = trace.Span.init(allocator, span_context, name, .Internal);
+    const scope = InstrumentationScope{ .name = "benchmark-lib", .version = "1.0.0" };
+    var span = trace.Span.init(allocator, span_context, name, .Internal, scope);
     span.is_recording = true;
     return span;
 }

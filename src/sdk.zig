@@ -30,3 +30,6 @@ pub const otlp = @import("otlp.zig");
 pub const Attribute = @import("attributes.zig").Attribute;
 pub const AttributeValue = @import("attributes.zig").AttributeValue;
 pub const Attributes = @import("attributes.zig").Attributes;
+
+// Scope exports
+pub const InstrumentationScope = @import("scope.zig").InstrumentationScope;
