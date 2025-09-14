@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const TracerProvider = sdk.trace.TracerProvider;
+const TracerProvider = sdk.trace.SDKTracerProvider;
 const SDKTracer = sdk.trace.SDKTracer;
 const IDGenerator = sdk.trace.IDGenerator;
 const RandomIDGenerator = sdk.trace.RandomIDGenerator;
@@ -33,7 +33,7 @@ fn setupSDK(allocator: std.mem.Allocator) !*TracerProvider {
     const random = prng.random();
     const id_gen = IDGenerator{ .Random = RandomIDGenerator.init(random) };
     const tp = try TracerProvider.init(allocator, id_gen);
-    errdefer tp.shutdown();
+    errdefer tp.deinit();
     return tp;
 }
 
@@ -69,7 +69,7 @@ fn getRandomAttribute(rng: *std.Random.DefaultPrng) Attribute {
 
 test "Span_Create_W/O_Attributes" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",
@@ -97,7 +97,7 @@ test "Span_Create_W/O_Attributes" {
 
 test "Span_Create_With_Attributes" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",
@@ -135,7 +135,7 @@ test "Span_Create_With_Attributes" {
 
 test "Span_SetAttribute" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",
@@ -164,7 +164,7 @@ test "Span_SetAttribute" {
 
 test "Span_AddEvent" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",
@@ -199,7 +199,7 @@ test "Span_AddEvent" {
 
 test "Span_Nested_Creation" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",
@@ -231,7 +231,7 @@ test "Span_Nested_Creation" {
 
 test "Span_Non_Recording" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",
@@ -266,7 +266,7 @@ test "Span_Non_Recording" {
 
 test "Span_Concurrent_Creation" {
     const tp = try createTracerProvider(std.testing.allocator);
-    defer tp.shutdown();
+    defer tp.deinit();
 
     const tracer = try tp.getTracer(.{
         .name = "benchmark.trace",

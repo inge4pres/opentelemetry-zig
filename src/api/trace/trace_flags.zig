@@ -1,3 +1,5 @@
+const std = @import("std");
+
 /// TraceFlags contain details about the trace.
 /// Unlike TraceState values, TraceFlags are present in all traces.
 pub const TraceFlags = struct {
@@ -49,8 +51,6 @@ pub const TraceFlags = struct {
         return Self{ .value = self.value & ~RANDOM_FLAG };
     }
 };
-
-const std = @import("std");
 
 test "TraceFlags operations" {
     var flags = TraceFlags.default();

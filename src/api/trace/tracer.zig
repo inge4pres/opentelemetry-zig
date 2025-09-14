@@ -9,7 +9,8 @@ const builtin = @import("builtin");
 
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
-/// TracerProvider is the entry point of the API. It provides access to Tracers.
+/// TracerProvider is the default implementation of a tracer provider.
+/// It provides basic tracer caching functionality using a HashMap.
 pub const TracerProvider = struct {
     allocator: std.mem.Allocator,
     tracers: std.HashMapUnmanaged(
@@ -22,7 +23,7 @@ pub const TracerProvider = struct {
 
     const Self = @This();
 
-    /// Create a new custom tracer provider, using the specified allocator.
+    /// Create a new tracer provider, using the specified allocator.
     pub fn init(alloc: std.mem.Allocator) !*Self {
         const provider = try alloc.create(Self);
         provider.* = Self{
@@ -48,6 +49,23 @@ pub const TracerProvider = struct {
         return provider;
     }
 
+    /// Get a new tracer by specifying its scope.
+    /// If a tracer with the same scope already exists, it will be returned.
+    /// See https://opentelemetry.io/docs/specs/otel/trace/api/#get-a-tracer
+    pub fn getTracer(self: *Self, scope: InstrumentationScope) anyerror!*Tracer {
+        self.mx.lock();
+        defer self.mx.unlock();
+
+        const t = Tracer{
+            .scope = scope,
+            .allocator = self.allocator,
+        };
+
+        const tracer = try self.tracers.getOrPutValue(self.allocator, scope, t);
+
+        return tracer.value_ptr;
+    }
+
     /// Delete the tracer provider and free up the memory allocated for it,
     /// as well as its owned Tracers.
     pub fn shutdown(self: *Self) void {
@@ -63,23 +81,6 @@ pub const TracerProvider = struct {
         self.mx.unlock();
         self.allocator.destroy(self);
     }
-
-    /// Get a new tracer by specifying its scope.
-    /// If a tracer with the same scope already exists, it will be returned.
-    /// See https://opentelemetry.io/docs/specs/otel/trace/api/#get-a-tracer
-    pub fn getTracer(self: *Self, scope: InstrumentationScope) !*Tracer {
-        self.mx.lock();
-        defer self.mx.unlock();
-
-        const t = Tracer{
-            .scope = scope,
-            .allocator = self.allocator,
-        };
-
-        const tracer = try self.tracers.getOrPutValue(self.allocator, scope, t);
-
-        return tracer.value_ptr;
-    }
 };
 
 /// Tracers is the creator of Spans.
@@ -90,7 +91,7 @@ pub const Tracer = struct {
     const Self = @This();
 
     /// Clean up resources
-    fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self) void {
         // Cleanup the tracer attributes if they exist
         if (self.scope.attributes) |attrs| {
             self.allocator.free(attrs);
@@ -245,11 +246,6 @@ pub const NonRecordingSpan = struct {
         _ = message;
         _ = stacktrace;
         _ = attributes;
-    }
-
-    pub fn end(self: Self, timestamp: ?u64) void {
-        _ = self;
-        _ = timestamp;
     }
 };
 

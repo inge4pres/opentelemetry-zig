@@ -4,7 +4,7 @@ pub const BatchingProcessor = @import("trace/span_processor.zig").BatchingProces
 
 pub const SpanExporter = @import("trace/span_exporter.zig").SpanExporter;
 
-pub const TracerProvider = @import("trace/provider.zig").TracerProvider;
+pub const SDKTracerProvider = @import("trace/provider.zig").SDKTracerProvider;
 pub const SDKTracer = @import("trace/provider.zig").SDKTracer;
 pub const IDGenerator = @import("trace/id_generator.zig").IDGenerator;
 pub const RandomIDGenerator = @import("trace/id_generator.zig").RandomIDGenerator;

@@ -17,7 +17,7 @@ pub fn main() !void {
     };
 
     // 2. Create a tracer provider with the ID generator
-    var tracer_provider = try trace.TracerProvider.init(allocator, id_generator);
+    var tracer_provider = try trace.SDKTracerProvider.init(allocator, id_generator);
     defer tracer_provider.shutdown();
 
     // 3. Create a stdout exporter and simple processor for output
