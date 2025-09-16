@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const TracerProvider = sdk.trace.SDKTracerProvider;
+const TracerProvider = sdk.trace.TracerProvider;
 const SpanProcessor = sdk.trace.SpanProcessor;
 const SimpleProcessor = sdk.trace.SimpleProcessor;
 const BatchingProcessor = sdk.trace.BatchingProcessor;

@@ -17,7 +17,7 @@ pub fn main() !void {
     };
 
     // 2. Create a tracer provider with the ID generator
-    var tracer_provider = try trace.SDKTracerProvider.init(allocator, id_generator);
+    var tracer_provider = try trace.TracerProvider.init(allocator, id_generator);
     defer tracer_provider.shutdown();
 
     // 3. Create a stdout exporter and simple processor
@@ -27,7 +27,7 @@ pub fn main() !void {
     // 4. Add the processor to the provider
     try tracer_provider.addSpanProcessor(simple_processor.asSpanProcessor());
 
-    // 5. Get tracers from the SDK provider with different instrumentation scopes
+    // 5. Get tracers from the SDK provider with different instrumentation scopes (via interface)
     const http_tracer = try tracer_provider.getTracer(.{
         .name = "http-client",
         .version = "1.2.3",
@@ -92,12 +92,12 @@ pub fn main() !void {
     std.time.sleep(50 * std.time.ns_per_ms); // DB query time
 
     // End the DB span first (child spans should end before parent)
-    db_tracer.endSpan(&db_span);
+    db_span.end(null);
 
     std.time.sleep(50 * std.time.ns_per_ms); // HTTP processing time
 
     // End the HTTP span
-    http_tracer.endSpan(&http_span);
+    http_span.end(null);
 
     // Verify spans were created successfully with valid IDs (not all zeros)
     const zero_trace_id = [_]u8{0} ** 16;

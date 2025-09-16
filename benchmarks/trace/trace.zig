@@ -1,7 +1,8 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
-const TracerProvider = sdk.trace.SDKTracerProvider;
-const SDKTracer = sdk.trace.SDKTracer;
+const TracerProvider = sdk.trace.TracerProvider;
+const TracerAPI = sdk.api.trace.Tracer;
+const Tracer = sdk.trace.Tracer;
 const IDGenerator = sdk.trace.IDGenerator;
 const RandomIDGenerator = sdk.trace.RandomIDGenerator;
 const SpanProcessor = sdk.trace.span_processor.SpanProcessor;
@@ -76,7 +77,7 @@ test "Span_Create_W/O_Attributes" {
     });
 
     const without_attributes = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
 
         pub fn setup(_: @This(), _: std.mem.Allocator) void {}
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
@@ -104,7 +105,7 @@ test "Span_Create_With_Attributes" {
     });
 
     const with_attributes = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
         attrs: [5]Attribute,
 
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
@@ -142,7 +143,7 @@ test "Span_SetAttribute" {
     });
 
     const set_attribute = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
 
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
             var span = self.tracer.startSpan(allocator, "test_span", .{}) catch return;
@@ -171,7 +172,7 @@ test "Span_AddEvent" {
     });
 
     const add_event = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
         attrs: [3]Attribute,
 
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
@@ -208,7 +209,7 @@ test "Span_Nested_Creation" {
     const bench_config = Config;
 
     const nested_spans = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
 
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
             var parent_span = self.tracer.startSpan(allocator, "parent_span", .{}) catch return;
@@ -240,7 +241,7 @@ test "Span_Non_Recording" {
     const bench_config = Config;
 
     const non_recording = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
 
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
             var span = self.tracer.startSpan(allocator, "non_recording_span", .{
@@ -280,7 +281,7 @@ test "Span_Concurrent_Creation" {
     };
 
     const concurrent_spans = struct {
-        tracer: *SDKTracer,
+        tracer: *TracerAPI,
 
         pub fn run(self: @This(), allocator: std.mem.Allocator) void {
             const thread_count = 4;
@@ -288,7 +289,7 @@ test "Span_Concurrent_Creation" {
             defer allocator.free(threads);
 
             const worker = struct {
-                fn work(t: *SDKTracer, alloc: std.mem.Allocator, index: usize) void {
+                fn work(t: *TracerAPI, alloc: std.mem.Allocator, index: usize) void {
                     for (0..10) |_| {
                         var span = t.startSpan(alloc, "concurrent_span", .{}) catch return;
                         span.setAttribute("thread_id", .{ .int = @intCast(index) }) catch {};

@@ -17,7 +17,7 @@ pub const TracerProvider = struct {
     allocator: std.mem.Allocator,
     tracers: std.HashMapUnmanaged(
         InstrumentationScope,
-        *TracerAPI,
+        *Tracer,
         InstrumentationScope.HashContext,
         std.hash_map.default_max_load_percentage,
     ),
@@ -95,14 +95,14 @@ pub const TracerProvider = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Check if we already have an SDKTracer for this scope
+        // Check if we already have a Tracer for this scope
         if (self.tracers.get(scope)) |existing_tracer| {
             return &existing_tracer.tracer;
         }
 
         // Create a new SDKTracer
-        const tracer = try self.allocator.create(TracerAPI);
-        tracer.* = TracerAPI.init(self, scope);
+        const tracer = try self.allocator.create(Tracer);
+        tracer.* = Tracer.init(self, scope);
         // Set the tracer interface ptr to point to the interface itself
         tracer.tracer.ptr = &tracer.tracer;
 
@@ -113,7 +113,7 @@ pub const TracerProvider = struct {
     }
 
     /// Get the SDK tracer directly (for internal use)
-    pub fn getSDKTracer(self: *Self, scope: InstrumentationScope) !*TracerAPI {
+    pub fn getSDKTracer(self: *Self, scope: InstrumentationScope) !*Tracer {
         if (self.is_shutdown.load(.acquire)) {
             return error.TracerProviderShutdown;
         }
@@ -121,14 +121,14 @@ pub const TracerProvider = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Check if we already have an SDKTracer for this scope
+        // Check if we already have a Tracer for this scope
         if (self.tracers.get(scope)) |existing_tracer| {
             return existing_tracer;
         }
 
-        // Create a new SDKTracer
-        const tracer = try self.allocator.create(TracerAPI);
-        tracer.* = TracerAPI.init(self, scope);
+        // Create a new Tracer
+        const tracer = try self.allocator.create(Tracer);
+        tracer.* = Tracer.init(self, scope);
         // Set the tracer interface ptr to point to the interface itself
         tracer.tracer.ptr = &tracer.tracer;
 
@@ -211,14 +211,14 @@ pub const TracerProvider = struct {
 
 /// SDKTracer implements enhanced tracing functionality
 pub const Tracer = struct {
-    provider: *TracerProviderAPI,
+    provider: *TracerProvider,
     scope: InstrumentationScope,
     // Interface implementation
     tracer: TracerAPI,
 
     const Self = @This();
 
-    pub fn init(provider: *TracerProviderAPI, scope: InstrumentationScope) Self {
+    pub fn init(provider: *TracerProvider, scope: InstrumentationScope) Self {
         return Self{
             .provider = provider,
             .scope = scope,
@@ -359,7 +359,7 @@ test "TracerProvider basic functionality" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProviderAPI.init(allocator, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, IDGenerator{ .Random = random_generator });
     defer provider.shutdown(); // Use shutdown to properly destroy the provider
 
     // Get a tracer via the interface
@@ -425,7 +425,7 @@ test "TracerProvider with processors" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProviderAPI.init(allocator, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, IDGenerator{ .Random = random_generator });
     defer provider.shutdown(); // Use shutdown to properly destroy the provider
 
     // Add a mock processor

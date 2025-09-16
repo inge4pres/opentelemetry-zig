@@ -17,7 +17,7 @@ pub fn main() !void {
     };
 
     // 2. Create a tracer provider with the ID generator
-    var tracer_provider = try trace.SDKTracerProvider.init(allocator, id_generator);
+    var tracer_provider = try trace.TracerProvider.init(allocator, id_generator);
     defer tracer_provider.shutdown();
 
     // 3. Create a stdout exporter and simple processor for output
@@ -99,8 +99,8 @@ pub fn main() !void {
     try payment_span.addEvent("Payment authorized", null, null);
     try db_span.addEvent("Query executed successfully", null, null);
 
-    // End spans using SDK tracer method for proper processing
-    user_tracer.endSpan(&user_span);
-    payment_tracer.endSpan(&payment_span);
-    database_tracer.endSpan(&db_span);
+    // End spans - use span.end() for basic functionality
+    user_span.end(null);
+    payment_span.end(null);
+    db_span.end(null);
 }
