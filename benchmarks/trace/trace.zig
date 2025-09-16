@@ -1,13 +1,14 @@
 const std = @import("std");
+const zbench = @import("benchmark");
+
 const sdk = @import("opentelemetry-sdk");
 const TracerProvider = sdk.trace.TracerProvider;
-const TracerAPI = sdk.api.trace.Tracer;
 const Tracer = sdk.trace.Tracer;
+
+const TracerAPI = sdk.api.trace.Tracer;
 const IDGenerator = sdk.trace.IDGenerator;
 const RandomIDGenerator = sdk.trace.RandomIDGenerator;
-const SpanProcessor = sdk.trace.span_processor.SpanProcessor;
-const zbench = @import("benchmark");
-const trace = sdk.api.trace;
+
 const Attribute = sdk.Attribute;
 const AttributeValue = sdk.AttributeValue;
 

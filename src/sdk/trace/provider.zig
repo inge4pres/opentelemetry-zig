@@ -5,8 +5,8 @@ const IDGenerator = @import("id_generator.zig").IDGenerator;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 const trace_api = @import("../../api/trace.zig");
-const TracerProviderAPI = trace_api.TracerProvider;
-const TracerAPI = trace_api.Tracer;
+const TracerProviderAPI = trace_api.TracerProviderImpl;
+const TracerAPI = trace_api.TracerImpl;
 
 const RandomIDGenerator = @import("id_generator.zig").RandomIDGenerator;
 
@@ -39,16 +39,10 @@ pub const TracerProvider = struct {
             .mutex = std.Thread.Mutex{},
             .is_shutdown = std.atomic.Value(bool).init(false),
             .tracer_provider = TracerProviderAPI{
-                .ptr = undefined, // Will be set after creation
-                .vtable = &.{
-                    .getTracerFn = getTracerImpl,
-                    .shutdownFn = shutdownImpl,
-                },
+                .getTracerFn = getTracerImpl,
+                .shutdownFn = shutdownImpl,
             },
         };
-
-        // Set the ptr to point to self
-        self.tracer_provider.ptr = self;
 
         return self;
     }
@@ -63,14 +57,14 @@ pub const TracerProvider = struct {
     }
 
     /// Implementation of TracerProvider.getTracer
-    fn getTracerImpl(ptr: *anyopaque, scope: InstrumentationScope) anyerror!*TracerAPI {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+    fn getTracerImpl(tracer_provider: *TracerProviderAPI, scope: InstrumentationScope) anyerror!*TracerAPI {
+        const self: *Self = @fieldParentPtr("tracer_provider", tracer_provider);
         return self.getTracer(scope);
     }
 
     /// Implementation of TracerProvider.shutdown
-    fn shutdownImpl(ptr: *anyopaque) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+    fn shutdownImpl(tracer_provider: *TracerProviderAPI) void {
+        const self: *Self = @fieldParentPtr("tracer_provider", tracer_provider);
         self.shutdown();
     }
 
@@ -103,8 +97,6 @@ pub const TracerProvider = struct {
         // Create a new SDKTracer
         const tracer = try self.allocator.create(Tracer);
         tracer.* = Tracer.init(self, scope);
-        // Set the tracer interface ptr to point to the interface itself
-        tracer.tracer.ptr = &tracer.tracer;
 
         // Cache the tracer
         try self.tracers.put(self.allocator, scope, tracer);
@@ -129,8 +121,6 @@ pub const TracerProvider = struct {
         // Create a new Tracer
         const tracer = try self.allocator.create(Tracer);
         tracer.* = Tracer.init(self, scope);
-        // Set the tracer interface ptr to point to the interface itself
-        tracer.tracer.ptr = &tracer.tracer;
 
         // Cache the tracer
         try self.tracers.put(self.allocator, scope, tracer);
@@ -223,11 +213,8 @@ pub const Tracer = struct {
             .provider = provider,
             .scope = scope,
             .tracer = TracerAPI{
-                .ptr = undefined, // Will be set after creation
-                .vtable = &.{
-                    .startSpanFn = startSpanImpl,
-                    .isEnabledFn = isEnabledImpl,
-                },
+                .startSpanFn = startSpan,
+                .isEnabledFn = isEnabled,
             },
         };
     }
@@ -238,26 +225,13 @@ pub const Tracer = struct {
     }
 
     /// Implementation of Tracer.startSpan
-    fn startSpanImpl(ptr: *anyopaque, allocator: std.mem.Allocator, span_name: []const u8, options: TracerAPI.StartOptions) anyerror!trace_api.Span {
-        const tracer_iface: *TracerAPI = @ptrCast(@alignCast(ptr));
-        const self: *Self = @fieldParentPtr("tracer", tracer_iface);
-        return self.startSpan(allocator, span_name, options);
-    }
-
-    /// Implementation of Tracer.isEnabled
-    fn isEnabledImpl(ptr: *anyopaque) bool {
-        const tracer_iface: *TracerAPI = @ptrCast(@alignCast(ptr));
-        const self: *Self = @fieldParentPtr("tracer", tracer_iface);
-        return self.isEnabled();
-    }
-
-    /// Start a span with the given options (enhanced with SDK functionality)
-    pub fn startSpan(
-        self: Self,
+    fn startSpan(
+        tracer: *TracerAPI,
         allocator: std.mem.Allocator,
         span_name: []const u8,
         options: TracerAPI.StartOptions,
     ) !trace_api.Span {
+        const self: *Self = @fieldParentPtr("tracer", tracer);
         if (self.provider.is_shutdown.load(.acquire)) {
             return error.TracerProviderShutdown;
         }
@@ -316,17 +290,20 @@ pub const Tracer = struct {
         }
 
         // Set start time if provided, otherwise use current time
-        if (options.start_timestamp) |start_time| {
-            span.start_time_unix_nano = start_time;
-        } else {
-            span.start_time_unix_nano = @intCast(std.time.nanoTimestamp());
-        }
+        span.start_time_unix_nano = options.start_timestamp orelse @intCast(std.time.nanoTimestamp());
 
         // Notify processors that the span has started
         const parent_context = options.parent_context orelse context.Context.init();
         self.provider.onSpanStart(&span, parent_context);
 
         return span;
+    }
+
+    /// Implementation of Tracer.isEnabled
+    /// Checks if the tracer is enabled (always true for SDK tracer if not shutdown)
+    fn isEnabled(tracer: *TracerAPI) bool {
+        const self: *Self = @fieldParentPtr("tracer", tracer);
+        return !self.provider.is_shutdown.load(.acquire);
     }
 
     /// End a span - this should be called when the span is completed
@@ -343,11 +320,6 @@ pub const Tracer = struct {
 
         // Notify processors that the span has ended
         self.provider.onSpanEnd(span.*);
-    }
-
-    /// Check if the tracer is enabled (always true for SDK tracer if not shutdown)
-    pub fn isEnabled(self: Self) bool {
-        return !self.provider.is_shutdown.load(.acquire);
     }
 };
 

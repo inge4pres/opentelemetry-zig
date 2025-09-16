@@ -3,8 +3,10 @@ const context = @import("context.zig");
 const attribute = @import("../attributes.zig");
 
 pub const Tracer = @import("trace/tracer.zig").Tracer;
+pub const TracerImpl = @import("trace/tracer.zig").TracerImpl;
 pub const TracerConfig = @import("trace/config.zig").TracerConfig;
 pub const TracerProvider = @import("trace/tracer.zig").TracerProvider;
+pub const TracerProviderImpl = @import("trace/tracer.zig").TracerProviderImpl;
 
 const span = @import("trace/span.zig");
 pub const Span = span.Span;

@@ -1,12 +1,16 @@
 const std = @import("std");
+const benchmark = @import("benchmark");
+
 const sdk = @import("opentelemetry-sdk");
+const trace = sdk.trace;
+const trace_api = sdk.api.trace;
+
 const TracerProvider = sdk.trace.TracerProvider;
 const SpanProcessor = sdk.trace.SpanProcessor;
 const SimpleProcessor = sdk.trace.SimpleProcessor;
 const BatchingProcessor = sdk.trace.BatchingProcessor;
 const SpanExporter = sdk.trace.SpanExporter;
-const benchmark = @import("benchmark");
-const trace = sdk.api.trace;
+
 const InstrumentationScope = sdk.InstrumentationScope;
 
 // Thread-local random number generator
@@ -36,7 +40,7 @@ const MockExporter = struct {
         };
     }
 
-    pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
+    pub fn exportSpans(ctx: *anyopaque, spans: []trace_api.Span) anyerror!void {
         const self: *MockExporter = @ptrCast(@alignCast(ctx));
         _ = self.export_count.fetchAdd(@intCast(spans.len), .monotonic);
     }
@@ -69,14 +73,14 @@ const ATTR_VALUES = [_][]const u8{
 };
 
 // Helper function to create a test span
-fn createTestSpan(allocator: std.mem.Allocator, name: []const u8, index: u8) trace.Span {
-    const trace_id = trace.TraceID.init([16]u8{ index, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
-    const span_id = trace.SpanID.init([8]u8{ index, 2, 3, 4, 5, 6, 7, 8 });
-    const trace_state = trace.TraceState.init(allocator);
+fn createTestSpan(allocator: std.mem.Allocator, name: []const u8, index: u8) trace_api.Span {
+    const trace_id = trace_api.TraceID.init([16]u8{ index, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id = trace_api.SpanID.init([8]u8{ index, 2, 3, 4, 5, 6, 7, 8 });
+    const trace_state = trace_api.TraceState.init(allocator);
 
-    const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
+    const span_context = trace_api.SpanContext.init(trace_id, span_id, trace_api.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "benchmark-lib", .version = "1.0.0" };
-    var span = trace.Span.init(allocator, span_context, name, .Internal, scope);
+    var span = trace_api.Span.init(allocator, span_context, name, .Internal, scope);
     span.is_recording = true;
     return span;
 }
@@ -297,7 +301,7 @@ test "BatchingProcessor_Batch_Full" {
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Create multiple spans to trigger batch export
-            var spans: [12]trace.Span = undefined;
+            var spans: [12]trace_api.Span = undefined;
             defer {
                 for (&spans) |*span| {
                     span.deinit();
@@ -357,7 +361,7 @@ test "BatchingProcessor_ForceFlush" {
 
         pub fn run(self: @This(), _: std.mem.Allocator) void {
             // Add several spans
-            var spans: [5]trace.Span = undefined;
+            var spans: [5]trace_api.Span = undefined;
             defer {
                 for (&spans) |*span| {
                     span.deinit();
@@ -443,7 +447,7 @@ const ConcurrentProcessorBench = struct {
 
     fn processSpans(processor: SpanProcessor, thread_name: []const u8, offset: u8) void {
         // Process a few spans per thread
-        var spans: [3]trace.Span = undefined;
+        var spans: [3]trace_api.Span = undefined;
         defer {
             for (&spans) |*span| {
                 span.deinit();

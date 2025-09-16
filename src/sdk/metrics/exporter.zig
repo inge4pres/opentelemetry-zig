@@ -344,9 +344,9 @@ test "metric exporter builder stdout" {
     try metric_reader.collect();
 }
 
-/// ExporterIface is the interface for exporting metrics.
+/// ExporterImpl is the interface for exporting metrics.
 /// Implementations can be satisfied by any type by having a member field of type
-/// ExporterIface and a member function exportBatch with the correct signature.
+/// ExporterImpl and a member function exportBatch with the correct signature.
 pub const ExporterImpl = struct {
     exportFn: *const fn (*ExporterImpl, []Measurements) MetricReadError!void,
 

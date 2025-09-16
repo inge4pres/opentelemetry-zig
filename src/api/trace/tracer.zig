@@ -6,40 +6,34 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const AttributeValue = @import("../../attributes.zig").AttributeValue;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
-/// TracerProvider is the interface for creating Tracers.
+/// TracerProviderImpl is the interface for creating Tracers.
+/// Implementations can be satisfied by any type by having a member field of type
+/// TracerProviderImpl and implementing the required functions.
 /// See https://opentelemetry.io/docs/specs/otel/trace/api/#tracerprovider
-pub const TracerProvider = struct {
-    ptr: *anyopaque,
-    vtable: *const VTable,
-
-    const VTable = struct {
-        getTracerFn: *const fn (ptr: *anyopaque, scope: InstrumentationScope) anyerror!*Tracer,
-        shutdownFn: *const fn (ptr: *anyopaque) void,
-    };
+pub const TracerProviderImpl = struct {
+    getTracerFn: *const fn (*TracerProviderImpl, InstrumentationScope) anyerror!*TracerImpl,
+    shutdownFn: *const fn (*TracerProviderImpl) void,
 
     /// Get a new tracer by specifying its scope.
     /// If a tracer with the same scope already exists, it will be returned.
     /// See https://opentelemetry.io/docs/specs/otel/trace/api/#get-a-tracer
-    pub fn getTracer(self: TracerProvider, scope: InstrumentationScope) anyerror!*Tracer {
-        return self.vtable.getTracerFn(self.ptr, scope);
+    pub fn getTracer(self: *TracerProviderImpl, scope: InstrumentationScope) anyerror!*TracerImpl {
+        return self.getTracerFn(self, scope);
     }
 
     /// Shutdown the tracer provider and free up associated resources.
-    pub fn shutdown(self: TracerProvider) void {
-        return self.vtable.shutdownFn(self.ptr);
+    pub fn shutdown(self: *TracerProviderImpl) void {
+        return self.shutdownFn(self);
     }
 };
 
-/// Tracer is the interface for creating Spans.
+/// TracerImpl is the interface for creating Spans.
+/// Implementations can be satisfied by any type by having a member field of type
+/// TracerImpl and implementing the required functions.
 /// See https://opentelemetry.io/docs/specs/otel/trace/api/#tracer
-pub const Tracer = struct {
-    ptr: *anyopaque,
-    vtable: *const VTable,
-
-    const VTable = struct {
-        startSpanFn: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, name: []const u8, options: StartOptions) anyerror!trace.Span,
-        isEnabledFn: *const fn (ptr: *anyopaque) bool,
-    };
+pub const TracerImpl = struct {
+    startSpanFn: *const fn (*TracerImpl, std.mem.Allocator, []const u8, StartOptions) anyerror!trace.Span,
+    isEnabledFn: *const fn (*TracerImpl) bool,
 
     /// StartOptions contains options for starting a new span
     pub const StartOptions = struct {
@@ -51,15 +45,19 @@ pub const Tracer = struct {
     };
 
     /// Create a new Span
-    pub fn startSpan(self: Tracer, allocator: std.mem.Allocator, name: []const u8, options: StartOptions) !trace.Span {
-        return self.vtable.startSpanFn(self.ptr, allocator, name, options);
+    pub fn startSpan(self: *TracerImpl, allocator: std.mem.Allocator, name: []const u8, options: StartOptions) !trace.Span {
+        return self.startSpanFn(self, allocator, name, options);
     }
 
     /// Check if this Tracer is enabled for the given parameters
-    pub fn isEnabled(self: Tracer) bool {
-        return self.vtable.isEnabledFn(self.ptr);
+    pub fn isEnabled(self: *TracerImpl) bool {
+        return self.isEnabledFn(self);
     }
 };
+
+// Type aliases for backward compatibility
+pub const TracerProvider = TracerProviderImpl;
+pub const Tracer = TracerImpl;
 
 /// Non-recording span implementation for wrapping SpanContext
 pub const NonRecordingSpan = struct {
