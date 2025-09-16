@@ -229,23 +229,12 @@ pub fn setGlobalTracerProvider(provider: *TracerProvider) void {
     global_tracer_provider = provider;
 }
 
-/// Get the global TracerProvider. Returns a default provider if none has been set.
-pub fn getGlobalTracerProvider() *TracerProvider {
+/// Get the global TracerProvider. Returns null if none has been set.
+/// Applications should use a proper TracerProvider implementation.
+pub fn getGlobalTracerProvider() ?*TracerProvider {
     global_tracer_provider_mutex.lock();
     defer global_tracer_provider_mutex.unlock();
-
-    if (global_tracer_provider) |provider| {
-        return provider;
-    }
-
-    // Return a default provider - in a real implementation, this would be a no-op provider
-    // For now, we'll create a basic one (this is not ideal for production)
-    global_tracer_provider = TracerProvider.default() catch {
-        // In case of failure, we could return a no-op provider
-        // For now, we'll panic as this indicates a serious issue
-        std.debug.panic("Failed to create default TracerProvider");
-    };
-    return global_tracer_provider.?;
+    return global_tracer_provider;
 }
 
 // Context keys for span propagation
