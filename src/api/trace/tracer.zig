@@ -34,6 +34,7 @@ pub const TracerProviderImpl = struct {
 pub const TracerImpl = struct {
     startSpanFn: *const fn (*TracerImpl, std.mem.Allocator, []const u8, StartOptions) anyerror!trace.Span,
     isEnabledFn: *const fn (*TracerImpl) bool,
+    endSpanFn: *const fn (*TracerImpl, *trace.Span) void,
 
     /// StartOptions contains options for starting a new span
     pub const StartOptions = struct {
@@ -52,6 +53,11 @@ pub const TracerImpl = struct {
     /// Check if this Tracer is enabled for the given parameters
     pub fn isEnabled(self: *TracerImpl) bool {
         return self.isEnabledFn(self);
+    }
+
+    /// End a span - this should be called when the span is completed
+    pub fn endSpan(self: *TracerImpl, span: *trace.Span) void {
+        return self.endSpanFn(self, span);
     }
 };
 

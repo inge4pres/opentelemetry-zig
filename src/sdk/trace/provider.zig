@@ -10,6 +10,8 @@ const TracerAPI = trace_api.TracerImpl;
 
 const RandomIDGenerator = @import("id_generator.zig").RandomIDGenerator;
 
+const Attributes = @import("../../attributes.zig").Attributes;
+
 /// SDK TracerProvider implementation
 pub const TracerProvider = struct {
     const Self = @This();
@@ -104,30 +106,6 @@ pub const TracerProvider = struct {
         return &tracer.tracer;
     }
 
-    /// Get the SDK tracer directly (for internal use)
-    pub fn getSDKTracer(self: *Self, scope: InstrumentationScope) !*Tracer {
-        if (self.is_shutdown.load(.acquire)) {
-            return error.TracerProviderShutdown;
-        }
-
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        // Check if we already have a Tracer for this scope
-        if (self.tracers.get(scope)) |existing_tracer| {
-            return existing_tracer;
-        }
-
-        // Create a new Tracer
-        const tracer = try self.allocator.create(Tracer);
-        tracer.* = Tracer.init(self, scope);
-
-        // Cache the tracer
-        try self.tracers.put(self.allocator, scope, tracer);
-
-        return tracer;
-    }
-
     /// Shutdown the tracer provider and all associated processors
     pub fn shutdown(self: *Self) void {
         if (self.is_shutdown.swap(true, .acq_rel)) {
@@ -215,6 +193,7 @@ pub const Tracer = struct {
             .tracer = TracerAPI{
                 .startSpanFn = startSpan,
                 .isEnabledFn = isEnabled,
+                .endSpanFn = endSpanImpl,
             },
         };
     }
@@ -306,17 +285,17 @@ pub const Tracer = struct {
         return !self.provider.is_shutdown.load(.acquire);
     }
 
+    /// Implementation of Tracer.endSpan
+    /// End a span - this should be called when the span is completed
+    fn endSpanImpl(tracer: *TracerAPI, span: *trace_api.Span) void {
+        const self: *Self = @fieldParentPtr("tracer", tracer);
+        self.endSpan(span);
+    }
+
     /// End a span - this should be called when the span is completed
     pub fn endSpan(self: Self, span: *trace_api.Span) void {
+        defer span.end(null);
         if (!span.is_recording) return;
-
-        // Set end time if not already set
-        if (span.end_time_unix_nano == 0) {
-            span.end_time_unix_nano = @intCast(std.time.nanoTimestamp());
-        }
-
-        // Mark span as no longer recording
-        span.is_recording = false;
 
         // Notify processors that the span has ended
         self.provider.onSpanEnd(span.*);
@@ -346,51 +325,50 @@ test "TracerProvider basic functionality" {
     try std.testing.expect(span.is_recording);
 }
 
+// Mock processor
+const MockProcessor = struct {
+    started_spans: std.ArrayList(*trace_api.Span),
+    ended_spans: std.ArrayList(trace_api.Span),
+
+    pub fn init(alloc: std.mem.Allocator) @This() {
+        return @This(){
+            .started_spans = std.ArrayList(*trace_api.Span).init(alloc),
+            .ended_spans = std.ArrayList(trace_api.Span).init(alloc),
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.started_spans.deinit();
+        self.ended_spans.deinit();
+    }
+
+    pub fn onStart(ctx: *anyopaque, span: *trace_api.Span, _: context.Context) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.started_spans.append(span) catch {};
+    }
+
+    pub fn onEnd(ctx: *anyopaque, span: trace_api.Span) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.ended_spans.append(span) catch {};
+    }
+
+    pub fn shutdown(_: *anyopaque) anyerror!void {}
+    pub fn forceFlush(_: *anyopaque) anyerror!void {}
+
+    pub fn asSpanProcessor(self: *@This()) SpanProcessor {
+        return SpanProcessor{
+            .ptr = self,
+            .vtable = &.{
+                .onStartFn = onStart,
+                .onEndFn = onEnd,
+                .shutdownFn = shutdown,
+                .forceFlushFn = forceFlush,
+            },
+        };
+    }
+};
 test "TracerProvider with processors" {
     const allocator = std.testing.allocator;
-
-    // Mock processor
-    const MockProcessor = struct {
-        started_spans: std.ArrayList(*trace_api.Span),
-        ended_spans: std.ArrayList(trace_api.Span),
-
-        pub fn init(alloc: std.mem.Allocator) @This() {
-            return @This(){
-                .started_spans = std.ArrayList(*trace_api.Span).init(alloc),
-                .ended_spans = std.ArrayList(trace_api.Span).init(alloc),
-            };
-        }
-
-        pub fn deinit(self: *@This()) void {
-            self.started_spans.deinit();
-            self.ended_spans.deinit();
-        }
-
-        pub fn onStart(ctx: *anyopaque, span: *trace_api.Span, _: context.Context) void {
-            const self: *@This() = @ptrCast(@alignCast(ctx));
-            self.started_spans.append(span) catch {};
-        }
-
-        pub fn onEnd(ctx: *anyopaque, span: trace_api.Span) void {
-            const self: *@This() = @ptrCast(@alignCast(ctx));
-            self.ended_spans.append(span) catch {};
-        }
-
-        pub fn shutdown(_: *anyopaque) anyerror!void {}
-        pub fn forceFlush(_: *anyopaque) anyerror!void {}
-
-        pub fn asSpanProcessor(self: *@This()) SpanProcessor {
-            return SpanProcessor{
-                .ptr = self,
-                .vtable = &.{
-                    .onStartFn = onStart,
-                    .onEndFn = onEnd,
-                    .shutdownFn = shutdown,
-                    .forceFlushFn = forceFlush,
-                },
-            };
-        }
-    };
 
     // Create ID generator
     const seed = 0;
@@ -410,14 +388,53 @@ test "TracerProvider with processors" {
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
     var span = try tracer.startSpan(allocator, "test-span", .{});
     defer span.deinit();
+    defer tracer.endSpan(&span);
 
     // Verify the processor was called on start
     try std.testing.expectEqual(@as(usize, 1), mock_processor.started_spans.items.len);
+}
 
-    // End the span using the SDK method
-    const sdk_tracer = try provider.getSDKTracer(.{ .name = "test-tracer", .version = "1.0.0" });
-    sdk_tracer.endSpan(&span);
+test "TracerProvider end span with links and events" {
+    const allocator = std.testing.allocator;
 
-    // Verify the processor was called on end
-    try std.testing.expectEqual(@as(usize, 1), mock_processor.ended_spans.items.len);
+    // Create ID generator
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown(); // Use shutdown to properly destroy the provider
+
+    // Get a tracer via the interface
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+
+    // Create a span with links and attributes
+    var link_span_context = trace_api.SpanContext.init(
+        trace_api.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace_api.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace_api.TraceFlags.default(),
+        trace_api.TraceState.init(allocator),
+        false,
+    );
+    defer link_span_context.trace_state.deinit();
+
+    const link = trace_api.Link.init(allocator, link_span_context);
+
+    const attributes = try Attributes.from(allocator, .{
+        "key1", @as([]const u8, "value1"),
+        "key2", @as(i64, 42),
+    });
+    defer allocator.free(attributes.?);
+
+    var span = try tracer.startSpan(allocator, "test-span-with-link", .{
+        .links = &[_]trace_api.Link{link},
+        .attributes = attributes,
+    });
+    defer span.deinit();
+    defer tracer.endSpan(&span);
+
+    try std.testing.expectEqualStrings("test-span-with-link", span.name);
+    try std.testing.expect(span.is_recording);
+    try std.testing.expectEqual(@as(usize, 1), span.links.items.len);
+    try std.testing.expectEqual(@as(usize, 2), span.attributes.count());
 }

@@ -293,8 +293,8 @@ test "Span_Concurrent_Creation" {
                 fn work(t: *TracerAPI, alloc: std.mem.Allocator, index: usize) void {
                     for (0..10) |_| {
                         var span = t.startSpan(alloc, "concurrent_span", .{}) catch return;
+                        defer t.endSpan(&span);
                         span.setAttribute("thread_id", .{ .int = @intCast(index) }) catch {};
-                        span.end(null);
                     }
                 }
             };
