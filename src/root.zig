@@ -1,9 +1,8 @@
-// OpenTelemetry SDK implementation for Zig.
-
 // Test SDK implementations
 test {
     _ = @import("sdk/trace.zig");
     _ = @import("sdk/metrics.zig");
+    _ = @import("sdk/logs.zig");
     // helpers
     _ = @import("attributes.zig");
     _ = @import("scope.zig");

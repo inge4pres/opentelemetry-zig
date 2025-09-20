@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) !void {
 
     // Modules section
     const sdk_mod = b.addModule("sdk", .{
-        .root_source_file = b.path("src/sdk.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .strip = false,
@@ -161,8 +161,16 @@ pub fn build(b: *std.Build) !void {
     }
 
     // Documentation webiste with autodoc
+    const sdk_docs = b.addObject(.{
+        .name = "docs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
     const install_docs = b.addInstallDirectory(.{
-        .source_dir = sdk_lib.getEmittedDocs(),
+        .source_dir = sdk_docs.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
