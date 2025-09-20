@@ -1,3 +1,5 @@
+//! OTLP exporter for metrics.
+
 const std = @import("std");
 
 const log = std.log.scoped(.otlp_exporter);

@@ -1,3 +1,5 @@
+//! OpenTelemetry Tracing SDK.
+
 pub const SpanProcessor = @import("trace/span_processor.zig").SpanProcessor;
 pub const SimpleProcessor = @import("trace/span_processor.zig").SimpleProcessor;
 pub const BatchingProcessor = @import("trace/span_processor.zig").BatchingProcessor;

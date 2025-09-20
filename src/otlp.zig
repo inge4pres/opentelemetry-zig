@@ -1,5 +1,11 @@
-///! Encapsulate the transport protocol for the OpenTelemetry Protocol (OTLP).
-///! OTLP transport can be of 2 flavors: HTTP or gRPC.
+//! Encapsulate the transport protocol for the OpenTelemetry Protocol (OTLP).
+//! This module provides facilities to export signals via the OpenTelemetry Protocol (OTLP).
+//! OTLP is a protocol used for transmitting telemetry data across networks, encoding them with protobuf or JSON.
+//! See https://opentelemetry.io/docs/specs/otlp/
+//!
+//! OTLP transport can be have 2 types of transport: HTTP or gRPC.
+//! Currently, only HTTP transport is implemented, because gRPC is not yet supported in Zig's ecosystem.
+
 const std = @import("std");
 const http = std.http;
 const Uri = std.Uri;
