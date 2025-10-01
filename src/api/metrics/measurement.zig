@@ -277,7 +277,7 @@ pub const Measurements = struct {
 // TODO: use this struct when aggregating.
 pub const HistogramDataPoint = struct {
     // Sorted by upper_bound, last is +Inf.
-    // We need tohave them because after exporting we can't reconstruct them.
+    // We need to have them because after exporting we can't reconstruct them.
     explicit_bounds: []const f64,
     bucket_counts: []u64, // Observations per bucket
     sum: ?f64, // Total sum of observations, might not exist when observations can be negative

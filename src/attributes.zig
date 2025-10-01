@@ -38,14 +38,14 @@ pub const AttributeValue = union(enum) {
             },
             .string => return allocator.dupe(u8, self.string),
             .int => {
-                var buf = [_]u8{0} ** 64;
-                const printed = std.fmt.formatIntBuf(&buf, self.int, 10, .lower, .{});
-                return allocator.dupe(u8, buf[0..printed]);
+                var buf: [64]u8 = undefined;
+                const result = std.fmt.bufPrint(&buf, "{d}", .{self.int}) catch unreachable;
+                return allocator.dupe(u8, result[0..result.len]);
             },
             .double => {
-                var buf = [_]u8{0} ** 64;
-                const printed = try std.fmt.formatFloat(&buf, self.double, .{});
-                return allocator.dupe(u8, printed[0..printed.len]);
+                var buf: [64]u8 = undefined;
+                const result = std.fmt.bufPrint(&buf, "{d}", .{self.double}) catch unreachable;
+                return allocator.dupe(u8, result[0..result.len]);
             },
         }
     }
@@ -55,38 +55,16 @@ pub const AttributeValue = union(enum) {
             .bool => return if (self.bool) "0" else "1",
             .string => return self.string,
             .int => {
-                var buf = [_]u8{0} ** 64;
-                const printed = std.fmt.formatIntBuf(&buf, self.int, 10, .lower, .{});
-                return buf[0..printed];
+                var buf: [64]u8 = undefined;
+                const result = std.fmt.bufPrint(&buf, "{d}", .{self.int}) catch unreachable;
+                return result[0..result.len];
             },
             .double => {
-                var buf = [_]u8{0} ** 64;
-                const printed = std.fmt.formatFloat(&buf, self.double, .{ .mode = .decimal, .precision = 6 }) catch "NaN";
-                return printed[0..printed.len];
+                var buf: [64]u8 = undefined;
+                const result = std.fmt.bufPrint(&buf, "{d}", .{self.double}) catch unreachable;
+                return result[0..result.len];
             },
         }
-    }
-
-    fn hash(self: AttributeValue) u64 {
-        var h = std.hash.Wyhash.init(0);
-        switch (self) {
-            .bool => {
-                const ret: []const u8 = if (self.bool) "0" else "1";
-                h.update(ret);
-            },
-            .string => return h.update(self.string),
-            .int => {
-                var buf = [_]u8{0} ** 64;
-                const printed = std.fmt.formatIntBuf(&buf, self.int, 10, .lower, .{});
-                h.update(buf[0..printed]);
-            },
-            .double => {
-                var buf = [_]u8{0} ** 64;
-                const printed = try std.fmt.formatFloat(&buf, self.double, .{});
-                h.update(printed[0..printed.len]);
-            },
-        }
-        return h.final();
     }
 };
 
@@ -101,7 +79,7 @@ pub const Attribute = struct {
         const value = try self.value.toString(allocator);
         defer allocator.free(value);
 
-        const ret = try std.fmt.bufPrint(&buf, "{s}:{s}", .{ self.key, value });
+        const ret = try std.fmt.bufPrint(&buf, "{s}={s}", .{ self.key, value });
         return allocator.dupe(u8, ret[0..ret.len]);
     }
 };
@@ -227,7 +205,34 @@ test "attribute to string" {
     const str = try attr.toString(std.testing.allocator);
     defer std.testing.allocator.free(str);
 
-    try std.testing.expectEqualStrings("name:value", str);
+    try std.testing.expectEqualStrings("name=value", str);
+
+    // boolean
+    const attr1 = Attribute{ .key = "enabled", .value = .{ .bool = true } };
+    const str1 = try attr1.toString(std.testing.allocator);
+    defer std.testing.allocator.free(str1);
+    try std.testing.expectEqualStrings("enabled=0", str1);
+
+    // int
+    const attr2 = Attribute{ .key = "number", .value = .{ .int = 12345 } };
+    const str2 = try attr2.toString(std.testing.allocator);
+    defer std.testing.allocator.free(str2);
+    try std.testing.expectEqualStrings("number=12345", str2);
+}
+
+test "attribute noalloc to string" {
+    const attr = Attribute{ .key = "name", .value = .{ .string = "value" } };
+    const str = attr.value.toStringNoAlloc();
+    try std.testing.expectEqualStrings("value", str);
+
+    // int and float
+    const attr2 = Attribute{ .key = "number", .value = .{ .int = 12345 } };
+    const str2 = attr2.value.toStringNoAlloc();
+    try std.testing.expectEqualStrings("12345", str2);
+
+    const attr3 = Attribute{ .key = "float", .value = .{ .double = 3.14159 } };
+    const str3 = attr3.value.toStringNoAlloc();
+    try std.testing.expectEqualStrings("3.14159", str3);
 }
 
 test "attribute empty string to string" {

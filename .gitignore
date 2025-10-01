@@ -1,3 +1,4 @@
 .zig-cache
 zig-out
-
+## docs artifacts
+TRACE_API_COMPLETENESS.md

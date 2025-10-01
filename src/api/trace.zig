@@ -83,18 +83,18 @@ fn serializeField(allocator: std.mem.Allocator, field_value: anytype) !attribute
             return .{ .int = field_value.value };
         },
         TraceState => {
-            var trace_state_buf = std.ArrayList(u8).init(allocator);
-            defer trace_state_buf.deinit();
+            var trace_state_buf = std.ArrayList(u8){};
+            defer trace_state_buf.deinit(allocator);
 
             var iterator = field_value.entries.iterator();
             var first = true;
             while (iterator.next()) |entry| {
                 if (!first) {
-                    try trace_state_buf.append(',');
+                    try trace_state_buf.append(allocator, ',');
                 }
-                try trace_state_buf.appendSlice(entry.key_ptr.*);
-                try trace_state_buf.append('=');
-                try trace_state_buf.appendSlice(entry.value_ptr.*);
+                try trace_state_buf.appendSlice(allocator, entry.key_ptr.*);
+                try trace_state_buf.append(allocator, '=');
+                try trace_state_buf.appendSlice(allocator, entry.value_ptr.*);
                 first = false;
             }
 

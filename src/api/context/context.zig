@@ -222,12 +222,13 @@ pub const Token = struct {
 const ContextStack = struct {
     /// Stack of attached contexts
     contexts: std.ArrayList(Context),
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
     /// Initializes a new context stack.
     fn init(allocator: std.mem.Allocator) Self {
-        return Self{ .contexts = std.ArrayList(Context).init(allocator) };
+        return Self{ .contexts = std.ArrayList(Context){}, .allocator = allocator };
     }
 
     /// Releases all resources and contexts in the stack.
@@ -235,7 +236,7 @@ const ContextStack = struct {
         for (self.contexts.items) |*ctx| {
             ctx.deinit();
         }
-        self.contexts.deinit();
+        self.contexts.deinit(self.allocator);
     }
 
     /// Returns the current (top-most) context from the stack.
@@ -246,7 +247,7 @@ const ContextStack = struct {
     /// Pushes a context onto the stack and returns a detachment token.
     fn attach(self: *Self, context: Context) !Token {
         const position = @as(u32, @intCast(self.contexts.items.len));
-        try self.contexts.append(context);
+        try self.contexts.append(self.allocator, context);
         return Token{ .position = position };
     }
 
@@ -354,7 +355,7 @@ pub fn detachContext(token: Token) DetachError!bool {
 /// ```
 pub fn cleanup() void {
     if (context_stack) |stack| {
-        const allocator = stack.contexts.allocator;
+        const allocator = stack.allocator;
         stack.deinit();
         allocator.destroy(stack);
         context_stack = null;
@@ -495,9 +496,9 @@ test "runtime key creation thread safety" {
     };
 
     var shared = SharedData{
-        .keys = std.ArrayList(ContextKey).init(std.testing.allocator),
+        .keys = std.ArrayList(ContextKey){},
     };
-    defer shared.keys.deinit();
+    defer shared.keys.deinit(std.testing.allocator);
 
     const keyGenWorker = struct {
         fn run(data: *SharedData, thread_id: u32) void {
@@ -519,7 +520,7 @@ test "runtime key creation thread safety" {
             // Add to shared collection
             data.mutex.lock();
             defer data.mutex.unlock();
-            data.keys.appendSlice(&local_keys) catch unreachable;
+            data.keys.appendSlice(std.testing.allocator, &local_keys) catch unreachable;
         }
     }.run;
 

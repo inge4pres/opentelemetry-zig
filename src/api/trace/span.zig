@@ -222,8 +222,8 @@ pub const Span = struct {
             .start_time_unix_nano = @as(u64, @intCast(std.time.nanoTimestamp())),
             .end_time_unix_nano = 0,
             .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(allocator),
-            .events = std.ArrayList(Event).init(allocator),
-            .links = std.ArrayList(Link).init(allocator),
+            .events = std.ArrayList(Event){},
+            .links = std.ArrayList(Link){},
             .status = null,
             .is_recording = true,
             .allocator = allocator,
@@ -243,8 +243,8 @@ pub const Span = struct {
             .start_time_unix_nano = 0,
             .end_time_unix_nano = 0,
             .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(dummy_allocator.allocator()),
-            .events = std.ArrayList(Event).init(dummy_allocator.allocator()),
-            .links = std.ArrayList(Link).init(dummy_allocator.allocator()),
+            .events = std.ArrayList(Event){},
+            .links = std.ArrayList(Link){},
             .status = null,
             .is_recording = false, // Non-recording spans are never recording
             .allocator = dummy_allocator.allocator(),
@@ -267,11 +267,11 @@ pub const Span = struct {
         for (self.events.items) |*event| {
             event.deinit();
         }
-        self.events.deinit();
+        self.events.deinit(self.allocator);
         for (self.links.items) |*link| {
             link.deinit();
         }
-        self.links.deinit();
+        self.links.deinit(self.allocator);
     }
 
     /// Get the SpanContext for this Span
@@ -311,7 +311,7 @@ pub const Span = struct {
             }
         }
 
-        try self.events.append(event);
+        try self.events.append(self.allocator, event);
     }
 
     /// Add a link to another Span
@@ -335,7 +335,7 @@ pub const Span = struct {
             }
         }
 
-        try self.links.append(link);
+        try self.links.append(self.allocator, link);
     }
 
     /// Set the status of the Span
@@ -377,7 +377,7 @@ pub const Span = struct {
             }
         }
 
-        try self.events.append(event);
+        try self.events.append(self.allocator, event);
     }
 
     /// End the Span
