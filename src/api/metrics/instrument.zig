@@ -763,7 +763,7 @@ fn testCounterCollect(counter: *Counter(u64)) !void {
     for (0..1000) |_| {
         counter.lock.lock();
         counter.lock.unlock();
-        std.time.sleep(25);
+        std.Thread.sleep(25);
     }
 
     const fetched = try counter.measurementsData(std.testing.allocator);
@@ -809,7 +809,7 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
     for (0..1000) |_| {
         histogram.lock.lock();
         histogram.lock.unlock();
-        std.time.sleep(25);
+        std.Thread.sleep(25);
     }
 
     const fetched = try histogram.measurementsData(std.testing.allocator);

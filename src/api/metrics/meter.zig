@@ -598,7 +598,7 @@ pub const AggregatedMetrics = struct {
         meter.mx.lock();
         defer meter.mx.unlock();
 
-        var results = std.ArrayList(Measurements).init(allocator);
+        var results = std.ArrayList(Measurements){};
 
         var iter = meter.instruments.valueIterator();
         while (iter.next()) |instr| {
@@ -615,7 +615,7 @@ pub const AggregatedMetrics = struct {
             // then fill the result with the aggregated data points
             // only if there are data points.
             if (aggregated_data) |agg| {
-                try results.append(Measurements{
+                try results.append(allocator, Measurements{
                     .scope = .{
                         .name = meter.scope.name,
                         .version = meter.scope.version,
@@ -628,7 +628,7 @@ pub const AggregatedMetrics = struct {
                 });
             }
         }
-        return try results.toOwnedSlice();
+        return try results.toOwnedSlice(allocator);
     }
 };
 
@@ -746,7 +746,7 @@ test "aggregated metrics do not duplicate data points" {
     defer std.testing.allocator.free(result_second);
 
     std.testing.expectEqual(0, result_second.len) catch |err| {
-        log.err("bad result from AggregatedMetrics.fetch():\n{?}", .{result_second[0]});
+        log.err("bad result from AggregatedMetrics.fetch():\n{}", .{result_second[0]});
         return err;
     };
 }

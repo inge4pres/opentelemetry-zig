@@ -192,10 +192,10 @@ pub const MeasurementsData = union(enum) {
         var ret = try std.ArrayList(DataPoint(T)).initCapacity(allocator, seen.count());
         var i = seen.valueIterator();
         while (i.next()) |entry| {
-            try ret.append(entry.*);
+            try ret.append(allocator, entry.*);
         }
 
-        return try ret.toOwnedSlice();
+        return try ret.toOwnedSlice(allocator);
     }
 };
 

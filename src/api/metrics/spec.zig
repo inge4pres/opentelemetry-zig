@@ -90,7 +90,7 @@ fn validateUnit(unit: ?[]const u8) FormatError!void {
             return FormatError.invalidUnit;
         }
         for (u) |c| {
-            if (!std.ascii.isASCII(c)) {
+            if (!std.ascii.isAscii(c)) {
                 return FormatError.invalidUnit;
             }
         }
