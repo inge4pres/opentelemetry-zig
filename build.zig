@@ -52,8 +52,6 @@ pub fn build(b: *std.Build) !void {
     // This only builds the test executable but does not run it.
     const sdk_unit_tests = b.addTest(.{
         .root_module = sdk_mod,
-        .target = target,
-        .optimize = optimize,
         // Use custom test runner to capture log output
         .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
         // Allow passing test filter using the build args.
@@ -188,8 +186,8 @@ fn buildExamples(
     proto_mod: *std.Build.Module,
     name_filter: ?[]const u8,
 ) ![]*std.Build.Step.Compile {
-    var exes = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
-    errdefer exes.deinit();
+    var exes = std.ArrayList(*std.Build.Step.Compile){};
+    errdefer exes.deinit(b.allocator);
 
     var ex_dir = try examples_dir.getPath3(b, null).openDir("", .{ .iterate = true });
     defer ex_dir.close();
@@ -215,14 +213,14 @@ fn buildExamples(
                     .{ .name = "opentelemetry-proto", .module = proto_mod },
                 },
             });
-            try exes.append(b.addExecutable(.{
+            try exes.append(b.allocator, b.addExecutable(.{
                 .name = name,
                 .root_module = b_mod,
             }));
         }
     }
 
-    return exes.toOwnedSlice();
+    return exes.toOwnedSlice(b.allocator);
 }
 
 fn buildBenchmarks(
@@ -232,8 +230,8 @@ fn buildBenchmarks(
     benchmark_mod: *std.Build.Module,
     debug_mode: bool,
 ) ![]*std.Build.Step.Compile {
-    var bench_tests = std.ArrayList(*std.Build.Step.Compile).init(b.allocator);
-    errdefer bench_tests.deinit();
+    var bench_tests = std.ArrayList(*std.Build.Step.Compile){};
+    errdefer bench_tests.deinit(b.allocator);
 
     var test_dir = try bench_dir.getPath3(b, null).openDir("", .{ .iterate = true });
     defer test_dir.close();
@@ -263,11 +261,11 @@ fn buildBenchmarks(
                 .filters = b.args orelse &[0][]const u8{},
             });
 
-            try bench_tests.append(test_step);
+            try bench_tests.append(b.allocator, test_step);
         }
     }
 
-    return bench_tests.toOwnedSlice();
+    return bench_tests.toOwnedSlice(b.allocator);
 }
 
 fn getZigFileName(file_name: []const u8) ?[]const u8 {

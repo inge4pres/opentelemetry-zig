@@ -15,7 +15,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.1",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -24,12 +24,12 @@
     // internet connectivity.
     .dependencies = .{
         .zbench = .{
-            .url = "https://github.com/hendriknielaender/zBench/archive/v0.9.3.tar.gz",
-            .hash = "zbench-0.9.3-YTdc79DoAABUp44km7nmp_E7XxPzBMl3FesDOU6J8S-n",
+            .url = "git+https://github.com/hendriknielaender/zBench?ref=v0.11.2#2bdf0c62c5bf761d282e889e34fb33bc41484e6f",
+            .hash = "zbench-0.11.2-YTdc7zolAQDlBF9i0ywXIvDjafL3Kg27S-aFUq6dU5zy",
         },
         .opentelemetry_proto = .{
-            .url = "git+https://github.com/zig-o11y/opentelemetry-proto#6868d61476557a19f651964c85d7366efe81f80b",
-            .hash = "opentelemetry_proto-1.7.0-S4Y0u6GDAAB7TZRKgg9k9yZXxmLAQPxhIu06b_iKq9tz",
+            .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=v1.8.0#d90ccb1994410d7c34c0976e5953bac77b058189",
+            .hash = "opentelemetry_proto-1.8.0-S4Y0uzckAgDQ5JramCN1KvIP0PCS_gK7Z2siW2D-75lK",
         },
     },
     .paths = .{
