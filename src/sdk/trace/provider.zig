@@ -36,7 +36,7 @@ pub const TracerProvider = struct {
         self.* = Self{
             .allocator = allocator,
             .tracers = .empty,
-            .processors = std.ArrayList(SpanProcessor).init(allocator),
+            .processors = std.ArrayList(SpanProcessor){},
             .id_generator = id_generator,
             .mutex = std.Thread.Mutex{},
             .is_shutdown = std.atomic.Value(bool).init(false),
@@ -50,7 +50,7 @@ pub const TracerProvider = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.processors.deinit();
+        self.processors.deinit(self.allocator);
     }
 
     /// Get the TracerProvider interface for this implementation
@@ -79,7 +79,7 @@ pub const TracerProvider = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        try self.processors.append(processor);
+        try self.processors.append(self.allocator, processor);
     }
 
     /// Get a tracer with the given scope (returns interface)
@@ -129,7 +129,7 @@ pub const TracerProvider = struct {
         }
         self.tracers.deinit(self.allocator);
 
-        self.processors.deinit();
+        self.processors.deinit(self.allocator);
 
         // Unlock before destroying the struct
         self.mutex.unlock();
@@ -327,29 +327,31 @@ test "TracerProvider basic functionality" {
 
 // Mock processor
 const MockProcessor = struct {
+    allocator: std.mem.Allocator,
     started_spans: std.ArrayList(*trace_api.Span),
     ended_spans: std.ArrayList(trace_api.Span),
 
-    pub fn init(alloc: std.mem.Allocator) @This() {
+    pub fn init(allocator: std.mem.Allocator) @This() {
         return @This(){
-            .started_spans = std.ArrayList(*trace_api.Span).init(alloc),
-            .ended_spans = std.ArrayList(trace_api.Span).init(alloc),
+            .allocator = allocator,
+            .started_spans = std.ArrayList(*trace_api.Span){},
+            .ended_spans = std.ArrayList(trace_api.Span){},
         };
     }
 
     pub fn deinit(self: *@This()) void {
-        self.started_spans.deinit();
-        self.ended_spans.deinit();
+        self.started_spans.deinit(self.allocator);
+        self.ended_spans.deinit(self.allocator);
     }
 
     pub fn onStart(ctx: *anyopaque, span: *trace_api.Span, _: context.Context) void {
         const self: *@This() = @ptrCast(@alignCast(ctx));
-        self.started_spans.append(span) catch {};
+        self.started_spans.append(self.allocator, span) catch {};
     }
 
     pub fn onEnd(ctx: *anyopaque, span: trace_api.Span) void {
         const self: *@This() = @ptrCast(@alignCast(ctx));
-        self.ended_spans.append(span) catch {};
+        self.ended_spans.append(self.allocator, span) catch {};
     }
 
     pub fn shutdown(_: *anyopaque) anyerror!void {}

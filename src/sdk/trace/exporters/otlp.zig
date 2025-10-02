@@ -11,8 +11,6 @@ const pbcollector_trace = proto.collector_trace_v1;
 const pbcommon = proto.common_v1;
 const pbresource = proto.resource_v1;
 
-const ManagedString = @import("protobuf").ManagedString;
-
 const InstrumentationScope = @import("../../../scope.zig").InstrumentationScope;
 
 /// OTLPExporter exports trace data using the OpenTelemetry Protocol (OTLP)
@@ -51,8 +49,10 @@ pub const OTLPExporter = struct {
         if (spans.len == 0) return;
 
         // Convert spans to OTLP format
-        const request = try self.spansToOTLPRequest(spans);
-        defer self.cleanupRequest(request);
+        var request = try self.spansToOTLPRequest(spans);
+        // FIXME this should be
+        // defer request.deinit(self.allocator);
+        defer self.cleanupRequest(&request);
         const otlp_data = otlp.Signal.Data{ .traces = request };
 
         // Export using the OTLP transport
@@ -65,7 +65,7 @@ pub const OTLPExporter = struct {
     }
 
     fn spansToOTLPRequest(self: *Self, spans: []trace.Span) !pbcollector_trace.ExportTraceServiceRequest {
-        var resource_spans = std.ArrayList(pbtrace.ResourceSpans).init(self.allocator);
+        var resource_spans = std.ArrayList(pbtrace.ResourceSpans){};
 
         // Group spans by instrumentation scope
         var scope_groups = std.HashMap(
@@ -77,7 +77,7 @@ pub const OTLPExporter = struct {
         defer {
             var iterator = scope_groups.valueIterator();
             while (iterator.next()) |list| {
-                list.deinit();
+                list.deinit(self.allocator);
             }
             scope_groups.deinit();
         }
@@ -87,24 +87,24 @@ pub const OTLPExporter = struct {
             const scope_key = span.scope;
             const result = try scope_groups.getOrPut(scope_key);
             if (!result.found_existing) {
-                result.value_ptr.* = std.ArrayList(trace.Span).init(self.allocator);
+                result.value_ptr.* = std.ArrayList(trace.Span){};
             }
-            try result.value_ptr.append(span);
+            try result.value_ptr.append(self.allocator, span);
         }
 
-        var scope_spans_list = std.ArrayList(pbtrace.ScopeSpans).init(self.allocator);
+        var scope_spans_list = std.ArrayList(pbtrace.ScopeSpans){};
 
         // Convert each scope group to OTLP format
         var scope_iterator = scope_groups.iterator();
         while (scope_iterator.next()) |entry| {
             const scope_spans = entry.value_ptr.*;
 
-            var otlp_spans = std.ArrayList(pbtrace.Span).init(self.allocator);
+            var otlp_spans = std.ArrayList(pbtrace.Span){};
 
             // Convert each span to OTLP format
             for (scope_spans.items) |span| {
-                const otlp_span = try self.spanToOTLP(span);
-                try otlp_spans.append(otlp_span);
+                const otlp_span = try self.spanToOTLP(span, self.allocator);
+                try otlp_spans.append(self.allocator, otlp_span);
             }
 
             // Create scope information from the first span's scope
@@ -118,90 +118,90 @@ pub const OTLPExporter = struct {
                     .attributes = null,
                 };
 
-            var scope_attributes = std.ArrayList(pbcommon.KeyValue).init(self.allocator);
+            var scope_attributes = std.ArrayList(pbcommon.KeyValue){};
             if (scope_info.attributes) |attrs| {
                 for (attrs) |attr| {
                     const key_value = try attributeToOTLP(attr.key, attr.value);
-                    try scope_attributes.append(key_value);
+                    try scope_attributes.append(self.allocator, key_value);
                 }
             }
 
             const scope_span = pbtrace.ScopeSpans{
                 .scope = pbcommon.InstrumentationScope{
-                    .name = ManagedString.managed(scope_info.name),
-                    .version = ManagedString.managed(scope_info.version orelse ""),
+                    .name = (scope_info.name),
+                    .version = (scope_info.version orelse ""),
                     .attributes = scope_attributes,
                     .dropped_attributes_count = 0,
                 },
                 .spans = otlp_spans,
-                .schema_url = ManagedString.managed(scope_info.schema_url orelse ""),
+                .schema_url = (scope_info.schema_url orelse ""),
             };
-            try scope_spans_list.append(scope_span);
+            try scope_spans_list.append(self.allocator, scope_span);
         }
 
         const resource_span = pbtrace.ResourceSpans{
             .resource = pbresource.Resource{
-                .attributes = std.ArrayList(pbcommon.KeyValue).init(self.allocator),
+                .attributes = std.ArrayList(pbcommon.KeyValue){},
                 .dropped_attributes_count = 0,
-                .entity_refs = std.ArrayList(pbcommon.EntityRef).init(self.allocator),
+                .entity_refs = std.ArrayList(pbcommon.EntityRef){},
             },
             .scope_spans = scope_spans_list,
-            .schema_url = ManagedString.managed(""),
+            .schema_url = (""),
         };
-        try resource_spans.append(resource_span);
+        try resource_spans.append(self.allocator, resource_span);
 
         return pbcollector_trace.ExportTraceServiceRequest{
             .resource_spans = resource_spans,
         };
     }
 
-    fn cleanupRequest(_: *Self, request: pbcollector_trace.ExportTraceServiceRequest) void {
+    fn cleanupRequest(self: *Self, request: *pbcollector_trace.ExportTraceServiceRequest) void {
         // Clean up the ArrayLists we created
-        for (request.resource_spans.items) |resource_span| {
+        for (request.resource_spans.items) |*resource_span| {
             // Clean up resource attributes
-            if (resource_span.resource) |resource| {
-                resource.attributes.deinit();
-                resource.entity_refs.deinit();
+            if (resource_span.resource) |*resource| {
+                resource.attributes.deinit(self.allocator);
+                resource.entity_refs.deinit(self.allocator);
             }
 
-            for (resource_span.scope_spans.items) |scope_span| {
+            for (resource_span.scope_spans.items) |*scope_span| {
                 // Clean up scope attributes
-                if (scope_span.scope) |scope| {
-                    scope.attributes.deinit();
+                if (scope_span.scope) |*scope| {
+                    scope.attributes.deinit(self.allocator);
                 }
 
                 // Clean up spans
-                for (scope_span.spans.items) |span| {
+                for (scope_span.spans.items) |*span| {
                     // Clean up span attributes
-                    span.attributes.deinit();
+                    span.attributes.deinit(self.allocator);
 
                     // Clean up events
-                    for (span.events.items) |event| {
-                        event.attributes.deinit();
+                    for (span.events.items) |*event| {
+                        event.attributes.deinit(self.allocator);
                     }
-                    span.events.deinit();
+                    span.events.deinit(self.allocator);
 
                     // Clean up links
-                    for (span.links.items) |link| {
-                        link.attributes.deinit();
+                    for (span.links.items) |*link| {
+                        link.attributes.deinit(self.allocator);
                     }
-                    span.links.deinit();
+                    span.links.deinit(self.allocator);
                 }
-                scope_span.spans.deinit();
+                scope_span.spans.deinit(self.allocator);
             }
-            resource_span.scope_spans.deinit();
+            resource_span.scope_spans.deinit(self.allocator);
         }
-        request.resource_spans.deinit();
+        request.resource_spans.deinit(self.allocator);
     }
 
-    fn spanToOTLP(self: *Self, span: trace.Span) !pbtrace.Span {
+    fn spanToOTLP(_: *Self, span: trace.Span, allocator: std.mem.Allocator) !pbtrace.Span {
         const span_context = span.span_context;
 
         // Convert status
         var status: ?pbtrace.Status = null;
         if (span.status) |span_status| {
             status = pbtrace.Status{
-                .message = ManagedString.managed(span_status.description),
+                .message = (span_status.description),
                 .code = switch (span_status.code) {
                     .Unset => pbtrace.Status.StatusCode.STATUS_CODE_UNSET,
                     .Ok => pbtrace.Status.StatusCode.STATUS_CODE_OK,
@@ -211,73 +211,73 @@ pub const OTLPExporter = struct {
         }
 
         // Convert attributes
-        var attributes = std.ArrayList(pbcommon.KeyValue).init(self.allocator);
+        var attributes = std.ArrayList(pbcommon.KeyValue){};
         for (span.attributes.keys(), span.attributes.values()) |key, value| {
             const key_value = try attributeToOTLP(key, value);
-            try attributes.append(key_value);
+            try attributes.append(allocator, key_value);
         }
 
         // Convert events
-        var events = std.ArrayList(pbtrace.Span.Event).init(self.allocator);
+        var events = std.ArrayList(pbtrace.Span.Event){};
         for (span.events.items) |event| {
-            var event_attributes = std.ArrayList(pbcommon.KeyValue).init(self.allocator);
+            var event_attributes = std.ArrayList(pbcommon.KeyValue){};
             for (event.attributes.keys(), event.attributes.values()) |key, value| {
                 const key_value = try attributeToOTLP(key, value);
-                try event_attributes.append(key_value);
+                try event_attributes.append(allocator, key_value);
             }
 
             const otlp_event = pbtrace.Span.Event{
                 .time_unix_nano = event.timestamp,
-                .name = ManagedString.managed(event.name),
+                .name = (event.name),
                 .attributes = event_attributes,
                 .dropped_attributes_count = 0,
             };
-            try events.append(otlp_event);
+            try events.append(allocator, otlp_event);
         }
 
         // Convert links
-        var links = std.ArrayList(pbtrace.Span.Link).init(self.allocator);
+        var links = std.ArrayList(pbtrace.Span.Link){};
         for (span.links.items) |link| {
-            var link_attributes = std.ArrayList(pbcommon.KeyValue).init(self.allocator);
+            var link_attributes = std.ArrayList(pbcommon.KeyValue){};
             for (link.attributes.keys(), link.attributes.values()) |key, value| {
                 const key_value = try attributeToOTLP(key, value);
-                try link_attributes.append(key_value);
+                try link_attributes.append(allocator, key_value);
             }
 
             const otlp_link = pbtrace.Span.Link{
                 .trace_id = blk: {
                     var buf: [32]u8 = undefined;
                     const hex = link.span_context.trace_id.toHex(&buf);
-                    break :blk ManagedString.managed(hex);
+                    break :blk (hex);
                 },
                 .span_id = blk: {
                     var buf: [16]u8 = undefined;
                     const hex = link.span_context.span_id.toHex(&buf);
-                    break :blk ManagedString.managed(hex);
+                    break :blk (hex);
                 },
-                .trace_state = ManagedString.managed(""), // Convert trace state if needed
+                .trace_state = (""), // Convert trace state if needed
                 .attributes = link_attributes,
                 .dropped_attributes_count = 0,
                 .flags = @intCast(link.span_context.trace_flags.value),
             };
-            try links.append(otlp_link);
+            try links.append(allocator, otlp_link);
         }
 
         return pbtrace.Span{
             .trace_id = blk: {
                 var buf: [32]u8 = undefined;
                 const hex = span_context.trace_id.toHex(&buf);
-                break :blk ManagedString.managed(hex);
+                break :blk (hex);
             },
             .span_id = blk: {
                 var buf: [16]u8 = undefined;
                 const hex = span_context.span_id.toHex(&buf);
-                break :blk ManagedString.managed(hex);
+                break :blk (hex);
             },
-            .trace_state = ManagedString.managed(""), // Convert trace state if needed
-            .parent_span_id = ManagedString.managed(""), // TODO: get from parent context
+            .trace_state = (""), // Convert trace state if needed
+            .parent_span_id = (""), // TODO: get from parent context
             .flags = @intCast(span_context.trace_flags.value),
-            .name = ManagedString.managed(span.name),
+            .name = (span.name),
             .kind = switch (span.kind) {
                 .Internal => pbtrace.Span.SpanKind.SPAN_KIND_INTERNAL,
                 .Server => pbtrace.Span.SpanKind.SPAN_KIND_SERVER,
@@ -299,14 +299,14 @@ pub const OTLPExporter = struct {
 
     fn attributeToOTLP(key: []const u8, value: attribute.AttributeValue) !pbcommon.KeyValue {
         const any_value = switch (value) {
-            .string => |v| pbcommon.AnyValue{ .value = .{ .string_value = ManagedString.managed(v) } },
+            .string => |v| pbcommon.AnyValue{ .value = .{ .string_value = (v) } },
             .bool => |v| pbcommon.AnyValue{ .value = .{ .bool_value = v } },
             .int => |v| pbcommon.AnyValue{ .value = .{ .int_value = v } },
             .double => |v| pbcommon.AnyValue{ .value = .{ .double_value = v } },
         };
 
         return pbcommon.KeyValue{
-            .key = ManagedString.managed(key),
+            .key = (key),
             .value = any_value,
         };
     }
@@ -347,8 +347,10 @@ test "OTLPExporter with InstrumentationScope" {
     }
 
     // Test conversion to OTLP request
-    const request = try exporter.spansToOTLPRequest(test_spans[0..]);
-    defer exporter.cleanupRequest(request);
+    var request = try exporter.spansToOTLPRequest(test_spans[0..]);
+    // FIXME this should be
+    // defer request.deinit(allocator);
+    defer exporter.cleanupRequest(&request);
 
     // Verify that we have resource spans
     try std.testing.expectEqual(@as(usize, 1), request.resource_spans.items.len);
@@ -364,13 +366,13 @@ test "OTLPExporter with InstrumentationScope" {
 
     for (resource_span.scope_spans.items) |scope_span| {
         if (scope_span.scope) |scope| {
-            if (std.meta.eql(scope.name, ManagedString.managed("lib1"))) {
+            if (std.meta.eql(scope.name, ("lib1"))) {
                 found_lib1 = true;
-                try std.testing.expectEqual(ManagedString.managed("1.0.0"), scope.version);
+                try std.testing.expectEqual(("1.0.0"), scope.version);
                 try std.testing.expectEqual(@as(usize, 1), scope_span.spans.items.len);
-            } else if (std.meta.eql(scope.name, ManagedString.managed("lib2"))) {
+            } else if (std.meta.eql(scope.name, ("lib2"))) {
                 found_lib2 = true;
-                try std.testing.expectEqual(ManagedString.managed("1.0.0"), scope.version);
+                try std.testing.expectEqual(("1.0.0"), scope.version);
                 try std.testing.expectEqual(@as(usize, 1), scope_span.spans.items.len);
             }
         }

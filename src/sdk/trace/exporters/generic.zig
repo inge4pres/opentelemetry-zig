@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const trace = @import("../../../api/trace.zig");
 const SpanExporter = @import("../span_exporter.zig").SpanExporter;
@@ -34,6 +35,8 @@ const SerializableSpan = struct {
     }
 };
 
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+
 /// GenericWriterExporter is the generic SpanExporter that outputs spans to the given writer.
 fn GenericWriterExporter(
     comptime Writer: type,
@@ -42,6 +45,11 @@ fn GenericWriterExporter(
         writer: Writer,
 
         const Self = @This();
+
+        const allocator = switch (builtin.mode) {
+            .Debug => debug_allocator.allocator(),
+            else => std.heap.smp_allocator,
+        };
 
         pub fn init(writer: Writer) Self {
             return Self{
@@ -53,14 +61,14 @@ fn GenericWriterExporter(
             const self: *Self = @ptrCast(@alignCast(ctx));
 
             // Convert spans to serializable format
-            var serializable_spans = std.ArrayList(SerializableSpan).init(std.heap.page_allocator);
-            defer serializable_spans.deinit();
+            var serializable_spans = std.ArrayList(SerializableSpan){};
+            defer serializable_spans.deinit(allocator);
 
             for (spans) |span| {
-                try serializable_spans.append(SerializableSpan.fromSpan(span));
+                try serializable_spans.append(allocator, SerializableSpan.fromSpan(span));
             }
 
-            try std.json.stringify(serializable_spans.items, .{}, self.writer);
+            try self.writer.print("{f}", .{std.json.fmt(serializable_spans.items, .{})});
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -86,9 +94,9 @@ pub const StdoutExporter = GenericWriterExporter(std.io.Writer(std.fs.File, std.
 pub const InMemoryExporter = GenericWriterExporter(std.ArrayList(u8).Writer);
 
 test "GenericWriterExporter" {
-    var out_buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer out_buf.deinit();
-    var inmemory_exporter = InMemoryExporter.init(out_buf.writer());
+    var out_buf = std.ArrayList(u8){};
+    defer out_buf.deinit(std.testing.allocator);
+    var inmemory_exporter = InMemoryExporter.init(out_buf.writer(std.testing.allocator));
     var exporter = inmemory_exporter.asSpanExporter();
 
     // Create a proper span for testing

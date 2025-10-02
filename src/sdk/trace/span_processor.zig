@@ -137,7 +137,7 @@ pub const BatchingProcessor = struct {
             .scheduled_delay_millis = config.scheduled_delay_millis,
             .export_timeout_millis = config.export_timeout_millis,
             .max_export_batch_size = config.max_export_batch_size,
-            .queue = std.ArrayList(trace.Span).init(allocator),
+            .queue = std.ArrayList(trace.Span){},
             .mutex = std.Thread.Mutex{},
             .condition = std.Thread.Condition{},
             .export_thread = null,
@@ -153,7 +153,7 @@ pub const BatchingProcessor = struct {
     pub fn deinit(self: *Self) void {
         // Shutdown should have been called before deinit
         std.debug.assert(self.export_thread == null);
-        self.queue.deinit();
+        self.queue.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -189,7 +189,7 @@ pub const BatchingProcessor = struct {
         }
 
         // Add span to queue
-        self.queue.append(span) catch {
+        self.queue.append(self.allocator, span) catch {
             std.log.err("BatchingProcessor failed to add span to queue", .{});
             return;
         };
@@ -290,21 +290,23 @@ test "SimpleProcessor basic functionality" {
 
     // Mock exporter
     const MockExporter = struct {
+        allocator: std.mem.Allocator,
         exported_spans: std.ArrayList(trace.Span),
 
         pub fn init(alloc: std.mem.Allocator) @This() {
             return @This(){
-                .exported_spans = std.ArrayList(trace.Span).init(alloc),
+                .allocator = alloc,
+                .exported_spans = std.ArrayList(trace.Span){},
             };
         }
 
         pub fn deinit(self: *@This()) void {
-            self.exported_spans.deinit();
+            self.exported_spans.deinit(self.allocator);
         }
 
         pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
-            try self.exported_spans.appendSlice(spans);
+            try self.exported_spans.appendSlice(self.allocator, spans);
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -354,21 +356,23 @@ test "BatchingProcessor basic functionality" {
 
     // Mock exporter (same as above)
     const MockExporter = struct {
+        allocator: std.mem.Allocator,
         exported_spans: std.ArrayList(trace.Span),
 
         pub fn init(alloc: std.mem.Allocator) @This() {
             return @This(){
-                .exported_spans = std.ArrayList(trace.Span).init(alloc),
+                .allocator = alloc,
+                .exported_spans = std.ArrayList(trace.Span){},
             };
         }
 
         pub fn deinit(self: *@This()) void {
-            self.exported_spans.deinit();
+            self.exported_spans.deinit(self.allocator);
         }
 
         pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
-            try self.exported_spans.appendSlice(spans);
+            try self.exported_spans.appendSlice(self.allocator, spans);
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -427,7 +431,7 @@ test "BatchingProcessor basic functionality" {
     }
 
     // Wait a bit for the background thread to process
-    std.time.sleep(200 * std.time.ns_per_ms);
+    std.Thread.sleep(200 * std.time.ns_per_ms);
 
     // Force flush to export remaining spans
     try span_processor.forceFlush();
