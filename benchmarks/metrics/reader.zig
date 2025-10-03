@@ -34,7 +34,7 @@ const ReaderBench = struct {
 
     pub fn run(self: @This(), _: std.mem.Allocator) void {
         self.reader.collect() catch |err| {
-            std.debug.print("error during collect: {?}", .{err});
+            std.debug.print("error during collect: {}", .{err});
             @panic("MetricReader collect failed");
         };
     }

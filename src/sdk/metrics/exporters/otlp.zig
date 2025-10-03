@@ -88,11 +88,14 @@ pub const OTLPExporter = struct {
             const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.scope.attributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{
                 .scope = pbcommon.InstrumentationScope{
-                    .name = (measurement.scope.name),
-                    .version = if (measurement.scope.version) |version| (version) else "",
+                    .name = (try self.allocator.dupe(u8, measurement.scope.name)),
+                    .version = if (measurement.scope.version) |version|
+                        try self.allocator.dupe(u8, version)
+                    else
+                        "",
                     .attributes = attributes.values,
                 },
-                .schema_url = if (measurement.scope.schema_url) |s| (s) else "",
+                .schema_url = if (measurement.scope.schema_url) |s| try self.allocator.dupe(u8, s) else "",
                 .metrics = metrics,
             };
         }

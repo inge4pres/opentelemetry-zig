@@ -17,6 +17,7 @@ const proto = @import("opentelemetry-proto");
 const pbmetrics = proto.metrics_v1;
 const pblogs = proto.logs_v1;
 const pbtrace = proto.trace_v1;
+const pbcommon = proto.common_v1;
 
 const pbcollector_metrics = proto.collector_metrics_v1;
 const pbcollector_trace = proto.collector_trace_v1;
@@ -125,13 +126,27 @@ pub const Signal = enum {
                 .http_json => {
                     switch (self) {
                         // All protobuf-generated structs have a json_encode method.
-                        inline else => |data| return data.json_encode(.{}, allocator),
+                        inline else => |data| {
+                            var list: std.ArrayList(u8) = .empty;
+                            try list.ensureTotalCapacity(allocator, 4096);
+                            try list.writer(allocator).print("{f}", .{std.json.fmt(data, .{})});
+                            return try list.toOwnedSlice(allocator);
+                        },
                     }
                 },
                 .http_protobuf, .grpc => {
                     switch (self) {
                         // All protobuf-generated structs have a encode method.
-                        inline else => |data| return data.encode(allocator),
+                        inline else => |data| {
+                            var writer_ctx = std.Io.Writer.Allocating.init(allocator);
+                            errdefer writer_ctx.deinit();
+                            try data.encode(&writer_ctx.writer, allocator);
+                            try writer_ctx.writer.flush();
+                            const result = try writer_ctx.toOwnedSlice();
+                            // Note: toOwnedSlice() empties the buffer, so deinit() should be safe,
+                            // but we skip it to avoid any potential double-free issues
+                            return result;
+                        },
                     }
                 },
             };
@@ -147,7 +162,7 @@ test "otlp Signal.Data get payload bytes" {
     const allocator = std.testing.allocator;
     var data = Signal.Data{
         .metrics = pbcollector_metrics.ExportMetricsServiceRequest{
-            .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).init(allocator),
+            .resource_metrics = .empty,
         },
     };
     const payload = try data.toOwnedSlice(allocator, Protocol.http_protobuf);
@@ -272,13 +287,13 @@ pub const ConfigOptions = struct {
             return allocator.dupe(u8, path);
         }
         // When custom URLs are not specified, use the default logic to build the URL.
-        var url = std.ArrayList(u8).init(allocator);
-        try url.appendSlice(@tagName(self.scheme));
-        try url.appendSlice("://");
-        try url.appendSlice(self.endpoint);
-        try url.appendSlice(signal.defaulttHttpPath());
+        var url = std.ArrayList(u8){};
+        try url.appendSlice(allocator, @tagName(self.scheme));
+        try url.appendSlice(allocator, "://");
+        try url.appendSlice(allocator, self.endpoint);
+        try url.appendSlice(allocator, signal.defaulttHttpPath());
 
-        return url.toOwnedSlice();
+        return url.toOwnedSlice(allocator);
     }
 };
 
@@ -400,17 +415,17 @@ const HTTPClient = struct {
     }
 
     fn extraHeaders(allocator: std.mem.Allocator, config: *ConfigOptions) ![]http.Header {
-        var extra_headers = std.ArrayList(http.Header).init(allocator);
+        var extra_headers = std.ArrayList(http.Header){};
         if (config.headers) |h| {
             const parsed_headers = try parseHeaders(allocator, h);
             defer allocator.free(parsed_headers);
-            try extra_headers.appendSlice(parsed_headers);
+            try extra_headers.appendSlice(allocator, parsed_headers);
         }
         if (config.compression.encodingHeaderValue()) |comp| {
             const ce: http.Header = .{ .name = "content-encoding", .value = comp };
-            try extra_headers.append(ce);
+            try extra_headers.append(allocator, ce);
         }
-        return extra_headers.toOwnedSlice();
+        return extra_headers.toOwnedSlice(allocator);
     }
 
     fn requestOptions(allocator: std.mem.Allocator, config: *ConfigOptions) !http.Client.RequestOptions {
@@ -425,7 +440,6 @@ const HTTPClient = struct {
         };
         const request_options: http.Client.RequestOptions = .{
             .headers = headers,
-            .server_header_buffer = undefined,
             .extra_headers = try extraHeaders(allocator, config),
         };
 
@@ -435,23 +449,36 @@ const HTTPClient = struct {
     // Send the OTLP data to the url using the client's configuration.
     // Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
     // Data will be compressed here.
-    fn send(self: *Self, url: []const u8, data: []const u8) !void {
-        var resp_body = std.ArrayList(u8).init(self.allocator);
-        defer resp_body.deinit();
-
+    fn send(self: *Self, url: []const u8, input_data: []const u8) !void {
         const req_body = req: {
             switch (self.config.compression) {
-                .none => break :req try self.allocator.dupe(u8, data),
+                .none => break :req try self.allocator.dupe(u8, input_data),
                 .gzip => {
-                    // Compress the data using gzip.
-                    // Maximum compression level, favor minimum network transfer over CPU usage.
-                    var uncompressed = std.io.fixedBufferStream(data);
-                    defer uncompressed.reset();
 
-                    var compressed = std.ArrayList(u8).init(self.allocator);
+                    // NOTE(inge4pres) the following code is commented because Compression was removed
+                    // in Zig 0.15.1.
+                    // Uncomment and implement  when Compression is back.
 
-                    try std.compress.gzip.compress(uncompressed.reader(), compressed.writer(), .{ .level = .level_9 });
-                    break :req try compressed.toOwnedSlice();
+                    //*
+                    // var compressed: std.Io.Writer.Allocating(u8) = .init(self.allocator);
+                    // // Compress the data using gzip.
+                    // // Maximum compression level, favor minimum network transfer over CPU usage.
+                    // var uncompressed = std.io.fixedBufferStream(input_data);
+                    // defer uncompressed.reset();
+
+                    // var compressed_buffer: [4096]u8 = undefined;
+                    // const compressor = try std.compress.flate.Compress.init(
+                    //     &compressed.interface,
+                    //     &compressed_buffer,
+                    //     .{ .level = .best, .container = .gzip },
+                    // );
+                    // try compressor.end();
+                    // break :req try compressed.toOwnedSlice();
+                    //
+                    // */
+
+                    // And replace this last line!
+                    break :req try self.allocator.dupe(u8, input_data);
                 },
             }
         };
@@ -471,7 +498,16 @@ const HTTPClient = struct {
             .payload = req_body,
         };
 
-        const response = try self.client.fetch(fetch_request);
+        const response = self.client.fetch(fetch_request) catch |err| {
+            // Handle connection errors that occur before getting a response
+            switch (err) {
+                error.HttpConnectionClosing, error.ReadFailed, error.ConnectionResetByPeer => {
+                    // These are connection-level errors that should be treated as non-retryable
+                    return ExportError.NonRetryableStatusCodeInResponse;
+                },
+                else => return err,
+            }
+        };
 
         switch (response.status) {
             // TODO: handle partial success.
@@ -480,10 +516,12 @@ const HTTPClient = struct {
             // We must handle retries for a subset of status codes.
             // See https://opentelemetry.io/docs/specs/otlp/#otlphttp-response
             .too_many_requests, .bad_gateway, .service_unavailable, .gateway_timeout => {
-                // try self.retry.enqueue(fetch_request, 0);
-                const cloned_req = try cloneFetchOptions(self.allocator, fetch_request);
+                // Use page_allocator for retry thread to avoid lifetime issues with the caller's allocator
+                // The retry thread is detached and may outlive the caller's scope
+                const retry_allocator = std.heap.page_allocator;
+                const cloned_req = try cloneFetchOptions(retry_allocator, fetch_request);
                 const t = try std.Thread.spawn(.{}, retryRequest, .{
-                    self.allocator,
+                    retry_allocator,
                     self.config.retryConfig,
                     cloned_req,
                 });
@@ -504,14 +542,16 @@ const HTTPClient = struct {
 
         var retry_count: u32 = 0;
         while (retry_count < retry_config.max_retries) {
-            var client = http.Client{ .allocator = allocator };
-            defer client.deinit();
-
             defer retry_count += 1;
+
+            var client = http.Client{ .allocator = allocator };
             const response = client.fetch(req_opts) catch |err| {
+                client.deinit();
                 log.err("transport (retry): error connecting to server: {}", .{err});
                 continue;
             };
+            client.deinit();
+
             switch (response.status) {
                 .ok, .accepted => {
                     return;
@@ -710,7 +750,7 @@ pub fn Export(
     defer client.deinit();
 
     const payload = otlp_payload.toOwnedSlice(allocator, config.protocol) catch |err| {
-        log.err("failed to encode payload via {s}: {?}", .{ @tagName(config.protocol), err });
+        log.err("failed to encode payload via {t}: {}", .{ config.protocol, err });
         return err;
     };
     defer allocator.free(payload);
@@ -722,7 +762,7 @@ pub fn Export(
         switch (err) {
             ExportError.RequestEnqueuedForRetry => return err,
             else => {
-                log.err("failed to send payload: {?}", .{err});
+                log.err("failed to send payload: {}", .{err});
                 return err;
             },
         }

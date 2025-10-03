@@ -89,12 +89,12 @@ pub fn main() !void {
     try db_span.setAttribute("db.rows_affected", .{ .int = 1 });
 
     // Simulate some work
-    std.time.sleep(50 * std.time.ns_per_ms); // DB query time
+    std.Thread.sleep(50 * std.time.ns_per_ms); // DB query time
 
     // End the DB span first (child spans should end before parent)
     db_span.end(null);
 
-    std.time.sleep(50 * std.time.ns_per_ms); // HTTP processing time
+    std.Thread.sleep(50 * std.time.ns_per_ms); // HTTP processing time
 
     // End the HTTP span
     http_span.end(null);
