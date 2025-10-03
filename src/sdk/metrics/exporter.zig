@@ -128,7 +128,7 @@ pub const MetricExporter = struct {
 
         // Call the exporter function to process metrics data.
         self.exporter.exportBatch(metrics) catch |e| {
-            log.err("exportBatch failed: {?}", .{e});
+            log.err("exportBatch failed: {}", .{e});
             return ExportResult.Failure;
         };
         return ExportResult.Success;
@@ -143,7 +143,7 @@ pub const MetricExporter = struct {
                 self.exportCompleted.unlock();
                 return;
             } else {
-                std.time.sleep(std.time.ns_per_ms);
+                std.Thread.sleep(std.time.ns_per_ms);
             }
         }
         return MetricReadError.ForceFlushTimedOut;
@@ -180,7 +180,7 @@ fn mockExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void 
 // test harness to build an exporter that times out.
 fn waiterExporter(_: *ExporterImpl, _: []Measurements) MetricReadError!void {
     // Sleep for 1 second to simulate a slow exporter.
-    std.time.sleep(std.time.ns_per_ms * 1000);
+    std.Thread.sleep(std.time.ns_per_ms * 1000);
     return;
 }
 
@@ -445,7 +445,7 @@ fn collectAndExport(
         if (reader.meterProvider) |_| {
             // This will call exporter.exportBatch() every interval.
             reader.collect() catch |e| {
-                log.err("PeriodicExportingReader: collecting failed on reader: {?}", .{e});
+                log.err("PeriodicExportingReader: collecting failed on reader: {}", .{e});
             };
         } else {
             log.warn("PeriodicExportingReader: no meter provider is registered with this MetricReader {any}", .{reader});
@@ -501,7 +501,7 @@ test "e2e periodic exporting metric reader" {
 
     // Need to wait for the PeriodicExportingReader to collect and export the metrics.
     // Wait for more than 1 collection cycle to ensure that no duplication of data points occurs.
-    std.time.sleep(waiting_ms * 4 * std.time.ns_per_ms);
+    std.Thread.sleep(waiting_ms * 4 * std.time.ns_per_ms);
 
     const data = try inMem.fetch(allocator);
     defer {

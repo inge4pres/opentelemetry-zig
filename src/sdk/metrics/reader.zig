@@ -86,8 +86,8 @@ pub const MetricReader = struct {
             return MetricReadError.ConcurrentCollectNotAllowed;
         }
         defer self.mx.unlock();
-        var toBeExported = std.ArrayList(Measurements).init(self.allocator);
-        defer toBeExported.deinit();
+        var toBeExported = std.ArrayList(Measurements){};
+        defer toBeExported.deinit(self.allocator);
 
         if (self.meterProvider) |mp| {
             // Collect the data from each meter provider.
@@ -95,7 +95,7 @@ pub const MetricReader = struct {
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
                 const measurements = AggregatedMetrics.fetch(self.allocator, meter, mp.views.items, self.aggregation) catch |err| {
-                    log.err("error aggregating data points from meter {s}: {?}", .{ meter.scope.name, err });
+                    log.err("error aggregating data points from meter {s}: {}", .{ meter.scope.name, err });
                     continue;
                 };
                 defer self.allocator.free(measurements);
@@ -108,10 +108,10 @@ pub const MetricReader = struct {
                 // by calling deinit() on the Measurements once done.
                 // MetricExporter must be built with the same allocator as MetricReader
                 // to ensure that the memory is managed correctly.
-                try toBeExported.appendSlice(measurements);
+                try toBeExported.appendSlice(self.allocator, measurements);
             }
 
-            const owned = try toBeExported.toOwnedSlice();
+            const owned = try toBeExported.toOwnedSlice(self.allocator);
             switch (self.exporter.exportBatch(owned)) {
                 ExportResult.Success => return,
                 ExportResult.Failure => return MetricReadError.ExportFailed,
@@ -125,7 +125,7 @@ pub const MetricReader = struct {
     pub fn shutdown(self: *Self) void {
         @atomicStore(bool, &self.hasShutDown, true, .release);
         self.collect() catch |e| {
-            log.err("shutdown: error while collecting metrics: {?}", .{e});
+            log.err("shutdown: error while collecting metrics: {}", .{e});
         };
         self.exporter.shutdown();
         self.temporal_aggregation.deinit();

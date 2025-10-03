@@ -66,8 +66,8 @@ pub const AttributeFilter = struct {
         if (attributes == null) return null;
 
         const attrs = attributes.?;
-        var filtered = std.ArrayList(Attribute).init(allocator);
-        defer filtered.deinit();
+        var filtered = std.ArrayList(Attribute){};
+        defer filtered.deinit(allocator);
 
         for (attrs) |attr| {
             var include = true;
@@ -94,7 +94,7 @@ pub const AttributeFilter = struct {
             }
 
             if (include) {
-                try filtered.append(attr);
+                try filtered.append(allocator, attr);
             }
         }
 

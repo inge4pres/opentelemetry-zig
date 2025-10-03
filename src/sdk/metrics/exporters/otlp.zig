@@ -22,7 +22,6 @@ const ExponentialHistogramPoint = aggregation.ExponentialHistogramDataPoint;
 const view = @import("../view.zig");
 
 const protobuf = @import("protobuf");
-const ManagedString = protobuf.ManagedString;
 const pbcommon = @import("opentelemetry-proto").common_v1;
 const pbmetrics = @import("opentelemetry-proto").metrics_v1;
 const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics_v1;
@@ -89,24 +88,24 @@ pub const OTLPExporter = struct {
             const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.scope.attributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{
                 .scope = pbcommon.InstrumentationScope{
-                    .name = ManagedString.managed(measurement.scope.name),
-                    .version = if (measurement.scope.version) |version| ManagedString.managed(version) else .Empty,
+                    .name = (measurement.scope.name),
+                    .version = if (measurement.scope.version) |version| (version) else "",
                     .attributes = attributes.values,
                 },
-                .schema_url = if (measurement.scope.schema_url) |s| ManagedString.managed(s) else .Empty,
+                .schema_url = if (measurement.scope.schema_url) |s| (s) else "",
                 .metrics = metrics,
             };
         }
         resource_metrics[0] = pbmetrics.ResourceMetrics{
             .resource = null, //FIXME support resource attributes
-            .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).fromOwnedSlice(self.allocator, scope_metrics),
-            .schema_url = .Empty,
+            .scope_metrics = std.ArrayList(pbmetrics.ScopeMetrics).fromOwnedSlice(scope_metrics),
+            .schema_url = "",
         };
 
-        const service_req = pbcollector_metrics.ExportMetricsServiceRequest{
-            .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).fromOwnedSlice(self.allocator, resource_metrics),
+        var service_req = pbcollector_metrics.ExportMetricsServiceRequest{
+            .resource_metrics = std.ArrayList(pbmetrics.ResourceMetrics).fromOwnedSlice(resource_metrics),
         };
-        defer service_req.deinit();
+        defer service_req.deinit(self.allocator);
 
         otlp.Export(self.allocator, self.config, otlp.Signal.Data{ .metrics = service_req }) catch |err| {
             log.err("failed in transport: {s}", .{@errorName(err)});
@@ -123,13 +122,13 @@ fn toProtobufMetric(
     const instrument_opts = measurements.instrumentOptions;
     const kind = measurements.instrumentKind;
     return pbmetrics.Metric{
-        .name = ManagedString.managed(instrument_opts.name),
-        .description = if (instrument_opts.description) |d| ManagedString.managed(d) else .Empty,
-        .unit = if (instrument_opts.unit) |u| ManagedString.managed(u) else .Empty,
+        .name = try allocator.dupe(u8, instrument_opts.name),
+        .description = if (instrument_opts.description) |d| try allocator.dupe(u8, d) else try allocator.dupe(u8, ""),
+        .unit = if (instrument_opts.unit) |u| try allocator.dupe(u8, u) else try allocator.dupe(u8, ""),
         .data = switch (kind) {
             .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => |k| pbmetrics.Metric.data_union{
                 .sum = pbmetrics.Sum{
-                    .data_points = try numberDataPoints(allocator, i64, measurements.data.int),
+                    .data_points = .fromOwnedSlice(try numberDataPoints(allocator, i64, measurements.data.int)),
                     .aggregation_temporality = temporailty(kind).toProto(),
                     // Only .Counter is guaranteed to be monotonic.
                     .is_monotonic = k == .Counter,
@@ -155,9 +154,19 @@ fn toProtobufMetric(
             .Gauge, .ObservableGauge => pbmetrics.Metric.data_union{
                 .gauge = pbmetrics.Gauge{
                     .data_points = switch (measurements.data) {
-                        .int => try numberDataPoints(allocator, i64, measurements.data.int),
-                        .double => try numberDataPoints(allocator, f64, measurements.data.double),
-                        .histogram, .exponential_histogram => std.ArrayList(pbmetrics.NumberDataPoint).init(allocator),
+                        .int => blk: {
+                            var a = try std.ArrayList(pbmetrics.NumberDataPoint).initCapacity(allocator, measurements.data.int.len);
+                            a.appendSliceAssumeCapacity(try numberDataPoints(allocator, i64, measurements.data.int));
+                            break :blk a;
+                        },
+                        .double => blk: {
+                            var a = try std.ArrayList(pbmetrics.NumberDataPoint).initCapacity(allocator, measurements.data.double.len);
+                            a.appendSliceAssumeCapacity(try numberDataPoints(allocator, f64, measurements.data.double));
+                            break :blk a;
+                        },
+                        // No support to export histogram data points as gauge.
+                        // TODO we should probably return an error?
+                        .histogram, .exponential_histogram => std.ArrayList(pbmetrics.NumberDataPoint){},
                     },
                 },
             },
@@ -166,16 +175,16 @@ fn toProtobufMetric(
         },
         // Metadata used for internal translations, we can discard for now.
         // Consumers of SDK should not rely on this field.
-        .metadata = std.ArrayList(pbcommon.KeyValue).init(allocator),
+        .metadata = std.ArrayList(pbcommon.KeyValue){},
     };
 }
 
-fn attributeToProtobuf(attribute: Attribute) pbcommon.KeyValue {
+fn attributeToProtobuf(allocator: std.mem.Allocator, attribute: Attribute) !pbcommon.KeyValue {
     return pbcommon.KeyValue{
-        .key = ManagedString.managed(attribute.key),
+        .key = try allocator.dupe(u8, attribute.key),
         .value = switch (attribute.value) {
             .bool => pbcommon.AnyValue{ .value = .{ .bool_value = attribute.value.bool } },
-            .string => pbcommon.AnyValue{ .value = .{ .string_value = ManagedString.managed(attribute.value.string) } },
+            .string => pbcommon.AnyValue{ .value = .{ .string_value = try allocator.dupe(u8, attribute.value.string) } },
             .int => pbcommon.AnyValue{ .value = .{ .int_value = attribute.value.int } },
             .double => pbcommon.AnyValue{ .value = .{ .double_value = attribute.value.double } },
             // TODO include nested Attribute values
@@ -185,21 +194,22 @@ fn attributeToProtobuf(attribute: Attribute) pbcommon.KeyValue {
 
 fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
     if (attributes) |attrs| {
-        var kvs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(allocator) };
+        var kvs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue){} };
         for (attrs) |a| {
-            try kvs.values.append(attributeToProtobuf(a));
+            try kvs.values.append(allocator, try attributeToProtobuf(allocator, a));
         }
         return kvs;
     } else {
-        return pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).init(allocator) };
+        return pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue){} };
     }
 }
 
-fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points: []DataPoint(T)) !std.ArrayList(pbmetrics.NumberDataPoint) {
-    var a = try std.ArrayList(pbmetrics.NumberDataPoint).initCapacity(allocator, data_points.len);
-    for (data_points) |dp| {
+// Caller owns the memory
+fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points: []DataPoint(T)) ![]pbmetrics.NumberDataPoint {
+    const numbers = try allocator.alloc(pbmetrics.NumberDataPoint, data_points.len);
+    for (data_points, 0..) |dp, i| {
         const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
-        a.appendAssumeCapacity(pbmetrics.NumberDataPoint{
+        numbers[i] = pbmetrics.NumberDataPoint{
             .attributes = attrs.values,
             .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
             .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.time.nanoTimestamp()),
@@ -209,10 +219,11 @@ fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points:
                 else => @compileError("Unsupported type conversion to protobuf NumberDataPoint"),
             },
             // TODO: support exemplars.
-            .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
-        });
+            .exemplars = std.ArrayList(pbmetrics.Exemplar){},
+        };
     }
-    return a;
+
+    return numbers;
 }
 
 fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(HistogramPoint)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
@@ -229,10 +240,10 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
             .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.time.nanoTimestamp()),
             .count = dp.value.count,
             .sum = dp.value.sum,
-            .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.bucket_counts)),
-            .explicit_bounds = std.ArrayList(f64).fromOwnedSlice(allocator, bounds),
+            .bucket_counts = std.ArrayList(u64).fromOwnedSlice(try allocator.dupe(u64, dp.value.bucket_counts)),
+            .explicit_bounds = std.ArrayList(f64).fromOwnedSlice(bounds),
             // TODO support exemplars
-            .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
+            .exemplars = std.ArrayList(pbmetrics.Exemplar){},
         });
     }
     return a;
@@ -248,7 +259,7 @@ fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []D
         if (dp.value.positive_bucket_counts.len > 0) {
             positive_buckets = pbmetrics.ExponentialHistogramDataPoint.Buckets{
                 .offset = dp.value.positive_offset,
-                .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.positive_bucket_counts)),
+                .bucket_counts = std.ArrayList(u64).fromOwnedSlice(try allocator.dupe(u64, dp.value.positive_bucket_counts)),
             };
         }
 
@@ -257,7 +268,7 @@ fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []D
         if (dp.value.negative_bucket_counts.len > 0) {
             negative_buckets = pbmetrics.ExponentialHistogramDataPoint.Buckets{
                 .offset = dp.value.negative_offset,
-                .bucket_counts = std.ArrayList(u64).fromOwnedSlice(allocator, try allocator.dupe(u64, dp.value.negative_bucket_counts)),
+                .bucket_counts = std.ArrayList(u64).fromOwnedSlice(try allocator.dupe(u64, dp.value.negative_bucket_counts)),
             };
         }
 
@@ -275,7 +286,7 @@ fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []D
             .max = dp.value.max,
             .zero_threshold = 0.0, // Default zero threshold
             // TODO support exemplars
-            .exemplars = std.ArrayList(pbmetrics.Exemplar).init(allocator),
+            .exemplars = std.ArrayList(pbmetrics.Exemplar){},
             .flags = 0,
         });
     }
@@ -296,7 +307,7 @@ test "exporters/otlp conversion for NumberDataPoint" {
         data_points[i] = try DataPoint(i64).new(allocator, @intCast(i), .{ "key", anyval });
     }
 
-    const metric = try toProtobufMetric(allocator, Measurements{
+    var metric = try toProtobufMetric(allocator, Measurements{
         .scope = .{
             .name = "test-meter",
         },
@@ -304,21 +315,22 @@ test "exporters/otlp conversion for NumberDataPoint" {
         .instrumentOptions = .{ .name = "counter-abc" },
         .data = .{ .int = data_points },
     }, view.DefaultTemporality);
-    defer metric.deinit();
+
+    defer metric.deinit(allocator);
 
     try std.testing.expectEqual(num, metric.data.?.sum.data_points.items.len);
-    try std.testing.expectEqual(ManagedString.managed("counter-abc"), metric.name);
+    try std.testing.expectEqualStrings("counter-abc", metric.name);
 
     const attrs = Attributes.with(data_points[0].attributes);
 
-    const expected_attrs = .{
-        ManagedString.managed(attrs.attributes.?[0].key),
-        ManagedString.managed(anyval),
-    };
-    try std.testing.expectEqual(expected_attrs, .{
+    try std.testing.expectEqualStrings(
+        attrs.attributes.?[0].key,
         metric.data.?.sum.data_points.items[0].attributes.items[0].key,
+    );
+    try std.testing.expectEqualStrings(
+        anyval,
         metric.data.?.sum.data_points.items[0].attributes.items[0].value.?.value.?.string_value,
-    });
+    );
 }
 
 test "exporters/otlp conversion for HistogramDataPoint" {
@@ -344,7 +356,7 @@ test "exporters/otlp conversion for HistogramDataPoint" {
         }, .{ "key", anyval });
     }
 
-    const metric = try toProtobufMetric(allocator, Measurements{
+    var metric = try toProtobufMetric(allocator, Measurements{
         .scope = .{
             .name = "test-meter",
         },
@@ -352,10 +364,10 @@ test "exporters/otlp conversion for HistogramDataPoint" {
         .instrumentOptions = .{ .name = "histogram-abc" },
         .data = .{ .histogram = data_points },
     }, view.DefaultTemporality);
-    defer metric.deinit();
+    defer metric.deinit(allocator);
 
     try std.testing.expectEqual(num, metric.data.?.histogram.data_points.items.len);
-    try std.testing.expectEqual(ManagedString.managed("histogram-abc"), metric.name);
+    try std.testing.expectEqualStrings("histogram-abc", metric.name);
     try std.testing.expectEqual(3, metric.data.?.histogram.data_points.items[0].bucket_counts.items.len);
     try std.testing.expectEqual(3, metric.data.?.histogram.data_points.items[0].explicit_bounds.items.len);
     try std.testing.expectEqual(1, metric.data.?.histogram.data_points.items[0].bucket_counts.items[0]);
@@ -366,14 +378,14 @@ test "exporters/otlp conversion for HistogramDataPoint" {
 
     const attrs = Attributes.with(data_points[0].attributes);
 
-    const expected_attrs = .{
-        ManagedString.managed(attrs.attributes.?[0].key),
-        ManagedString.managed(anyval),
-    };
-    try std.testing.expectEqual(expected_attrs, .{
+    try std.testing.expectEqualStrings(
+        attrs.attributes.?[0].key,
         metric.data.?.histogram.data_points.items[0].attributes.items[0].key,
+    );
+    try std.testing.expectEqualStrings(
+        anyval,
         metric.data.?.histogram.data_points.items[0].attributes.items[0].value.?.value.?.string_value,
-    });
+    );
 }
 
 test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
@@ -403,7 +415,7 @@ test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
         }, .{ "key", anyval });
     }
 
-    const metric = try toProtobufMetric(allocator, Measurements{
+    var metric = try toProtobufMetric(allocator, Measurements{
         .scope = .{
             .name = "test-meter",
         },
@@ -411,10 +423,11 @@ test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
         .instrumentOptions = .{ .name = "exponential-histogram-abc" },
         .data = .{ .exponential_histogram = data_points },
     }, view.DefaultTemporality);
-    defer metric.deinit();
+
+    defer metric.deinit(allocator);
 
     try std.testing.expectEqual(num, metric.data.?.exponential_histogram.data_points.items.len);
-    try std.testing.expectEqual(ManagedString.managed("exponential-histogram-abc"), metric.name);
+    try std.testing.expectEqualStrings("exponential-histogram-abc", metric.name);
 
     const first_dp = metric.data.?.exponential_histogram.data_points.items[0];
     try std.testing.expectEqual(@as(u64, 1), first_dp.count);
@@ -438,14 +451,14 @@ test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
     try std.testing.expectEqual(@as(usize, 3), first_dp.negative.?.bucket_counts.items.len);
 
     const attrs = Attributes.with(data_points[0].attributes);
-    const expected_attrs = .{
-        ManagedString.managed(attrs.attributes.?[0].key),
-        ManagedString.managed(anyval),
-    };
-    try std.testing.expectEqual(expected_attrs, .{
+    try std.testing.expectEqualStrings(
+        attrs.attributes.?[0].key,
         first_dp.attributes.items[0].key,
+    );
+    try std.testing.expectEqualStrings(
+        anyval,
         first_dp.attributes.items[0].value.?.value.?.string_value,
-    });
+    );
 }
 
 test "exporters/otlp init/deinit" {
