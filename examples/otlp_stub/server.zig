@@ -41,40 +41,50 @@ pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
             var conn = try self.listener.?.accept();
             defer conn.stream.close();
             // Read HTTP request (very basic, just enough for OTLP exporter)
-            var buf: [4096]u8 = undefined;
+            var read_buffer: [4096]u8 = undefined;
+            var write_buffer: [4096]u8 = undefined;
+            var conn_reader = conn.stream.reader(&read_buffer);
+            var conn_writer = conn.stream.writer(&write_buffer);
 
-            var server = std.http.Server.init(conn, &buf);
+            var server = std.http.Server.init(conn_reader.interface(), &conn_writer.interface);
             var request = try server.receiveHead();
 
-            const body = try (try request.reader()).readAllAlloc(self.allocator, 8192);
+            var body_buffer: [8192]u8 = undefined;
+            const reader = request.readerExpectNone(&body_buffer);
+            const body = try reader.allocRemaining(self.allocator, .unlimited);
             defer self.allocator.free(body);
 
-            var body_msg: RequestType = try protobuf.pb_decode(RequestType, body, self.allocator);
-            defer body_msg.deinit();
+            var body_reader = std.Io.Reader.fixed(body);
+            var body_msg: RequestType = try protobuf.decode(RequestType, &body_reader, self.allocator);
+            defer body_msg.deinit(self.allocator);
 
             self.on_export(&body_msg);
 
             try request.respond(
-                okResponeBody(self.allocator, signal),
+                try okResponeBody(self.allocator, signal),
                 .{ .status = .ok },
             );
         }
 
-        fn okResponeBody(allocator: Allocator, input: otlp.Signal) []const u8 {
+        fn okResponeBody(allocator: Allocator, input: otlp.Signal) ![]const u8 {
+            var writer_ctx = std.Io.Writer.Allocating.init(allocator);
+            defer writer_ctx.deinit();
             switch (input) {
                 .metrics => {
                     const p = pb.collector_metrics_v1.ExportMetricsServiceResponse{};
-                    return p.encode(allocator) catch unreachable;
+                    try p.encode(&writer_ctx.writer, allocator);
                 },
                 .traces => {
                     const p = pb.collector_trace_v1.ExportTraceServiceResponse{};
-                    return p.encode(allocator) catch unreachable;
+                    try p.encode(&writer_ctx.writer, allocator);
                 },
                 .logs => {
                     const p = pb.collector_logs_v1.ExportLogsServiceResponse{};
-                    return p.encode(allocator) catch unreachable;
+                    try p.encode(&writer_ctx.writer, allocator);
                 },
             }
+            try writer_ctx.writer.flush();
+            return try writer_ctx.toOwnedSlice();
         }
     };
 }

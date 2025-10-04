@@ -18,7 +18,7 @@ pub fn main() !void {
     const ip = "127.0.0.1";
     const port: u16 = 4488;
     var prod_server = MonitoredHTTPServer.init(otel.meter_provider, ip, port) catch |err| {
-        std.debug.print("error initializing server: {?}\n", .{err});
+        std.debug.print("error initializing server: {}\n", .{err});
         return err;
     };
     // Create a thread that will serve one HTTP request and exit
@@ -27,10 +27,9 @@ pub fn main() !void {
     // Send an HTTP request to the server
     var client = http.Client{ .allocator = allocator };
     const uri = try std.Uri.parse("http://127.0.0.1:4488");
-    var headers: [4096]u8 = undefined;
-    var req = try client.open(.GET, uri, .{ .server_header_buffer = &headers });
+    var req = try client.request(.GET, uri, .{});
     defer req.deinit();
-    try req.send();
+    try req.sendBodiless();
 
     worker.join();
 
@@ -77,8 +76,11 @@ const MonitoredHTTPServer = struct {
         const connection = try self.net_server.accept();
         defer connection.stream.close();
 
-        var buf: [8192]u8 = undefined;
-        var server = http.Server.init(connection, &buf);
+        var read_buffer: [8192]u8 = undefined;
+        var write_buffer: [8192]u8 = undefined;
+        var conn_reader = connection.stream.reader(&read_buffer);
+        var conn_writer = connection.stream.writer(&write_buffer);
+        var server = http.Server.init(conn_reader.interface(), &conn_writer.interface);
 
         const start = std.time.milliTimestamp();
         defer self.response_latency.record(@floatFromInt(std.time.milliTimestamp() - start), .{}) catch unreachable;
