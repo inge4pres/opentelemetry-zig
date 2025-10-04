@@ -113,7 +113,6 @@ test "exporters/stdout" {
         .exclusive = true,
     });
     defer std.fs.cwd().deleteFile(filename) catch unreachable;
-    //
 
     var stdoutExporter = try StdoutExporter.init(allocator);
     defer stdoutExporter.deinit();

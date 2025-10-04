@@ -21,7 +21,8 @@ pub fn main() !void {
     defer tracer_provider.shutdown();
 
     // 3. Create a stdout exporter and simple processor
-    var stdout_exporter = trace.StdOutExporter.init(std.io.getStdOut().writer());
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_exporter = trace.StdOutExporter.init(std.fs.File.stdout().writer(&stdout_buffer));
     var simple_processor = trace.SimpleProcessor.init(allocator, stdout_exporter.asSpanExporter());
 
     // 4. Add the processor to the provider
