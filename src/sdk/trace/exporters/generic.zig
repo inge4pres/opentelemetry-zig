@@ -68,7 +68,13 @@ fn GenericWriterExporter(
                 try serializable_spans.append(allocator, SerializableSpan.fromSpan(span));
             }
 
-            try self.writer.print("{f}", .{std.json.fmt(serializable_spans.items, .{})});
+            // Handle both File.Writer (which has .interface) and direct Io.Writer types
+            var writer_interface = if (@hasField(Writer, "interface"))
+                &self.writer.interface
+            else
+                &self.writer;
+
+            try writer_interface.print("{f}", .{std.json.fmt(serializable_spans.items, .{})});
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -87,19 +93,23 @@ fn GenericWriterExporter(
 
 /// StdoutExporter outputs spans into OS stdout.
 /// ref: https://opentelemetry.io/docs/specs/otel/trace/sdk_exporters/stdout/
-pub const StdoutExporter = GenericWriterExporter(std.io.Writer(std.fs.File, std.fs.File.WriteError, std.fs.File.write));
+pub const StdoutExporter = GenericWriterExporter(std.fs.File.Writer);
 
 /// InmemoryExporter exports spans to in-memory buffer.
 /// it is designed for testing GenericWriterExporter.
 pub const InMemoryExporter = GenericWriterExporter(std.ArrayList(u8).Writer);
 
-test "GenericWriterExporter" {
+// Example showing how to use GenericWriterExporter to create a custom exporter.
+// This demonstrates the pattern used by both StdoutExporter and InMemoryExporter.
+test "exporters/trace GenericWriterExporter" {
     var out_buf = std.ArrayList(u8){};
     defer out_buf.deinit(std.testing.allocator);
+
+    // Create a custom exporter using the generic type
     var inmemory_exporter = InMemoryExporter.init(out_buf.writer(std.testing.allocator));
     var exporter = inmemory_exporter.asSpanExporter();
 
-    // Create a proper span for testing
+    // Create a test span
     const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
     const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
     var trace_state = trace.TraceState.init(std.testing.allocator);
@@ -110,15 +120,76 @@ test "GenericWriterExporter" {
     var test_span = trace.Span.init(std.testing.allocator, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
+    // Export the span
     var spans = [_]trace.Span{test_span};
     try exporter.exportSpans(spans[0..spans.len]);
 
-    // Since JSON output can be complex, just check that something was written
+    // Verify output was written
     try std.testing.expect(out_buf.items.len > 0);
+}
 
-    // Assert that the output contains expected span data
-    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "test-span") != null);
-    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "Internal") != null);
-    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "trace_id") != null);
-    std.debug.assert(std.mem.indexOf(u8, out_buf.items, "span_id") != null);
+test StdoutExporter {
+    // Note: We can't easily test actual stdout output, so we verify the type compiles
+    // and can be instantiated correctly
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_exporter = StdoutExporter.init(std.fs.File.stdout().writer(&stdout_buffer));
+    var exporter = stdout_exporter.asSpanExporter();
+
+    // Create a test span to verify export works
+    const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+    var trace_state = trace.TraceState.init(std.testing.allocator);
+    defer trace_state.deinit();
+
+    const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var test_span = trace.Span.init(std.testing.allocator, span_context, "stdout-test", .Internal, scope);
+    defer test_span.deinit();
+
+    var spans = [_]trace.Span{test_span};
+    // This will write to stdout - we just verify it doesn't error
+    try exporter.exportSpans(spans[0..spans.len]);
+    try exporter.shutdown();
+}
+
+test InMemoryExporter {
+    var out_buf = std.ArrayList(u8){};
+    defer out_buf.deinit(std.testing.allocator);
+    var inmemory_exporter = InMemoryExporter.init(out_buf.writer(std.testing.allocator));
+    var exporter = inmemory_exporter.asSpanExporter();
+
+    // Create test spans with different properties
+    const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id_1 = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+    const span_id_2 = trace.SpanID.init([8]u8{ 8, 7, 6, 5, 4, 3, 2, 1 });
+    var trace_state = trace.TraceState.init(std.testing.allocator);
+    defer trace_state.deinit();
+
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+
+    // First span - Internal kind
+    const span_context_1 = trace.SpanContext.init(trace_id, span_id_1, trace.TraceFlags.default(), trace_state, false);
+    var span_1 = trace.Span.init(std.testing.allocator, span_context_1, "span-internal", .Internal, scope);
+    defer span_1.deinit();
+
+    // Second span - Client kind
+    const span_context_2 = trace.SpanContext.init(trace_id, span_id_2, trace.TraceFlags.default(), trace_state, false);
+    var span_2 = trace.Span.init(std.testing.allocator, span_context_2, "span-client", .Client, scope);
+    defer span_2.deinit();
+
+    // Export spans
+    var spans = [_]trace.Span{ span_1, span_2 };
+    try exporter.exportSpans(spans[0..spans.len]);
+
+    // Verify JSON output contains expected span data
+    try std.testing.expect(out_buf.items.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "span-internal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "span-client") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "Internal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "Client") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "trace_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "span_id") != null);
+
+    // Test shutdown
+    try exporter.shutdown();
 }
