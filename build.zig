@@ -164,6 +164,23 @@ pub fn build(b: *std.Build) !void {
         examples_step.dependOn(&run_trace_example.step);
     }
 
+    const logs_examples = buildExamples(
+        b,
+        b.path(b.pathJoin(&.{ "examples", "logs" })),
+        sdk_mod,
+        otel_stub_mod,
+        otel_proto_mod,
+        examples_filter,
+    ) catch |err| {
+        std.debug.print("Error building logs examples: {}\n", .{err});
+        return err;
+    };
+    defer b.allocator.free(logs_examples);
+    for (logs_examples) |step| {
+        const run_logs_example = b.addRunArtifact(step);
+        examples_step.dependOn(&run_logs_example.step);
+    }
+
     // Benchmarks
     const benchmarks_step = b.step("benchmarks", "Build and run all benchmarks");
 
