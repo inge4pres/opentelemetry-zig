@@ -502,3 +502,101 @@ test "BatchingLogRecordProcessor basic functionality" {
     const export_count = mock_exporter.export_count.load(.monotonic);
     try std.testing.expect(export_count > 0);
 }
+
+test "integration: multiple processors in pipeline" {
+    const allocator = std.testing.allocator;
+    const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+    const Attribute = @import("../../attributes.zig").Attribute;
+
+    // Track which processors were called and in what order
+    var call_order = std.ArrayList(u8).init(allocator);
+    defer call_order.deinit();
+
+    // First processor - adds an attribute
+    const FirstProcessor = struct {
+        order: *std.ArrayList(u8),
+
+        pub fn onEmit(ctx: *anyopaque, log_record: *logs.ReadWriteLogRecord, _: context.Context) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.order.append(1) catch {};
+
+            // Add an attribute
+            const attr = Attribute{ .key = "processor.first", .value = .{ .bool = true } };
+            log_record.setAttribute(self.order.allocator, attr) catch {};
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+        pub fn forceFlush(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
+            return LogRecordProcessor{
+                .ptr = self,
+                .vtable = &.{
+                    .onEmitFn = onEmit,
+                    .shutdownFn = shutdown,
+                    .forceFlushFn = forceFlush,
+                },
+            };
+        }
+    };
+
+    // Second processor - modifies severity
+    const SecondProcessor = struct {
+        order: *std.ArrayList(u8),
+
+        pub fn onEmit(ctx: *anyopaque, log_record: *logs.ReadWriteLogRecord, _: context.Context) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.order.append(2) catch {};
+
+            // Verify first processor's attribute is visible
+            std.debug.assert(log_record.attributes.items.len > 0);
+
+            // Modify severity
+            log_record.severity_number = 17; // ERROR
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+        pub fn forceFlush(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
+            return LogRecordProcessor{
+                .ptr = self,
+                .vtable = &.{
+                    .onEmitFn = onEmit,
+                    .shutdownFn = shutdown,
+                    .forceFlushFn = forceFlush,
+                },
+            };
+        }
+    };
+
+    var first = FirstProcessor{ .order = &call_order };
+    var second = SecondProcessor{ .order = &call_order };
+
+    const first_processor = first.asLogRecordProcessor();
+    const second_processor = second.asLogRecordProcessor();
+
+    // Create a log record
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    var log_record = logs.ReadWriteLogRecord.init(allocator, scope);
+    defer log_record.deinit(allocator);
+
+    log_record.body = "test message";
+    log_record.severity_number = 9; // INFO
+
+    const ctx = context.Context.init();
+
+    // Call processors in order
+    first_processor.onEmit(&log_record, ctx);
+    second_processor.onEmit(&log_record, ctx);
+
+    // Verify processors were called in order
+    try std.testing.expectEqual(@as(usize, 2), call_order.items.len);
+    try std.testing.expectEqual(@as(u8, 1), call_order.items[0]);
+    try std.testing.expectEqual(@as(u8, 2), call_order.items[1]);
+
+    // Verify mutations are visible
+    try std.testing.expectEqual(@as(usize, 1), log_record.attributes.items.len);
+    try std.testing.expectEqualStrings("processor.first", log_record.attributes.items[0].key);
+    try std.testing.expectEqual(@as(u8, 17), log_record.severity_number.?); // Modified by second processor
+}
