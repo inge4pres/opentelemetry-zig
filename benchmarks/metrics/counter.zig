@@ -95,8 +95,10 @@ test "Counter_Add_W/O_Attributes" {
 
     try bench.addParam("Counter_Add_Without_Attributes", &without_attributes, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Counter_Add_Sorted" {
@@ -139,8 +141,10 @@ test "Counter_Add_Sorted" {
 
     try bench.addParam("Counter_Add_Sorted", &sorted_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Counter_Add_Unsorted" {
@@ -183,8 +187,11 @@ test "Counter_Add_Unsorted" {
 
     try bench.addParam("Counter_Add_Unsorted", &unsorted_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
+    try writer.interface.flush();
 }
 
 test "Counter_Add_Non_Static_Values" {
@@ -242,8 +249,11 @@ test "Counter_Add_Non_Static_Values" {
 
     try bench.addParam("Counter_Add_Non_Static_Values", &dynamic_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
+    try writer.interface.flush();
 }
 
 test "Counter_Overflow" {
@@ -289,8 +299,11 @@ test "Counter_Overflow" {
 
     try bench.addParam("Counter_Overflow", &overflow_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
+    try writer.interface.flush();
 }
 
 test "Counter_Concurrent" {
@@ -312,8 +325,10 @@ test "Counter_Concurrent" {
     const concurrent_bench = ConcurrentCounterBench{ .counter = counter };
     try bench.addParam("Counter_Concurrent", &concurrent_bench, .{ .track_allocations = false });
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ConcurrentCounterBench = struct {

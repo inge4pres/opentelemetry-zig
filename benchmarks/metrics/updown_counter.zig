@@ -43,8 +43,10 @@ test "UpDownCounter_Add_WithoutAttributes" {
 
     try bench.addParam("UpDownCounter_Add_WithoutAttributes", &bench_instance, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "UpDownCounter_Add_WithAttributes" {
@@ -80,8 +82,10 @@ test "UpDownCounter_Add_WithAttributes" {
 
     try bench.addParam("UpDownCounter_Add_WithAttributes", &bench_instance, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "UpDownCounter_Concurrent" {
@@ -103,8 +107,10 @@ test "UpDownCounter_Concurrent" {
     const concurrent_bench = ConcurrentUpDownBench{ .counter = updown };
     try bench.addParam("UpDownCounter_Concurrent", &concurrent_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ConcurrentUpDownBench = struct {
@@ -178,8 +184,10 @@ test "UpDownCounter_MixedOperations" {
 
     try bench.addParam("UpDownCounter_MixedOperations", &mixed_ops, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "UpDownCounterMixedOps" {
@@ -215,6 +223,8 @@ test "UpDownCounterMixedOps" {
 
     try bench.addParam("UpDownCounterMixedOps", &mixed_ops, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }

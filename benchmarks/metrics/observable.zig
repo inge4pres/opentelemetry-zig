@@ -17,8 +17,10 @@ test "ObservableCounter_Create" {
 
     try bench.add("ObservableCounter_Create", ObservableCounterBench.run, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ObservableCounterBench = struct {
@@ -45,8 +47,10 @@ test "ObservableUpDownCounter_Create" {
 
     try bench.add("ObservableUpDownCounter_Create", ObservableUpDownBench.run, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ObservableUpDownBench = struct {
@@ -72,8 +76,10 @@ test "ObservableGauge_Create" {
 
     try bench.add("ObservableGauge_Create", ObservableGaugeBench.run, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ObservableGaugeBench = struct {

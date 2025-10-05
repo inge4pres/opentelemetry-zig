@@ -85,8 +85,10 @@ test "Histogram_Record" {
 
     try bench.addParam("Histogram_Record", &static_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Histogram_Record_With_Non_Static_Values" {
@@ -152,8 +154,10 @@ test "Histogram_Record_With_Non_Static_Values" {
 
     try bench.addParam("Histogram_Record_With_Non_Static_Values", &dynamic_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 // Additional histogram benchmarks with different bucket configurations
@@ -211,8 +215,10 @@ test "Histogram_Record_With_Many_Buckets" {
 
     try bench.addParam("Histogram_Record_With_50_Buckets", &many_buckets_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Histogram_Concurrent" {
@@ -246,8 +252,10 @@ test "Histogram_Concurrent" {
     const concurrent_bench = ConcurrentHistogramBench{ .histogram = histogram };
     try bench.addParam("Histogram_Concurrent", &concurrent_bench, .{ .track_allocations = true });
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ConcurrentHistogramBench = struct {
@@ -334,6 +342,8 @@ test "Histogram_Record_Varied_Values" {
 
     try bench.addParam("Histogram_Record_Varied_Values", &varied_bench, .{ .track_allocations = true });
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }

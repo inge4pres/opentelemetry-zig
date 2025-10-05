@@ -118,8 +118,10 @@ test "SimpleProcessor_OnEnd_Single" {
 
     try bench.addParam("SimpleProcessor_OnEnd_Single", &simple_single, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "SimpleProcessor_OnEnd_With_Attributes" {
@@ -163,8 +165,10 @@ test "SimpleProcessor_OnEnd_With_Attributes" {
 
     try bench.addParam("SimpleProcessor_OnEnd_With_Attributes", &simple_with_attrs, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "BatchingProcessor_OnEnd_Single" {
@@ -174,7 +178,7 @@ test "BatchingProcessor_OnEnd_Single" {
     var processor = try BatchingProcessor.init(std.testing.allocator, exporter, .{
         .max_export_batch_size = 512,
         .scheduled_delay_millis = 1000, // Long delay to avoid timing effects
-        .max_queue_size = 2048,
+        .max_queue_size = 4096,
     });
     defer {
         const span_processor = processor.asSpanProcessor();
@@ -210,8 +214,10 @@ test "BatchingProcessor_OnEnd_Single" {
 
     try bench.addParam("BatchingProcessor_OnEnd_Single", &batch_single, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "BatchingProcessor_OnEnd_With_Attributes" {
@@ -263,8 +269,10 @@ test "BatchingProcessor_OnEnd_With_Attributes" {
 
     try bench.addParam("BatchingProcessor_OnEnd_With_Attributes", &batch_with_attrs, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "BatchingProcessor_Batch_Full" {
@@ -323,8 +331,10 @@ test "BatchingProcessor_Batch_Full" {
 
     try bench.addParam("BatchingProcessor_Batch_Full", &batch_full, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "BatchingProcessor_ForceFlush" {
@@ -385,8 +395,10 @@ test "BatchingProcessor_ForceFlush" {
 
     try bench.addParam("BatchingProcessor_ForceFlush", &force_flush, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "SpanProcessor_Concurrent" {
@@ -427,8 +439,10 @@ test "SpanProcessor_Concurrent" {
     };
     try bench.addParam("SpanProcessor_Concurrent_Batch", &concurrent_batch, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 const ConcurrentProcessorBench = struct {

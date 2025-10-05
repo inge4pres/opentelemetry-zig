@@ -42,8 +42,10 @@ test "AddNoAttrs" {
 
     try bench.addParam("AddNoAttrs", &no_attrs, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "AddOneAttr" {
@@ -73,8 +75,10 @@ test "AddOneAttr" {
 
     try bench.addParam("AddOneAttr", &one_attr, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "AddThreeAttr" {
@@ -108,8 +112,10 @@ test "AddThreeAttr" {
 
     try bench.addParam("AddThreeAttr", &three_attr, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "AddFiveAttr" {
@@ -147,8 +153,10 @@ test "AddFiveAttr" {
 
     try bench.addParam("AddFiveAttr", &five_attr, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "AddTenAttr" {
@@ -196,8 +204,10 @@ test "AddTenAttr" {
 
     try bench.addParam("AddTenAttr", &ten_attr, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 // Histogram benchmarks with varying bucket counts
@@ -242,8 +252,10 @@ test "RecordHistogram10Bounds" {
 
     try bench.addParam("RecordHistogram10Bounds", &hist_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "RecordHistogram50Bounds" {
@@ -293,8 +305,10 @@ test "RecordHistogram50Bounds" {
 
     try bench.addParam("RecordHistogram50Bounds", &hist_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 // Benchmark for single-use attributes
@@ -332,8 +346,10 @@ test "AddSingleUseAttrs" {
 
     try bench.addParam("AddSingleUseAttrs", &single_use, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 // Gauge benchmark with varying values
@@ -371,6 +387,8 @@ test "GaugeRecordVaried" {
 
     try bench.addParam("GaugeRecordVaried", &gauge_varied, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }

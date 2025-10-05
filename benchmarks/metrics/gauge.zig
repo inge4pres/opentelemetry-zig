@@ -66,8 +66,10 @@ test "Gauge_Record" {
 
     try bench.addParam("Gauge_Add", &gauge_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 // Additional gauge benchmark with realistic CPU usage values
@@ -108,8 +110,10 @@ test "Gauge_Record_Realistic_Values" {
 
     try bench.addParam("Gauge_Record_Realistic_Values", &realistic_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 // Gauge benchmark with non-static values
@@ -162,8 +166,10 @@ test "Gauge_Record_Non_Static_Values" {
 
     try bench.addParam("Gauge_Record_Non_Static_Values", &dynamic_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Gauge_Record_Varied_Values" {
@@ -197,6 +203,8 @@ test "Gauge_Record_Varied_Values" {
 
     try bench.addParam("Gauge_Record_Varied_Values", &varied_bench, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }

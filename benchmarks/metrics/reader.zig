@@ -67,8 +67,10 @@ test "MetricReader_collect" {
 
     try bench.addParam("MetricReader_collect_100k_datapoints", &under_test, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 
     const data = try me.in_memory.fetch(std.testing.allocator);
     defer std.testing.allocator.free(data);

@@ -93,8 +93,10 @@ test "Span_Create_W/O_Attributes" {
 
     try bench.addParam("Span_Create_Without_Attributes", &without_attributes, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Span_Create_With_Attributes" {
@@ -131,8 +133,10 @@ test "Span_Create_With_Attributes" {
 
     try bench.addParam("Span_Create_With_Attributes", &with_attributes, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Span_SetAttribute" {
@@ -160,8 +164,10 @@ test "Span_SetAttribute" {
 
     try bench.addParam("Span_SetAttribute", &set_attribute, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Span_AddEvent" {
@@ -195,8 +201,10 @@ test "Span_AddEvent" {
 
     try bench.addParam("Span_AddEvent", &add_event, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Span_Nested_Creation" {
@@ -227,8 +235,10 @@ test "Span_Nested_Creation" {
 
     try bench.addParam("Span_Nested_Creation", &nested_spans, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Span_Non_Recording" {
@@ -262,8 +272,10 @@ test "Span_Non_Recording" {
 
     try bench.addParam("Span_Non_Recording", &non_recording, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
 
 test "Span_Concurrent_Creation" {
@@ -317,6 +329,8 @@ test "Span_Concurrent_Creation" {
 
     try bench.addParam("Span_Concurrent_Creation", &concurrent_spans, .{});
 
-    const writer = std.io.getStdErr().writer();
-    try bench.run(writer);
+    var buffer: [4096]u8 = undefined;
+    var writer = std.fs.File.stderr().writer(&buffer);
+    try bench.run(&writer.interface);
+    try writer.interface.flush();
 }
