@@ -40,9 +40,6 @@ pub const LoggerProvider = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         // Clean up loggers
         var logger_iter = self.loggers.valueIterator();
         while (logger_iter.next()) |logger| {
@@ -202,7 +199,6 @@ test "LoggerProvider same logger for same scope" {
 
 test "LoggerProvider with processor" {
     const allocator = std.testing.allocator;
-    const Attribute = @import("../../attributes.zig").Attribute;
     const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;
     const SimpleLogRecordProcessor = @import("log_record_processor.zig").SimpleLogRecordProcessor;
 
