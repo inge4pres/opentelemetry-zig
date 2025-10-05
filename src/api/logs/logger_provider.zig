@@ -1,6 +1,20 @@
 const std = @import("std");
-const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+
 const Attributes = @import("../../attributes.zig").Attributes;
+const Attribute = @import("../../attributes.zig").Attribute;
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+
+pub const LogRecord = struct {
+    timestamp: ?u64,
+    observed_timestamp: ?u64,
+    trace_id: ?[16]u8,
+    span_id: ?[8]u8,
+    severity_number: ?u8,
+    severity_text: ?[]const u8,
+    body: ?[]const u8,
+    attributes: ?[]const Attribute,
+    event_name: ?[]const u8,
+};
 
 /// Logger is responsible for emitting logs as LogRecords.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/api/#logger
@@ -19,6 +33,13 @@ pub const Logger = struct {
         };
 
         return logger;
+    }
+
+    pub fn emit(
+        _: ?[]const u8,
+
+    ) void {
+
     }
 
     pub fn deinit(self: *Self) void {
