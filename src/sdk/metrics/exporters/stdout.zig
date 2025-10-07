@@ -121,7 +121,7 @@ test "exporters/stdout" {
     const exporter = try MetricExporter.new(allocator, &stdoutExporter.exporter);
     defer exporter.shutdown();
 
-    const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator));
+    const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator), null);
     try std.testing.expect(result == .Success);
 
     // Close the file to read the content

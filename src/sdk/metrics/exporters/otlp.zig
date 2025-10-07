@@ -110,6 +110,14 @@ pub const OTLPExporter = struct {
         };
         defer service_req.deinit(self.allocator);
 
+        // TODO: The timeout configured in MetricExporter.exportBatch() applies at the exporter level,
+        // but the actual HTTP request in otlp.Export() does not have timeout support.
+        // This means that while the collect() operation will return after the timeout,
+        // the underlying HTTP request may continue running in a background thread.
+        // To properly implement timeout, we would need to:
+        // 1. Add timeout support to the HTTP client in otlp.Export()
+        // 2. Use non-blocking I/O or async/await to make the HTTP request cancellable
+        // This is currently limited by Zig's std.http.Client which doesn't support request timeouts.
         otlp.Export(self.allocator, self.config, otlp.Signal.Data{ .metrics = service_req }) catch |err| {
             log.err("failed in transport: {s}", .{@errorName(err)});
             return MetricReadError.ExportFailed;

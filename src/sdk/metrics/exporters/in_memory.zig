@@ -107,7 +107,7 @@ test "exporters/in_memory" {
         .data = .{ .double = hist_measures },
     });
 
-    const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator));
+    const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator), null);
     try std.testing.expect(result == .Success);
 
     const data = try inMemExporter.fetch(allocator);

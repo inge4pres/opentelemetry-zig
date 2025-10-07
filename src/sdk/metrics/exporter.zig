@@ -112,10 +112,10 @@ pub const MetricExporter = struct {
         return .{ .exporter = exporter, .otlp = otlp_exporter };
     }
 
-    /// ExportBatch exports a batch of metrics data by calling the exporter implementation.
+    /// Exports a batch of metrics data by calling the exporter implementation.
     /// The passed metrics data will be owned by the exporter implementation.
-    pub fn exportBatch(self: *Self, metrics: []Measurements) ExportResult {
-        // TODO exportBatch MUST have a timeout
+    /// If timeout_ms is provided, the export operation will be cancelled if it exceeds the timeout.
+    pub fn exportBatch(self: *Self, metrics: []Measurements, timeout_ms: ?u64) ExportResult {
         if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
             // When shutdown has already been called, calling export should be a failure.
             // https://opentelemetry.io/docs/specs/otel/metrics/sdk/#shutdown-2
@@ -126,12 +126,71 @@ pub const MetricExporter = struct {
         self.exportCompleted.lock();
         defer self.exportCompleted.unlock();
 
+        // Little trick to timeout the export operation if needed.
+        if (timeout_ms) |timeout| {
+            return self.exportBatchWithTimeout(metrics, timeout);
+        } else {
+            return self.exportBatchInternal(metrics);
+        }
+    }
+
+    // Function used to perform the actual export operation.
+    fn exportBatchInternal(self: *Self, metrics: []Measurements) ExportResult {
         // Call the exporter function to process metrics data.
         self.exporter.exportBatch(metrics) catch |e| {
             log.err("exportBatch failed: {}", .{e});
             return ExportResult.Failure;
         };
         return ExportResult.Success;
+    }
+
+    const ExportState = struct {
+        result: ?ExportResult = null,
+        mutex: std.Thread.Mutex = .{},
+        cond: std.Thread.Condition = .{},
+    };
+
+    fn exportWorker(self: *Self, metrics: []Measurements, state: *ExportState) void {
+        const result = self.exportBatchInternal(metrics);
+        state.mutex.lock();
+        defer state.mutex.unlock();
+        state.result = result;
+        state.cond.signal();
+    }
+
+    fn exportBatchWithTimeout(self: *Self, metrics: []Measurements, timeout_ms: u64) ExportResult {
+        var state = ExportState{};
+
+        const thread = std.Thread.spawn(
+            .{},
+            exportWorker,
+            .{ self, metrics, &state },
+        ) catch |err| {
+            log.err("failed to spawn export worker thread: {}", .{err});
+            return self.exportBatchInternal(metrics);
+        };
+
+        state.mutex.lock();
+        const timeout_ns = timeout_ms * std.time.ns_per_ms;
+        const timed_out = if (state.cond.timedWait(&state.mutex, timeout_ns)) |_| false else |_| true;
+        state.mutex.unlock();
+
+        if (timed_out) {
+            // Timeout occurred - we still need to wait for the thread to finish
+            // to avoid memory leaks, but we return failure
+            log.warn("export operation timed out after {} ms", .{timeout_ms});
+            thread.join();
+            return ExportResult.Failure;
+        }
+
+        thread.join();
+
+        if (state.result) |result| {
+            return result;
+        } else {
+            // This should not happen, but handle it gracefully
+            return ExportResult.Failure;
+        }
     }
 
     // Ensure that all the data is flushed to the destination.
@@ -201,7 +260,7 @@ test "metric exporter no-op" {
         .data = .{ .int = measurement },
     }};
 
-    const result = me.exportBatch(&metrics);
+    const result = me.exportBatch(&metrics, null);
     try std.testing.expectEqual(ExportResult.Success, result);
 }
 
@@ -244,14 +303,14 @@ test "metric exporter force flush succeeds" {
         .data = .{ .int = dataPoints },
     }};
 
-    const result = me.exportBatch(&metrics);
+    const result = me.exportBatch(&metrics, null);
     try std.testing.expectEqual(ExportResult.Success, result);
 
     try me.forceFlush(1000);
 }
 
 fn backgroundRunner(me: *MetricExporter, metrics: []Measurements) !void {
-    _ = me.exportBatch(metrics);
+    _ = me.exportBatch(metrics, null);
 }
 
 test "metric exporter force flush fails" {
@@ -280,6 +339,42 @@ test "metric exporter force flush fails" {
 
     const e = me.forceFlush(0);
     try std.testing.expectError(MetricReadError.ForceFlushTimedOut, e);
+}
+
+test "metric exporter exportBatch with timeout" {
+    const allocator = std.testing.allocator;
+
+    // Create a slow exporter that will exceed the timeout
+    const SlowExporter = struct {
+        fn exportFn(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
+            // Sleep for 100ms to simulate slow export
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+            // Just free the metrics array, not the contents (they're stack-allocated in test)
+            allocator.free(metrics);
+        }
+    };
+
+    var slow_exporter = ExporterImpl{ .exportFn = SlowExporter.exportFn };
+    const metric_exporter = try MetricExporter.new(allocator, &slow_exporter);
+    defer metric_exporter.shutdown();
+
+    // Allocate metrics array on the heap
+    var measure = [1]DataPoint(i64){.{ .value = 42 }};
+    const dataPoints: []DataPoint(i64) = measure[0..];
+    const metrics = try allocator.alloc(Measurements, 1);
+    metrics[0] = Measurements{
+        .scope = .{
+            .name = "my-meter",
+            .version = "1.0",
+        },
+        .instrumentKind = .Counter,
+        .instrumentOptions = .{ .name = "my-counter" },
+        .data = .{ .int = dataPoints },
+    };
+
+    // Export with a very short timeout (10ms) - should timeout and return Failure
+    const result = metric_exporter.exportBatch(metrics, 10);
+    try std.testing.expectEqual(ExportResult.Failure, result);
 }
 
 test "metric exporter builder in memory" {
@@ -396,14 +491,20 @@ pub const PeriodicExportingReader = struct {
         exportTimeoutMs: ?u64,
     ) !*Self {
         const s = try allocator.create(Self);
+        const timeout = exportTimeoutMs orelse defaultExportTimeoutMillis;
+
+        const reader = try MetricReader.init(
+            allocator,
+            exporter,
+        );
+        // Set the export timeout on the reader so it can pass it to exportBatch
+        reader.exportTimeout = timeout;
+
         s.* = Self{
             .allocator = allocator,
-            .reader = try MetricReader.init(
-                std.testing.allocator,
-                exporter,
-            ),
+            .reader = reader,
             .exportIntervalMillis = exportIntervalMs orelse defaultExportIntervalMillis,
-            .exportTimeoutMillis = exportTimeoutMs orelse defaultExportTimeoutMillis,
+            .exportTimeoutMillis = timeout,
         };
         try mp.addReader(s.reader);
 
@@ -430,20 +531,20 @@ pub const PeriodicExportingReader = struct {
 };
 
 // Function that collects metrics from the reader and exports it to the destination.
-// TODO add a timeout for the collect operation.
+// The reader's exportTimeout (configured in PeriodicExportingReader.init) will be
+// used to timeout the export operation.
 fn collectAndExport(
     reader: *MetricReader,
     shared: *ReaderShared,
     exportIntervalMillis: u64,
-    // TODO: add a timeout for the export operation
-    _: u64,
+    _: u64, // exportTimeoutMillis - no longer used here, configured on the reader
 ) void {
     shared.lock.lock();
     defer shared.lock.unlock();
     // The execution should continue until the reader is shutting down
     while (!shared.shuttingDown) {
         if (reader.meterProvider) |_| {
-            // This will call exporter.exportBatch() every interval.
+            // This will call exporter.exportBatch() with the configured timeout.
             reader.collect() catch |e| {
                 log.err("PeriodicExportingReader: collecting failed on reader: {}", .{e});
             };

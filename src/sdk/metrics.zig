@@ -4,6 +4,7 @@ pub const MeterProvider = @import("../api/metrics/meter.zig").MeterProvider;
 pub const Kind = @import("../api/metrics/instrument.zig").Kind;
 pub const MetricReader = @import("metrics/reader.zig").MetricReader;
 pub const MetricExporter = @import("metrics/exporter.zig").MetricExporter;
+pub const PeriodicExportingReader = @import("metrics/exporter.zig").PeriodicExportingReader;
 
 pub const Counter = @import("../api/metrics/instrument.zig").Counter;
 pub const UpDownCounter = @import("../api/metrics/instrument.zig").Counter;

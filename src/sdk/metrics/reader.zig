@@ -58,6 +58,9 @@ pub const MetricReader = struct {
     // Composes the .Cumulative data points.
     temporal_aggregation: *Temporality = undefined,
 
+    // Optional timeout for export operations (in milliseconds)
+    exportTimeout: ?u64 = null,
+
     // Signal that shutdown has been called.
     hasShutDown: bool = false,
     mx: std.Thread.Mutex = std.Thread.Mutex{},
@@ -112,7 +115,7 @@ pub const MetricReader = struct {
             }
 
             const owned = try toBeExported.toOwnedSlice(self.allocator);
-            switch (self.exporter.exportBatch(owned)) {
+            switch (self.exporter.exportBatch(owned, self.exportTimeout)) {
                 ExportResult.Success => return,
                 ExportResult.Failure => return MetricReadError.ExportFailed,
             }
