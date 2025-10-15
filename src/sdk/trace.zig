@@ -12,6 +12,7 @@ pub const IDGenerator = @import("trace/id_generator.zig").IDGenerator;
 pub const RandomIDGenerator = @import("trace/id_generator.zig").RandomIDGenerator;
 
 pub const StdOutExporter = @import("trace/exporter.zig").StdOutExporter;
+pub const OTLPExporter = @import("trace/exporter.zig").OTLPExporter;
 
 test {
     _ = @import("trace/exporter.zig");

@@ -245,16 +245,8 @@ pub const OTLPExporter = struct {
             }
 
             const otlp_link = pbtrace.Span.Link{
-                .trace_id = blk: {
-                    var buf: [32]u8 = undefined;
-                    const hex = link.span_context.trace_id.toHex(&buf);
-                    break :blk (hex);
-                },
-                .span_id = blk: {
-                    var buf: [16]u8 = undefined;
-                    const hex = link.span_context.span_id.toHex(&buf);
-                    break :blk (hex);
-                },
+                .trace_id = (link.span_context.trace_id.toBinary()[0..]),
+                .span_id = (link.span_context.span_id.toBinary()[0..]),
                 .trace_state = (""), // Convert trace state if needed
                 .attributes = link_attributes,
                 .dropped_attributes_count = 0,
@@ -264,16 +256,8 @@ pub const OTLPExporter = struct {
         }
 
         return pbtrace.Span{
-            .trace_id = blk: {
-                var buf: [32]u8 = undefined;
-                const hex = span_context.trace_id.toHex(&buf);
-                break :blk (hex);
-            },
-            .span_id = blk: {
-                var buf: [16]u8 = undefined;
-                const hex = span_context.span_id.toHex(&buf);
-                break :blk (hex);
-            },
+            .trace_id = (span_context.trace_id.toBinary()[0..]),
+            .span_id = (span_context.span_id.toBinary()[0..]),
             .trace_state = (""), // Convert trace state if needed
             .parent_span_id = (""), // TODO: get from parent context
             .flags = @intCast(span_context.trace_flags.value),

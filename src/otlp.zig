@@ -565,6 +565,7 @@ const HTTPClient = struct {
             else => {
                 // Do not retry and report the status code and the message.
                 // TODO implement error handling, parsing Status message.
+                log.err("Non-retryable status code: {} for URL: {s}", .{ response.status, url });
                 return ExportError.NonRetryableStatusCodeInResponse;
             },
         }
