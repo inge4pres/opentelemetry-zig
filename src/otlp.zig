@@ -9,6 +9,9 @@
 const std = @import("std");
 const http = std.http;
 const Uri = std.Uri;
+const zlib = @cImport({
+    @cInclude("zlib.h");
+});
 
 const log = std.log.scoped(.otlp);
 
@@ -382,6 +385,58 @@ pub const ExpBackoffconfig = struct {
     max_delay_ms: u64 = 60000,
 };
 
+/// Compress data using gzip format via zlib C library.
+/// Returns allocated slice owned by the caller.
+/// compression_level should be between 0-9, or zlib.Z_DEFAULT_COMPRESSION.
+fn compressGzip(allocator: std.mem.Allocator, input: []const u8, compression_level: c_int) ![]u8 {
+    // Initialize zlib stream
+    var stream: zlib.z_stream = undefined;
+    stream.zalloc = null;
+    stream.zfree = null;
+    stream.@"opaque" = null;
+
+    // Use deflateInit2 to specify gzip format
+    // windowBits = 15 + 16 for gzip format (15 is the default, +16 adds gzip wrapper)
+    const init_result = zlib.deflateInit2_(
+        &stream,
+        compression_level,
+        zlib.Z_DEFLATED,
+        15 + 16, // gzip format
+        8, // default memory level
+        zlib.Z_DEFAULT_STRATEGY,
+        zlib.ZLIB_VERSION,
+        @sizeOf(zlib.z_stream),
+    );
+    if (init_result != zlib.Z_OK) {
+        return error.CompressionInitFailed;
+    }
+    defer _ = zlib.deflateEnd(&stream);
+
+    // Allocate output buffer
+    // Worst case: slightly larger than input due to headers
+    const max_compressed_size = zlib.deflateBound(&stream, @intCast(input.len));
+    const output = try allocator.alloc(u8, @intCast(max_compressed_size));
+    errdefer allocator.free(output);
+
+    // Set up input and output
+    stream.avail_in = @intCast(input.len);
+    stream.next_in = @constCast(input.ptr);
+    stream.avail_out = @intCast(max_compressed_size);
+    stream.next_out = output.ptr;
+
+    // Compress
+    const deflate_result = zlib.deflate(&stream, zlib.Z_FINISH);
+    if (deflate_result != zlib.Z_STREAM_END) {
+        allocator.free(output);
+        return error.CompressionFailed;
+    }
+
+    // Resize to actual compressed size
+    const compressed_size: usize = @intCast(stream.total_out);
+    const result = try allocator.realloc(output, compressed_size);
+    return result;
+}
+
 /// Handles the data transfer for HTTP-based OTLP.
 const HTTPClient = struct {
     const Self = @This();
@@ -454,31 +509,9 @@ const HTTPClient = struct {
             switch (self.config.compression) {
                 .none => break :req try self.allocator.dupe(u8, input_data),
                 .gzip => {
-
-                    // NOTE(inge4pres) the following code is commented because Compression was removed
-                    // in Zig 0.15.1.
-                    // Uncomment and implement  when Compression is back.
-
-                    //*
-                    // var compressed: std.Io.Writer.Allocating(u8) = .init(self.allocator);
-                    // // Compress the data using gzip.
-                    // // Maximum compression level, favor minimum network transfer over CPU usage.
-                    // var uncompressed = std.io.fixedBufferStream(input_data);
-                    // defer uncompressed.reset();
-
-                    // var compressed_buffer: [4096]u8 = undefined;
-                    // const compressor = try std.compress.flate.Compress.init(
-                    //     &compressed.interface,
-                    //     &compressed_buffer,
-                    //     .{ .level = .best, .container = .gzip },
-                    // );
-                    // try compressor.end();
-                    // break :req try compressed.toOwnedSlice();
-                    //
-                    // */
-
-                    // And replace this last line!
-                    break :req try self.allocator.dupe(u8, input_data);
+                    // Compress the data using gzip via zlib C library.
+                    // Maximum compression level (9), favor minimum network transfer over CPU usage.
+                    break :req try compressGzip(self.allocator, input_data, zlib.Z_BEST_COMPRESSION);
                 },
             }
         };

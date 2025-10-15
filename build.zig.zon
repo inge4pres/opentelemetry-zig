@@ -31,6 +31,11 @@
             .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=v1.8.0#d90ccb1994410d7c34c0976e5953bac77b058189",
             .hash = "opentelemetry_proto-1.8.0-S4Y0uzckAgDQ5JramCN1KvIP0PCS_gK7Z2siW2D-75lK",
         },
+        // TODO: remove when 0.16.0 is released
+        .zlib = .{
+            .url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz",
+            .hash = "1220fed0c74e1019b3ee29edae2051788b080cd96e90d56836eea857b0b966742efb",
+        },
     },
     .paths = .{
         "build.zig",

@@ -25,6 +25,49 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     }).module("protobuf");
 
+    // TODO: remove when 0.16.0 is released
+    // zlib for gzip compression
+    // Build our own zlib library using the upstream source from madler/zlib
+    // Use lazyDependency to avoid executing the incompatible build.zig from the dependency
+    const zlib_upstream = b.lazyDependency("zlib", .{}) orelse return error.MissingZlibDependency;
+    const zlib_lib = b.addLibrary(.{
+        .name = "z",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+        .linkage = .static,
+    });
+    zlib_lib.linkLibC();
+    zlib_lib.addIncludePath(zlib_upstream.path(""));
+    zlib_lib.addCSourceFiles(.{
+        .root = zlib_upstream.path(""),
+        .files = &.{
+            "adler32.c",
+            "compress.c",
+            "crc32.c",
+            "deflate.c",
+            "gzclose.c",
+            "gzlib.c",
+            "gzread.c",
+            "gzwrite.c",
+            "inflate.c",
+            "infback.c",
+            "inftrees.c",
+            "inffast.c",
+            "trees.c",
+            "uncompr.c",
+            "zutil.c",
+        },
+        .flags = &.{
+            "-DHAVE_SYS_TYPES_H",
+            "-DHAVE_STDINT_H",
+            "-DHAVE_STDDEF_H",
+            "-DZ_HAVE_UNISTD_H",
+            "-fno-sanitize=undefined", // Disable UBSan for C code to avoid linking issues
+        },
+    });
+
     // Modules section
     const sdk_mod = b.addModule("sdk", .{
         .root_source_file = b.path("src/sdk.zig"),
@@ -42,6 +85,7 @@ pub fn build(b: *std.Build) !void {
         .name = "opentelemetry-sdk",
         .root_module = sdk_mod,
     });
+    sdk_lib.linkLibrary(zlib_lib); // TODO: remove when 0.16.0 is released
 
     b.installArtifact(sdk_lib);
 
@@ -57,6 +101,7 @@ pub fn build(b: *std.Build) !void {
         // Allow passing test filter using the build args.
         .filters = b.args orelse &[0][]const u8{},
     });
+    sdk_unit_tests.linkLibrary(zlib_lib); // TODO: remove when 0.16.0 is released
 
     // Pass test options as build options
     const test_options = b.addOptions();

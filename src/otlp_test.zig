@@ -121,51 +121,51 @@ test "otlp HTTPClient uncompressed json metrics payload" {
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
 }
 
-// test "otlp HTTPClient compressed json metrics payload" {
-//     const allocator = std.testing.allocator;
+test "otlp HTTPClient compressed json metrics payload" {
+    const allocator = std.testing.allocator;
 
-//     var server = try HTTPTestServer.init(allocator, assertCompressedJsonMetricsBodyCanBeParsed);
-//     defer server.deinit();
+    var server = try HTTPTestServer.init(allocator, assertCompressedJsonMetricsBodyCanBeParsed);
+    defer server.deinit();
 
-//     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
-//     defer thread.join();
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
 
-//     const config = try ConfigOptions.init(allocator);
-//     defer config.deinit();
-//     config.protocol = .http_json;
-//     config.compression = .gzip;
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    config.protocol = .http_json;
+    config.compression = .gzip;
 
-//     const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
-//     defer allocator.free(endpoint);
-//     config.endpoint = endpoint;
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
 
-//     var req = try oneDataPointMetricsExportRequest(allocator);
-//     defer req.deinit(allocator);
+    var req = try oneDataPointMetricsExportRequest(allocator);
+    defer req.deinit(allocator);
 
-//     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
-// }
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
 
-// test "otlp HTTPClient compressed protobuf metrics payload" {
-//     const allocator = std.testing.allocator;
+test "otlp HTTPClient compressed protobuf metrics payload" {
+    const allocator = std.testing.allocator;
 
-//     var server = try HTTPTestServer.init(allocator, assertCompressionHeaderGzip);
-//     defer server.deinit();
+    var server = try HTTPTestServer.init(allocator, assertCompressionHeaderGzip);
+    defer server.deinit();
 
-//     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
-//     defer thread.join();
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
 
-//     const config = try ConfigOptions.init(allocator);
-//     defer config.deinit();
-//     const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
-//     defer allocator.free(endpoint);
-//     config.endpoint = endpoint;
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
 
-//     config.compression = otlp.Compression.gzip;
-//     var req = try oneDataPointMetricsExportRequest(allocator);
-//     defer req.deinit(allocator);
+    config.compression = otlp.Compression.gzip;
+    var req = try oneDataPointMetricsExportRequest(allocator);
+    defer req.deinit(allocator);
 
-//     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
-// }
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
 
 test "otlp HTTPClient send extra headers" {
     const allocator = std.testing.allocator;
