@@ -1,0 +1,32 @@
+# OpenTelemetry Collector configuration for integration testing
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  # Export telemetry data to JSON files for validation
+  file/traces:
+    path: /tmp/otel-data/traces.json
+    format: json
+  file/metrics:
+    path: /tmp/otel-data/metrics.json
+    format: json
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file/metrics]

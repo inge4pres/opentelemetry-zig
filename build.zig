@@ -220,6 +220,19 @@ pub fn build(b: *std.Build) !void {
         benchmarks_step.dependOn(&run_trace_benchmark.step);
     }
 
+    // Integration tests step
+    const integration_step = b.step("integration", "Run integration tests (requires Docker)");
+
+    const integration_tests = buildIntegrationTests(b, b.path("integration_tests"), sdk_mod) catch |err| {
+        std.debug.print("Error building integration tests: {}\n", .{err});
+        return err;
+    };
+    defer b.allocator.free(integration_tests);
+    for (integration_tests) |step| {
+        const run_integration_test = b.addRunArtifact(step);
+        integration_step.dependOn(&run_integration_test.step);
+    }
+
     // Documentation webiste with autodoc
     const sdk_docs = b.addObject(.{
         .name = "sdk",
@@ -328,6 +341,44 @@ fn buildBenchmarks(
     }
 
     return bench_tests.toOwnedSlice(b.allocator);
+}
+
+fn buildIntegrationTests(
+    b: *std.Build,
+    integration_dir: std.Build.LazyPath,
+    otel_mod: *std.Build.Module,
+) ![]*std.Build.Step.Compile {
+    var integration_tests = std.ArrayList(*std.Build.Step.Compile){};
+    errdefer integration_tests.deinit(b.allocator);
+
+    var test_dir = try integration_dir.getPath3(b, null).openDir("", .{ .iterate = true });
+    defer test_dir.close();
+
+    var iter = test_dir.iterate();
+    while (try iter.next()) |file| {
+        if (getZigFileName(file.name)) |name| {
+            const file_name = try integration_dir.join(b.allocator, file.name);
+
+            const b_mod = b.createModule(.{
+                .root_source_file = file_name,
+                .target = otel_mod.resolved_target.?,
+                // Use ReleaseSafe for integration tests to have safety checks
+                .optimize = .ReleaseSafe,
+                .imports = &.{
+                    .{ .name = "opentelemetry-sdk", .module = otel_mod },
+                },
+            });
+
+            const test_exe = b.addExecutable(.{
+                .name = name,
+                .root_module = b_mod,
+            });
+
+            try integration_tests.append(b.allocator, test_exe);
+        }
+    }
+
+    return integration_tests.toOwnedSlice(b.allocator);
 }
 
 fn getZigFileName(file_name: []const u8) ?[]const u8 {
