@@ -16,7 +16,7 @@ pub const ReadWriteLogRecord = struct {
     severity_text: ?[]const u8,
     body: ?[]const u8,
     attributes: std.ArrayListUnmanaged(Attribute),
-    resource: ?*const anyopaque,
+    resource: ?[]const Attribute,
     scope: InstrumentationScope,
 
     const Self = @This();
@@ -75,7 +75,7 @@ pub const ReadableLogRecord = struct {
     severity_text: ?[]const u8,
     body: ?[]const u8,
     attributes: []const Attribute,
-    resource: ?*const anyopaque,
+    resource: ?[]const Attribute,
     scope: InstrumentationScope,
 
     const Self = @This();
@@ -278,4 +278,31 @@ test "ReadWriteLogRecord to ReadableLogRecord conversion" {
     try std.testing.expectEqual(@as(u8, 9), readable.severity_number.?);
     try std.testing.expectEqual(@as(usize, 1), readable.attributes.len);
     try std.testing.expectEqualStrings("test.key", readable.attributes[0].key);
+}
+
+test "ReadWriteLogRecord with resource attributes" {
+    const allocator = std.testing.allocator;
+    const scope = InstrumentationScope{ .name = "test-logger" };
+
+    var rw_record = ReadWriteLogRecord.init(allocator, scope);
+    defer rw_record.deinit(allocator);
+
+    const service_name: []const u8 = "my-service";
+    const service_version: []const u8 = "1.0.0";
+    const resource_attrs = try Attributes.from(allocator, .{
+        "service.name",    service_name,
+        "service.version", service_version,
+    });
+    defer if (resource_attrs) |attrs| allocator.free(attrs);
+
+    rw_record.resource = resource_attrs;
+    rw_record.body = "test message";
+
+    const readable = try rw_record.toReadable(allocator);
+    defer readable.deinit(allocator);
+
+    try std.testing.expect(readable.resource != null);
+    try std.testing.expectEqual(@as(usize, 2), readable.resource.?.len);
+    try std.testing.expectEqualStrings("service.name", readable.resource.?[0].key);
+    try std.testing.expectEqualStrings("my-service", readable.resource.?[0].value.string);
 }
