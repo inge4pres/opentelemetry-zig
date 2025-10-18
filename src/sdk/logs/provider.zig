@@ -3,6 +3,7 @@ const logs_api = @import("../../api/logs/logger_provider.zig");
 const LogRecordProcessor = @import("log_record_processor.zig").LogRecordProcessor;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const context = @import("../../api/context.zig");
+const Attribute = @import("../../attributes.zig").Attribute;
 
 /// SDK LoggerProvider implementation
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#loggerprovider
@@ -15,13 +16,13 @@ pub const LoggerProvider = struct {
         std.hash_map.default_max_load_percentage,
     ),
     processors: std.ArrayListUnmanaged(LogRecordProcessor),
-    resource: ?*const anyopaque,
+    resource: ?[]const Attribute,
     is_shutdown: std.atomic.Value(bool),
     mutex: std.Thread.Mutex,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, resource: ?[]const Attribute) !*Self {
         const provider = try allocator.create(Self);
         provider.* = Self{
             .allocator = allocator,
@@ -32,7 +33,7 @@ pub const LoggerProvider = struct {
                 std.hash_map.default_max_load_percentage,
             ){},
             .processors = std.ArrayListUnmanaged(LogRecordProcessor){},
-            .resource = null,
+            .resource = resource,
             .is_shutdown = std.atomic.Value(bool).init(false),
             .mutex = std.Thread.Mutex{},
         };
@@ -151,6 +152,7 @@ pub const Logger = struct {
         log_record.severity_number = severity_number;
         log_record.severity_text = severity_text;
         log_record.body = body;
+        log_record.resource = self.provider.resource;
 
         // Add attributes if provided
         if (attributes) |attrs| {
@@ -175,7 +177,7 @@ pub const Logger = struct {
 test "LoggerProvider basic functionality" {
     const allocator = std.testing.allocator;
 
-    var provider = try LoggerProvider.init(allocator);
+    var provider = try LoggerProvider.init(allocator, null);
     defer provider.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -187,7 +189,7 @@ test "LoggerProvider basic functionality" {
 test "LoggerProvider same logger for same scope" {
     const allocator = std.testing.allocator;
 
-    var provider = try LoggerProvider.init(allocator);
+    var provider = try LoggerProvider.init(allocator, null);
     defer provider.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -229,7 +231,7 @@ test "LoggerProvider with processor" {
     var processor = SimpleLogRecordProcessor.init(allocator, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
-    var provider = try LoggerProvider.init(allocator);
+    var provider = try LoggerProvider.init(allocator, null);
     defer provider.deinit();
 
     try provider.addLogRecordProcessor(log_processor);
@@ -242,4 +244,88 @@ test "LoggerProvider with processor" {
 
     // Verify export was called
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.export_count);
+}
+
+test "LoggerProvider with custom resource" {
+    const allocator = std.testing.allocator;
+    const Attributes = @import("../../attributes.zig").Attributes;
+
+    const service_name: []const u8 = "my-service";
+    const service_version: []const u8 = "1.0.0";
+    const deployment_env: []const u8 = "production";
+    const resource_attrs = try Attributes.from(allocator, .{
+        "service.name",    service_name,
+        "service.version", service_version,
+        "deployment.env",  deployment_env,
+    });
+    defer if (resource_attrs) |attrs| allocator.free(attrs);
+
+    var provider = try LoggerProvider.init(allocator, resource_attrs);
+    defer provider.deinit();
+
+    try std.testing.expect(provider.resource != null);
+    try std.testing.expectEqual(@as(usize, 3), provider.resource.?.len);
+    try std.testing.expectEqualStrings("service.name", provider.resource.?[0].key);
+    try std.testing.expectEqualStrings("my-service", provider.resource.?[0].value.string);
+}
+
+test "Log records inherit resource from provider" {
+    const allocator = std.testing.allocator;
+    const Attributes = @import("../../attributes.zig").Attributes;
+    const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;
+    const SimpleLogRecordProcessor = @import("log_record_processor.zig").SimpleLogRecordProcessor;
+
+    const service_name: []const u8 = "test-service";
+    const host_name: []const u8 = "test-host";
+    const resource_attrs = try Attributes.from(allocator, .{
+        "service.name", service_name,
+        "host.name",    host_name,
+    });
+    defer if (resource_attrs) |attrs| allocator.free(attrs);
+
+    // Mock exporter that captures the log record
+    const MockExporter = struct {
+        captured_resource: ?[]const Attribute = null,
+
+        pub fn exportLogs(ctx: *anyopaque, records: []logs_api.ReadableLogRecord) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (records.len > 0) {
+                self.captured_resource = records[0].resource;
+            }
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var mock_exporter = MockExporter{};
+    const exporter = mock_exporter.asLogRecordExporter();
+    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    const log_processor = processor.asLogRecordProcessor();
+
+    var provider = try LoggerProvider.init(allocator, resource_attrs);
+    defer provider.deinit();
+
+    try provider.addLogRecordProcessor(log_processor);
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const logger = try provider.getLogger(scope);
+
+    // Emit a log
+    logger.emit(9, "INFO", "test message", null);
+
+    // Verify resource was passed to the log record
+    try std.testing.expect(mock_exporter.captured_resource != null);
+    try std.testing.expectEqual(@as(usize, 2), mock_exporter.captured_resource.?.len);
+    try std.testing.expectEqualStrings("service.name", mock_exporter.captured_resource.?[0].key);
+    try std.testing.expectEqualStrings("test-service", mock_exporter.captured_resource.?[0].value.string);
 }

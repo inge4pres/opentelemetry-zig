@@ -28,7 +28,7 @@ pub fn main() !void {
     const processor = batching_processor.asLogRecordProcessor();
 
     // Create a logger provider
-    var provider = try sdk.logs.LoggerProvider.init(allocator);
+    var provider = try sdk.logs.LoggerProvider.init(allocator, null);
     defer provider.deinit();
 
     // Add the batching processor
