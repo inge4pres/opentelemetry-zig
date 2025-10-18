@@ -66,6 +66,15 @@ pub fn main() !void {
     std.debug.print("Running traces integration test...\n", .{});
     try testTraces(allocator, tmp.dir);
     std.debug.print("✓ Traces test passed\n\n", .{});
+
+    // Run compression tests
+    std.debug.print("Running metrics compression test...\n", .{});
+    try testMetricsWithCompression(allocator, tmp.dir);
+    std.debug.print("✓ Metrics compression test passed\n\n", .{});
+
+    std.debug.print("Running traces compression test...\n", .{});
+    try testTracesWithCompression(allocator, tmp.dir);
+    std.debug.print("✓ Traces compression test passed\n\n", .{});
 }
 
 fn checkDockerAvailable(allocator: std.mem.Allocator) !void {
@@ -364,6 +373,168 @@ fn testTraces(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
     }
 
     std.debug.print("  ✓ Traces JSON validated - found {d} test spans\n", .{num_spans});
+
+    // Cleanup
+    tracer_provider.shutdown();
+    otlp_exporter.deinit();
+}
+
+fn testMetricsWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
+    // Configure the OTLP exporter with gzip compression
+    var config = try sdk.otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    // Enable gzip compression
+    config.endpoint = "localhost:4318";
+    config.compression = .gzip;
+
+    // Create meter provider and exporter
+    const mp = try metrics_sdk.MeterProvider.default();
+    defer mp.shutdown();
+
+    const me = try metrics_sdk.MetricExporter.OTLP(allocator, null, null, config);
+    defer me.otlp.deinit();
+
+    const mr = try metrics_sdk.MetricReader.init(allocator, me.exporter);
+    try mp.addReader(mr);
+
+    // Record test metrics with compression indicator
+    const meter = try mp.getMeter(.{ .name = "integration-test-compression" });
+    var counter = try meter.createCounter(u64, .{ .name = "test_counter_compressed" });
+
+    // Record some data points
+    const num_data_points = 5;
+    for (0..num_data_points) |i| {
+        try counter.add(100 + i, .{ "compression", @as([]const u8, "gzip"), "iteration", @as(u64, i) });
+    }
+
+    // Force collection and export
+    try mr.collect();
+
+    // Give the collector time to process
+    std.Thread.sleep(1 * std.time.ns_per_s);
+
+    // Wait for the file (reusing the same file as the uncompressed test)
+    std.debug.print("  Successfully sent {d} compressed metric data points\n", .{num_data_points});
+    std.debug.print("  Waiting for metrics JSON file...\n", .{});
+
+    try waitForFile(tmp_dir, "metrics.json", 10);
+
+    const json_content = try readJsonFile(allocator, tmp_dir, "metrics.json");
+    defer allocator.free(json_content);
+
+    // Verify the JSON contains expected compressed metric data
+    const has_compressed_counter = std.mem.indexOf(u8, json_content, "test_counter_compressed") != null;
+    const has_compression_attr = std.mem.indexOf(u8, json_content, "gzip") != null;
+    const has_resource_metrics = std.mem.indexOf(u8, json_content, "resourceMetrics") != null or
+        std.mem.indexOf(u8, json_content, "resource_metrics") != null;
+
+    if (!has_compressed_counter or !has_resource_metrics) {
+        std.debug.print("  ERROR: Compressed metrics JSON doesn't contain expected data\n", .{});
+        std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
+        return error.CompressedMetricsNotReceivedByCollector;
+    }
+
+    std.debug.print("  ✓ Compressed metrics JSON validated - found 'test_counter_compressed' metric\n", .{});
+    if (has_compression_attr) {
+        std.debug.print("  ✓ Compression attribute 'gzip' found in metrics\n", .{});
+    }
+}
+
+fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
+    // Configure the OTLP exporter with gzip compression
+    var config = try sdk.otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    // Enable gzip compression
+    config.endpoint = "localhost:4318";
+    config.compression = .gzip;
+
+    // Create ID generator for traces
+    var prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+    const id_generator = trace_sdk.IDGenerator{
+        .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
+    };
+
+    // Create tracer provider
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, id_generator);
+    errdefer tracer_provider.shutdown();
+
+    // Create OTLP exporter with compression enabled
+    var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, config);
+    errdefer otlp_exporter.deinit();
+
+    // Use simple processor for integration tests
+    var simple_processor = trace_sdk.SimpleProcessor.init(
+        allocator,
+        otlp_exporter.asSpanExporter(),
+    );
+
+    const span_processor = simple_processor.asSpanProcessor();
+    try tracer_provider.addSpanProcessor(span_processor);
+
+    // Create and record test spans with compression indicator
+    const tracer = try tracer_provider.getTracer(.{
+        .name = "integration-test-compression",
+        .version = "1.0.0",
+    });
+
+    const num_spans = 3;
+    for (0..num_spans) |i| {
+        const span_name = try std.fmt.allocPrint(allocator, "test-span-compressed-{d}", .{i});
+        defer allocator.free(span_name);
+
+        const span_attributes = try sdk.Attributes.from(allocator, .{
+            "span.index",  @as(i64, @intCast(i)),
+            "test.name",   @as([]const u8, "integration-test-compression"),
+            "compression", @as([]const u8, "gzip"),
+        });
+        defer if (span_attributes) |attrs| allocator.free(attrs);
+
+        var span = try tracer.startSpan(allocator, span_name, .{
+            .kind = .Internal,
+            .attributes = span_attributes,
+        });
+        defer span.deinit();
+
+        // Simulate some work
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+
+        span.setStatus(trace_api.Status.ok());
+        tracer.endSpan(&span);
+    }
+
+    // Give the collector time to process
+    std.debug.print("  Waiting for collector to process compressed traces...\n", .{});
+    std.Thread.sleep(2 * std.time.ns_per_s);
+
+    // Validate that the collector received the compressed traces
+    std.debug.print("  Successfully sent {d} compressed trace spans\n", .{num_spans});
+    std.debug.print("  Waiting for traces JSON file...\n", .{});
+
+    try waitForFile(tmp_dir, "traces.json", 20);
+
+    const json_content = try readJsonFile(allocator, tmp_dir, "traces.json");
+    defer allocator.free(json_content);
+
+    // Verify the JSON contains expected compressed trace data
+    const has_compressed_span = std.mem.indexOf(u8, json_content, "test-span-compressed") != null;
+    const has_resource_spans = std.mem.indexOf(u8, json_content, "resourceSpans") != null or
+        std.mem.indexOf(u8, json_content, "resource_spans") != null;
+    const has_compression_attr = std.mem.indexOf(u8, json_content, "gzip") != null;
+
+    if (!has_compressed_span or !has_resource_spans) {
+        std.debug.print("  ERROR: Compressed traces JSON doesn't contain expected data\n", .{});
+        std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
+        tracer_provider.shutdown();
+        otlp_exporter.deinit();
+        return error.CompressedTracesNotReceivedByCollector;
+    }
+
+    std.debug.print("  ✓ Compressed traces JSON validated - found {d} test spans\n", .{num_spans});
+    if (has_compression_attr) {
+        std.debug.print("  ✓ Compression attribute 'gzip' found in traces\n", .{});
+    }
 
     // Cleanup
     tracer_provider.shutdown();
