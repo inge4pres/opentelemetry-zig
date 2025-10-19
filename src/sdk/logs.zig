@@ -1,5 +1,8 @@
 //! OpenTelemetry Logs SDK.
 
+// Logger Provider
+pub const LoggerProvider = @import("../api/logs/logger_provider.zig").LoggerProvider;
+
 // Processors
 pub const LogRecordProcessor = @import("logs/log_record_processor.zig").LogRecordProcessor;
 pub const SimpleLogRecordProcessor = @import("logs/log_record_processor.zig").SimpleLogRecordProcessor;

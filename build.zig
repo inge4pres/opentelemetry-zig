@@ -248,7 +248,7 @@ fn buildExamples(
     proto_mod: *std.Build.Module,
     name_filter: ?[]const u8,
 ) ![]*std.Build.Step.Compile {
-    var exes = std.ArrayList(*std.Build.Step.Compile){};
+    var exes: std.ArrayList(*std.Build.Step.Compile) = .{};
     errdefer exes.deinit(b.allocator);
 
     var ex_dir = try examples_dir.getPath3(b, null).openDir("", .{ .iterate = true });
@@ -292,7 +292,7 @@ fn buildBenchmarks(
     benchmark_mod: *std.Build.Module,
     debug_mode: bool,
 ) ![]*std.Build.Step.Compile {
-    var bench_tests = std.ArrayList(*std.Build.Step.Compile){};
+    var bench_tests: std.ArrayList(*std.Build.Step.Compile) = .{};
     errdefer bench_tests.deinit(b.allocator);
 
     var test_dir = try bench_dir.getPath3(b, null).openDir("", .{ .iterate = true });

@@ -10,7 +10,8 @@ pub fn main() !void {
     std.debug.print("==========================================\n\n", .{});
 
     // Create a stdout exporter
-    var stdout_exporter = sdk.logs.StdoutExporter.init(std.io.getStdOut().writer());
+    const stdout_file = std.fs.File.stdout();
+    var stdout_exporter = sdk.logs.StdoutExporter.init(stdout_file.deprecatedWriter());
     const exporter = stdout_exporter.asLogRecordExporter();
 
     // Create a batching processor with custom config
@@ -47,11 +48,11 @@ pub fn main() !void {
     var i: usize = 0;
     while (i < 10) : (i += 1) {
         logger.emit(9, "INFO", "Batched log message", null);
-        std.time.sleep(50 * std.time.ns_per_ms); // Small delay
+        std.Thread.sleep(50 * std.time.ns_per_ms); // Small delay
     }
 
     std.debug.print("\n\nWaiting for background export...\n", .{});
-    std.time.sleep(500 * std.time.ns_per_ms);
+    std.Thread.sleep(500 * std.time.ns_per_ms);
 
     std.debug.print("Force flushing remaining logs...\n", .{});
     try provider.forceFlush();

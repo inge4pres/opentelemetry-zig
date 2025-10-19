@@ -139,7 +139,7 @@ pub const BatchingLogRecordProcessor = struct {
             .scheduled_delay_millis = config.scheduled_delay_millis,
             .export_timeout_millis = config.export_timeout_millis,
             .max_export_batch_size = config.max_export_batch_size,
-            .queue = std.ArrayList(logs.ReadableLogRecord).init(allocator),
+            .queue = .{},
             .mutex = std.Thread.Mutex{},
             .condition = std.Thread.Condition{},
             .export_thread = null,
@@ -160,7 +160,7 @@ pub const BatchingLogRecordProcessor = struct {
         for (self.queue.items) |log_record| {
             log_record.deinit(self.allocator);
         }
-        self.queue.deinit();
+        self.queue.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -193,7 +193,7 @@ pub const BatchingLogRecordProcessor = struct {
             return;
         };
 
-        self.queue.append(readable) catch {
+        self.queue.append(self.allocator, readable) catch {
             std.log.err("BatchingLogRecordProcessor failed to add log record to queue", .{});
             readable.deinit(self.allocator);
             return;
@@ -302,29 +302,31 @@ test "SimpleLogRecordProcessor basic functionality" {
 
     // Mock exporter
     const MockExporter = struct {
+        allocator: std.mem.Allocator,
         exported_logs: std.ArrayList(logs.ReadableLogRecord),
 
         pub fn init(alloc: std.mem.Allocator) @This() {
             return @This(){
-                .exported_logs = std.ArrayList(logs.ReadableLogRecord).init(alloc),
+                .allocator = alloc,
+                .exported_logs = .{},
             };
         }
 
         pub fn deinit(self: *@This()) void {
             for (self.exported_logs.items) |log_record| {
-                log_record.deinit(self.exported_logs.allocator);
+                log_record.deinit(self.allocator);
             }
-            self.exported_logs.deinit();
+            self.exported_logs.deinit(self.allocator);
         }
 
         pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             for (log_records) |log_record| {
                 // Make a copy since we're storing it
-                const attrs = try self.exported_logs.allocator.alloc(@import("../../attributes.zig").Attribute, log_record.attributes.len);
+                const attrs = try self.allocator.alloc(@import("../../attributes.zig").Attribute, log_record.attributes.len);
                 @memcpy(attrs, log_record.attributes);
 
-                try self.exported_logs.append(.{
+                try self.exported_logs.append(self.allocator, .{
                     .timestamp = log_record.timestamp,
                     .observed_timestamp = log_record.observed_timestamp,
                     .trace_id = log_record.trace_id,
@@ -493,7 +495,7 @@ test "BatchingLogRecordProcessor basic functionality" {
     }
 
     // Wait a bit for the background thread to process
-    std.time.sleep(200 * std.time.ns_per_ms);
+    std.Thread.sleep(200 * std.time.ns_per_ms);
 
     // Force flush to export remaining log records
     try log_processor.forceFlush();
@@ -509,20 +511,21 @@ test "integration: multiple processors in pipeline" {
     const Attribute = @import("../../attributes.zig").Attribute;
 
     // Track which processors were called and in what order
-    var call_order = std.ArrayList(u8).init(allocator);
-    defer call_order.deinit();
+    var call_order: std.ArrayList(u8) = .{};
+    defer call_order.deinit(allocator);
 
     // First processor - adds an attribute
     const FirstProcessor = struct {
+        allocator: std.mem.Allocator,
         order: *std.ArrayList(u8),
 
         pub fn onEmit(ctx: *anyopaque, log_record: *logs.ReadWriteLogRecord, _: context.Context) void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
-            self.order.append(1) catch {};
+            self.order.append(self.allocator, 1) catch {};
 
             // Add an attribute
             const attr = Attribute{ .key = "processor.first", .value = .{ .bool = true } };
-            log_record.setAttribute(self.order.allocator, attr) catch {};
+            log_record.setAttribute(self.allocator, attr) catch {};
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -542,11 +545,12 @@ test "integration: multiple processors in pipeline" {
 
     // Second processor - modifies severity
     const SecondProcessor = struct {
+        allocator: std.mem.Allocator,
         order: *std.ArrayList(u8),
 
         pub fn onEmit(ctx: *anyopaque, log_record: *logs.ReadWriteLogRecord, _: context.Context) void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
-            self.order.append(2) catch {};
+            self.order.append(self.allocator, 2) catch {};
 
             // Verify first processor's attribute is visible
             std.debug.assert(log_record.attributes.items.len > 0);
@@ -570,8 +574,8 @@ test "integration: multiple processors in pipeline" {
         }
     };
 
-    var first = FirstProcessor{ .order = &call_order };
-    var second = SecondProcessor{ .order = &call_order };
+    var first = FirstProcessor{ .allocator = allocator, .order = &call_order };
+    var second = SecondProcessor{ .allocator = allocator, .order = &call_order };
 
     const first_processor = first.asLogRecordProcessor();
     const second_processor = second.asLogRecordProcessor();

@@ -10,7 +10,8 @@ pub fn main() !void {
     std.debug.print("===============================\n\n", .{});
 
     // Create a stdout exporter
-    var stdout_exporter = sdk.logs.StdoutExporter.init(std.io.getStdOut().writer());
+    const stdout_file = std.fs.File.stdout();
+    var stdout_exporter = sdk.logs.StdoutExporter.init(stdout_file.deprecatedWriter());
     const exporter = stdout_exporter.asLogRecordExporter();
 
     // Create a simple processor

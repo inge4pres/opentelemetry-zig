@@ -48,14 +48,15 @@ fn GenericWriterExporter(
             const self: *Self = @ptrCast(@alignCast(ctx));
 
             // Convert log records to serializable format
-            var serializable_logs = std.ArrayList(SerializableLogRecord).init(std.heap.page_allocator);
-            defer serializable_logs.deinit();
+            var serializable_logs: std.ArrayList(SerializableLogRecord) = .{};
+            defer serializable_logs.deinit(std.heap.page_allocator);
 
             for (log_records) |log_record| {
-                try serializable_logs.append(SerializableLogRecord.fromLogRecord(log_record));
+                try serializable_logs.append(std.heap.page_allocator, SerializableLogRecord.fromLogRecord(log_record));
             }
 
-            try std.json.stringify(serializable_logs.items, .{}, self.writer);
+            // Serialize to JSON - format directly to this writer
+            try std.fmt.format(self.writer, "{f}", .{std.json.fmt(serializable_logs.items, .{})});
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -74,16 +75,16 @@ fn GenericWriterExporter(
 
 /// StdoutExporter outputs log records into OS stdout.
 /// ref: https://opentelemetry.io/docs/specs/otel/logs/sdk_exporters/stdout/
-pub const StdoutExporter = GenericWriterExporter(std.io.Writer(std.fs.File, std.fs.File.WriteError, std.fs.File.write));
+pub const StdoutExporter = GenericWriterExporter(std.io.GenericWriter(std.fs.File, std.fs.File.WriteError, std.fs.File.write));
 
 /// InMemoryExporter exports log records to in-memory buffer.
 /// It is designed for testing GenericWriterExporter.
 pub const InMemoryExporter = GenericWriterExporter(std.ArrayList(u8).Writer);
 
 test "GenericWriterExporter" {
-    var out_buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer out_buf.deinit();
-    var inmemory_exporter = InMemoryExporter.init(out_buf.writer());
+    var out_buf: std.ArrayList(u8) = .{};
+    defer out_buf.deinit(std.testing.allocator);
+    var inmemory_exporter = InMemoryExporter.init(out_buf.writer(std.testing.allocator));
     var exporter = inmemory_exporter.asLogRecordExporter();
 
     // Create a test log record
