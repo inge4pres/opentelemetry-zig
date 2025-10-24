@@ -2,6 +2,8 @@ const std = @import("std");
 const logs = @import("../../api/logs/logger_provider.zig");
 const context = @import("../../api/context.zig");
 const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;
+const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+const Attribute = @import("../../attributes.zig").Attribute;
 
 /// LogRecordProcessor is an interface which allows hooks for LogRecord emitting.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#logrecordprocessor
@@ -298,7 +300,6 @@ pub const BatchingLogRecordProcessor = struct {
 
 test "SimpleLogRecordProcessor basic functionality" {
     const allocator = std.testing.allocator;
-    const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
     // Mock exporter
     const MockExporter = struct {
@@ -363,7 +364,7 @@ test "SimpleLogRecordProcessor basic functionality" {
 
     // Create a test log record
     const scope = InstrumentationScope{ .name = "test-logger" };
-    var log_record = logs.ReadWriteLogRecord.init(allocator, scope);
+    var log_record = logs.ReadWriteLogRecord.init(scope);
     defer log_record.deinit(allocator);
 
     log_record.body = "test log message";
@@ -382,8 +383,6 @@ test "SimpleLogRecordProcessor basic functionality" {
 
 test "SimpleLogRecordProcessor with attributes" {
     const allocator = std.testing.allocator;
-    const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
-    const Attribute = @import("../../attributes.zig").Attribute;
 
     // Mock exporter (simplified for this test)
     const MockExporter = struct {
@@ -414,7 +413,7 @@ test "SimpleLogRecordProcessor with attributes" {
 
     // Create a test log record with attributes
     const scope = InstrumentationScope{ .name = "test-logger" };
-    var log_record = logs.ReadWriteLogRecord.init(allocator, scope);
+    var log_record = logs.ReadWriteLogRecord.init(scope);
     defer log_record.deinit(allocator);
 
     const attr = Attribute{ .key = "test.key", .value = .{ .string = "test.value" } };
@@ -433,7 +432,6 @@ test "SimpleLogRecordProcessor with attributes" {
 
 test "BatchingLogRecordProcessor basic functionality" {
     const allocator = std.testing.allocator;
-    const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
     // Mock exporter (simplified)
     const MockExporter = struct {
@@ -485,7 +483,7 @@ test "BatchingLogRecordProcessor basic functionality" {
     // Add 3 log records - should trigger export when batch size (2) is reached
     var i: usize = 0;
     while (i < 3) : (i += 1) {
-        var log_record = logs.ReadWriteLogRecord.init(allocator, scope);
+        var log_record = logs.ReadWriteLogRecord.init(scope);
         defer log_record.deinit(allocator);
 
         log_record.body = "test log message";
@@ -507,8 +505,6 @@ test "BatchingLogRecordProcessor basic functionality" {
 
 test "integration: multiple processors in pipeline" {
     const allocator = std.testing.allocator;
-    const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
-    const Attribute = @import("../../attributes.zig").Attribute;
 
     // Track which processors were called and in what order
     var call_order: std.ArrayList(u8) = .{};
@@ -582,7 +578,7 @@ test "integration: multiple processors in pipeline" {
 
     // Create a log record
     const scope = InstrumentationScope{ .name = "test-logger" };
-    var log_record = logs.ReadWriteLogRecord.init(allocator, scope);
+    var log_record = logs.ReadWriteLogRecord.init(scope);
     defer log_record.deinit(allocator);
 
     log_record.body = "test message";

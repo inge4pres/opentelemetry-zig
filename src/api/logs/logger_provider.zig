@@ -24,7 +24,7 @@ pub const ReadWriteLogRecord = struct {
 
     const Self = @This();
 
-    pub fn init(_: std.mem.Allocator, scope: InstrumentationScope) Self {
+    pub fn init(scope: InstrumentationScope) Self {
         return Self{
             .timestamp = null,
             .observed_timestamp = @intCast(std.time.nanoTimestamp()),
@@ -116,7 +116,7 @@ pub const LoggerProvider = struct {
                 std.hash_map.default_max_load_percentage,
             ){},
             .processors = std.ArrayListUnmanaged(LogRecordProcessor){},
-            .resource = resource,
+            .resource = if (resource) |r| try allocator.dupe(Attribute, r) else null,
             .is_shutdown = std.atomic.Value(bool).init(false),
             .mutex = std.Thread.Mutex{},
         };
@@ -132,6 +132,9 @@ pub const LoggerProvider = struct {
         self.loggers.deinit(self.allocator);
 
         self.processors.deinit(self.allocator);
+
+        if (self.resource) |r| self.allocator.free(r);
+
         self.allocator.destroy(self);
     }
 
@@ -222,14 +225,14 @@ pub const Logger = struct {
         severity_number: ?u8,
         severity_text: ?[]const u8,
         body: ?[]const u8,
-        attributes: ?[]const @import("../../attributes.zig").Attribute,
+        attributes: ?[]const Attribute,
     ) void {
         if (self.provider.is_shutdown.load(.acquire)) {
             return;
         }
 
         // Create ReadWriteLogRecord
-        var log_record = ReadWriteLogRecord.init(self.allocator, self.scope);
+        var log_record = ReadWriteLogRecord.init(self.scope);
         defer log_record.deinit(self.allocator);
 
         log_record.severity_number = severity_number;
