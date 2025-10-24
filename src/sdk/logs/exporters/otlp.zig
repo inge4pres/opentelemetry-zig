@@ -180,9 +180,31 @@ pub const OTLPExporter = struct {
     }
 
     fn cleanupRequest(self: *Self, request: *pbcollector_logs.ExportLogsServiceRequest) void {
-        _ = self;
-        _ = request;
-        // TODO: Implement in commit 5
+        // Clean up the ArrayLists we created
+        // Note: Manual cleanup is required because protobuf doesn't support auto-deinit yet
+        for (request.resource_logs.items) |*resource_log| {
+            // Clean up resource attributes
+            if (resource_log.resource) |*resource| {
+                resource.attributes.deinit(self.allocator);
+                resource.entity_refs.deinit(self.allocator);
+            }
+
+            for (resource_log.scope_logs.items) |*scope_log| {
+                // Clean up scope attributes
+                if (scope_log.scope) |*scope| {
+                    scope.attributes.deinit(self.allocator);
+                }
+
+                // Clean up log records
+                for (scope_log.log_records.items) |*log_record| {
+                    // Clean up log record attributes
+                    log_record.attributes.deinit(self.allocator);
+                }
+                scope_log.log_records.deinit(self.allocator);
+            }
+            resource_log.scope_logs.deinit(self.allocator);
+        }
+        request.resource_logs.deinit(self.allocator);
     }
 
     fn logRecordToOTLP(self: *Self, log_record: logs.ReadableLogRecord) !pblogs.LogRecord {
