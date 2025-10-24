@@ -91,4 +91,76 @@ pub const OTLPExporter = struct {
         _ = request;
         // TODO: Implement in commit 5
     }
+
+    fn logRecordToOTLP(self: *Self, log_record: logs.ReadableLogRecord) !pblogs.LogRecord {
+        // Convert attributes
+        var attributes = std.ArrayList(pbcommon.KeyValue){};
+        for (log_record.attributes) |attr| {
+            const key_value = try attributeToOTLP(attr.key, attr.value);
+            try attributes.append(self.allocator, key_value);
+        }
+
+        // Convert trace_id to hex string (16 bytes -> 32 char hex)
+        const trace_id_str: []const u8 = if (log_record.trace_id) |tid| blk: {
+            var buf: [32]u8 = undefined;
+            _ = std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexLower(&tid)}) catch unreachable;
+            break :blk (buf[0..]);
+        } else "";
+
+        // Convert span_id to hex string (8 bytes -> 16 char hex)
+        const span_id_str: []const u8 = if (log_record.span_id) |sid| blk: {
+            var buf: [16]u8 = undefined;
+            _ = std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexLower(&sid)}) catch unreachable;
+            break :blk (buf[0..]);
+        } else "";
+
+        // Convert body to AnyValue
+        const body: ?pbcommon.AnyValue = if (log_record.body) |b|
+            pbcommon.AnyValue{ .value = .{ .string_value = (b) } }
+        else
+            null;
+
+        // Use timestamp if available, otherwise use observed_timestamp
+        const time_unix_nano = log_record.timestamp orelse log_record.observed_timestamp;
+
+        return pblogs.LogRecord{
+            .time_unix_nano = time_unix_nano,
+            .observed_time_unix_nano = log_record.observed_timestamp,
+            .severity_number = severityToOTLP(log_record.severity_number),
+            .severity_text = (log_record.severity_text orelse ""),
+            .body = body,
+            .attributes = attributes,
+            .dropped_attributes_count = 0,
+            .flags = 0, // TODO: Extract from trace context if available
+            .trace_id = (trace_id_str),
+            .span_id = (span_id_str),
+        };
+    }
+
+    fn severityToOTLP(severity: ?u8) pblogs.SeverityNumber {
+        const sev = severity orelse return .SEVERITY_NUMBER_UNSPECIFIED;
+        return switch (sev) {
+            1...4 => .SEVERITY_NUMBER_TRACE,
+            5...8 => .SEVERITY_NUMBER_DEBUG,
+            9...12 => .SEVERITY_NUMBER_INFO,
+            13...16 => .SEVERITY_NUMBER_WARN,
+            17...20 => .SEVERITY_NUMBER_ERROR,
+            21...24 => .SEVERITY_NUMBER_FATAL,
+            else => .SEVERITY_NUMBER_UNSPECIFIED,
+        };
+    }
+
+    fn attributeToOTLP(key: []const u8, value: attribute.AttributeValue) !pbcommon.KeyValue {
+        const any_value = switch (value) {
+            .string => |v| pbcommon.AnyValue{ .value = .{ .string_value = (v) } },
+            .bool => |v| pbcommon.AnyValue{ .value = .{ .bool_value = v } },
+            .int => |v| pbcommon.AnyValue{ .value = .{ .int_value = v } },
+            .double => |v| pbcommon.AnyValue{ .value = .{ .double_value = v } },
+        };
+
+        return pbcommon.KeyValue{
+            .key = (key),
+            .value = any_value,
+        };
+    }
 };
