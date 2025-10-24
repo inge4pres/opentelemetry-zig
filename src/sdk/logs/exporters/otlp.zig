@@ -218,14 +218,16 @@ pub const OTLPExporter = struct {
         // Convert trace_id to hex string (16 bytes -> 32 char hex)
         const trace_id_str: []const u8 = if (log_record.trace_id) |tid| blk: {
             var buf: [32]u8 = undefined;
-            _ = std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexLower(&tid)}) catch unreachable;
+            const hex = std.fmt.bytesToHex(&tid, .lower);
+            @memcpy(&buf, &hex);
             break :blk (buf[0..]);
         } else "";
 
         // Convert span_id to hex string (8 bytes -> 16 char hex)
         const span_id_str: []const u8 = if (log_record.span_id) |sid| blk: {
             var buf: [16]u8 = undefined;
-            _ = std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexLower(&sid)}) catch unreachable;
+            const hex = std.fmt.bytesToHex(&sid, .lower);
+            @memcpy(&buf, &hex);
             break :blk (buf[0..]);
         } else "";
 
@@ -266,7 +268,7 @@ pub const OTLPExporter = struct {
     }
 
     fn attributeToOTLP(key: []const u8, value: attribute.AttributeValue) !pbcommon.KeyValue {
-        const any_value = switch (value) {
+        const any_value: ?pbcommon.AnyValue = switch (value) {
             .string => |v| pbcommon.AnyValue{ .value = .{ .string_value = (v) } },
             .bool => |v| pbcommon.AnyValue{ .value = .{ .bool_value = v } },
             .int => |v| pbcommon.AnyValue{ .value = .{ .int_value = v } },
@@ -279,3 +281,341 @@ pub const OTLPExporter = struct {
         };
     }
 };
+
+test "OTLPExporter basic initialization" {
+    const allocator = std.testing.allocator;
+
+    var config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config);
+    defer exporter.deinit();
+
+    const log_exporter = exporter.asLogRecordExporter();
+
+    // Verify exporter was created successfully by checking allocator
+    try std.testing.expect(exporter.allocator.ptr == allocator.ptr);
+
+    // Basic smoke test - export empty array should not crash
+    const empty: []logs.ReadableLogRecord = &[_]logs.ReadableLogRecord{};
+    try log_exporter.exportLogs(empty);
+}
+
+test "Severity number to OTLP enum mapping" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // Test null severity
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_UNSPECIFIED, OTLPExporter.severityToOTLP(null));
+
+    // Test TRACE range (1-4)
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_TRACE, OTLPExporter.severityToOTLP(1));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_TRACE, OTLPExporter.severityToOTLP(4));
+
+    // Test DEBUG range (5-8)
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_DEBUG, OTLPExporter.severityToOTLP(5));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_DEBUG, OTLPExporter.severityToOTLP(8));
+
+    // Test INFO range (9-12)
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_INFO, OTLPExporter.severityToOTLP(9));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_INFO, OTLPExporter.severityToOTLP(12));
+
+    // Test WARN range (13-16)
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_WARN, OTLPExporter.severityToOTLP(13));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_WARN, OTLPExporter.severityToOTLP(16));
+
+    // Test ERROR range (17-20)
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_ERROR, OTLPExporter.severityToOTLP(17));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_ERROR, OTLPExporter.severityToOTLP(20));
+
+    // Test FATAL range (21-24)
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_FATAL, OTLPExporter.severityToOTLP(21));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_FATAL, OTLPExporter.severityToOTLP(24));
+
+    // Test out of range
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_UNSPECIFIED, OTLPExporter.severityToOTLP(0));
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_UNSPECIFIED, OTLPExporter.severityToOTLP(25));
+}
+
+test "Attribute to OTLP conversion" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    // Test string attribute
+    const string_kv = try OTLPExporter.attributeToOTLP("key", attribute.AttributeValue{ .string = "value" });
+    try std.testing.expectEqualStrings("key", string_kv.key);
+    try std.testing.expect(string_kv.value != null);
+    const string_value = string_kv.value.?;
+    try std.testing.expectEqualStrings("value", string_value.value.?.string_value);
+
+    // Test bool attribute
+    const bool_kv = try OTLPExporter.attributeToOTLP("flag", attribute.AttributeValue{ .bool = true });
+    try std.testing.expectEqualStrings("flag", bool_kv.key);
+    try std.testing.expect(bool_kv.value != null);
+    const bool_value = bool_kv.value.?;
+    try std.testing.expectEqual(true, bool_value.value.?.bool_value);
+
+    // Test int attribute
+    const int_kv = try OTLPExporter.attributeToOTLP("count", attribute.AttributeValue{ .int = 42 });
+    try std.testing.expectEqualStrings("count", int_kv.key);
+    try std.testing.expect(int_kv.value != null);
+    const int_value = int_kv.value.?;
+    try std.testing.expectEqual(@as(i64, 42), int_value.value.?.int_value);
+
+    // Test double attribute
+    const double_kv = try OTLPExporter.attributeToOTLP("ratio", attribute.AttributeValue{ .double = 3.14 });
+    try std.testing.expectEqualStrings("ratio", double_kv.key);
+    try std.testing.expect(double_kv.value != null);
+    const double_value = double_kv.value.?;
+    try std.testing.expectEqual(@as(f64, 3.14), double_value.value.?.double_value);
+}
+
+test "Log record to OTLP conversion with all fields" {
+    const allocator = std.testing.allocator;
+
+    var config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config);
+    defer exporter.deinit();
+
+    // Create a complete log record
+    const scope = InstrumentationScope{ .name = "test-logger", .version = "1.0.0" };
+    const trace_id: [16]u8 = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    const span_id: [8]u8 = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    const attrs = try allocator.alloc(attribute.Attribute, 2);
+    defer allocator.free(attrs);
+    attrs[0] = attribute.Attribute{ .key = "key1", .value = .{ .string = "value1" } };
+    attrs[1] = attribute.Attribute{ .key = "key2", .value = .{ .int = 123 } };
+
+    const log_record = logs.ReadableLogRecord{
+        .timestamp = 1234567890000000000,
+        .observed_timestamp = 1234567891000000000,
+        .trace_id = trace_id,
+        .span_id = span_id,
+        .severity_number = 17, // ERROR
+        .severity_text = "ERROR",
+        .body = "Test log message",
+        .attributes = attrs,
+        .resource = null,
+        .scope = scope,
+    };
+
+    var otlp_log = try exporter.logRecordToOTLP(log_record);
+    defer otlp_log.attributes.deinit(allocator);
+
+    // Verify conversion
+    try std.testing.expectEqual(@as(u64, 1234567890000000000), otlp_log.time_unix_nano);
+    try std.testing.expectEqual(@as(u64, 1234567891000000000), otlp_log.observed_time_unix_nano);
+    try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_ERROR, otlp_log.severity_number);
+    try std.testing.expectEqualStrings("ERROR", otlp_log.severity_text);
+    try std.testing.expectEqualStrings("Test log message", otlp_log.body.?.value.?.string_value);
+    try std.testing.expectEqual(@as(usize, 2), otlp_log.attributes.items.len);
+}
+
+test "Log records grouped by instrumentation scope" {
+    const allocator = std.testing.allocator;
+
+    var config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config);
+    defer exporter.deinit();
+
+    // Create log records with different scopes
+    const scope1 = InstrumentationScope{ .name = "lib1", .version = "1.0.0" };
+    const scope2 = InstrumentationScope{ .name = "lib2", .version = "2.0.0" };
+
+    var log_records = [_]logs.ReadableLogRecord{
+        logs.ReadableLogRecord{
+            .timestamp = null,
+            .observed_timestamp = 1000000000,
+            .trace_id = null,
+            .span_id = null,
+            .severity_number = 9,
+            .severity_text = "INFO",
+            .body = "Message from lib1",
+            .attributes = &[_]attribute.Attribute{},
+            .resource = null,
+            .scope = scope1,
+        },
+        logs.ReadableLogRecord{
+            .timestamp = null,
+            .observed_timestamp = 2000000000,
+            .trace_id = null,
+            .span_id = null,
+            .severity_number = 17,
+            .severity_text = "ERROR",
+            .body = "Message from lib2",
+            .attributes = &[_]attribute.Attribute{},
+            .resource = null,
+            .scope = scope2,
+        },
+        logs.ReadableLogRecord{
+            .timestamp = null,
+            .observed_timestamp = 3000000000,
+            .trace_id = null,
+            .span_id = null,
+            .severity_number = 9,
+            .severity_text = "INFO",
+            .body = "Another message from lib1",
+            .attributes = &[_]attribute.Attribute{},
+            .resource = null,
+            .scope = scope1,
+        },
+    };
+
+    var request = try exporter.logsToOTLPRequest(&log_records);
+    defer exporter.cleanupRequest(&request);
+
+    // Verify we have resource logs
+    try std.testing.expectEqual(@as(usize, 1), request.resource_logs.items.len);
+
+    const resource_log = request.resource_logs.items[0];
+
+    // Verify we have 2 scope logs (for 2 different scopes)
+    try std.testing.expectEqual(@as(usize, 2), resource_log.scope_logs.items.len);
+
+    // Verify scope grouping
+    var found_lib1 = false;
+    var found_lib2 = false;
+
+    for (resource_log.scope_logs.items) |scope_log| {
+        if (scope_log.scope) |scope| {
+            if (std.meta.eql(scope.name, ("lib1"))) {
+                found_lib1 = true;
+                try std.testing.expectEqual(("1.0.0"), scope.version);
+                // lib1 should have 2 log records
+                try std.testing.expectEqual(@as(usize, 2), scope_log.log_records.items.len);
+            } else if (std.meta.eql(scope.name, ("lib2"))) {
+                found_lib2 = true;
+                try std.testing.expectEqual(("2.0.0"), scope.version);
+                // lib2 should have 1 log record
+                try std.testing.expectEqual(@as(usize, 1), scope_log.log_records.items.len);
+            }
+        }
+    }
+
+    try std.testing.expect(found_lib1);
+    try std.testing.expect(found_lib2);
+}
+
+test "Resource attributes in OTLP export" {
+    const allocator = std.testing.allocator;
+
+    var config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config);
+    defer exporter.deinit();
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+
+    // Create resource attributes
+    const resource_attrs = try allocator.alloc(attribute.Attribute, 2);
+    defer allocator.free(resource_attrs);
+    resource_attrs[0] = attribute.Attribute{ .key = "service.name", .value = .{ .string = "my-service" } };
+    resource_attrs[1] = attribute.Attribute{ .key = "service.version", .value = .{ .string = "1.0.0" } };
+
+    var log_records = [_]logs.ReadableLogRecord{
+        logs.ReadableLogRecord{
+            .timestamp = null,
+            .observed_timestamp = 1000000000,
+            .trace_id = null,
+            .span_id = null,
+            .severity_number = 9,
+            .severity_text = "INFO",
+            .body = "Test message",
+            .attributes = &[_]attribute.Attribute{},
+            .resource = resource_attrs,
+            .scope = scope,
+        },
+    };
+
+    var request = try exporter.logsToOTLPRequest(&log_records);
+    defer exporter.cleanupRequest(&request);
+
+    // Verify resource attributes
+    try std.testing.expectEqual(@as(usize, 1), request.resource_logs.items.len);
+    const resource_log = request.resource_logs.items[0];
+    try std.testing.expect(resource_log.resource != null);
+
+    const resource = resource_log.resource.?;
+    try std.testing.expectEqual(@as(usize, 2), resource.attributes.items.len);
+
+    // Verify service.name attribute
+    try std.testing.expectEqualStrings("service.name", resource.attributes.items[0].key);
+    try std.testing.expectEqualStrings("my-service", resource.attributes.items[0].value.?.value.?.string_value);
+}
+
+test "Trace context hex conversion" {
+    const allocator = std.testing.allocator;
+
+    var config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config);
+    defer exporter.deinit();
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const trace_id: [16]u8 = [_]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+    const span_id: [8]u8 = [_]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+
+    const log_record = logs.ReadableLogRecord{
+        .timestamp = null,
+        .observed_timestamp = 1000000000,
+        .trace_id = trace_id,
+        .span_id = span_id,
+        .severity_number = 9,
+        .severity_text = "INFO",
+        .body = "Test",
+        .attributes = &[_]attribute.Attribute{},
+        .resource = null,
+        .scope = scope,
+    };
+
+    var otlp_log = try exporter.logRecordToOTLP(log_record);
+    defer otlp_log.attributes.deinit(allocator);
+
+    // Verify hex conversion (lowercase hex without 0x prefix)
+    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", otlp_log.trace_id);
+    try std.testing.expectEqualStrings("0123456789abcdef", otlp_log.span_id);
+}
+
+test "Memory cleanup verification" {
+    const allocator = std.testing.allocator;
+
+    var config = try otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, config);
+    defer exporter.deinit();
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+
+    const attrs = try allocator.alloc(attribute.Attribute, 1);
+    defer allocator.free(attrs);
+    attrs[0] = attribute.Attribute{ .key = "key", .value = .{ .string = "value" } };
+
+    var log_records = [_]logs.ReadableLogRecord{
+        logs.ReadableLogRecord{
+            .timestamp = null,
+            .observed_timestamp = 1000000000,
+            .trace_id = null,
+            .span_id = null,
+            .severity_number = 9,
+            .severity_text = "INFO",
+            .body = "Test",
+            .attributes = attrs,
+            .resource = null,
+            .scope = scope,
+        },
+    };
+
+    var request = try exporter.logsToOTLPRequest(&log_records);
+    exporter.cleanupRequest(&request);
+
+    // If there are memory leaks, the test allocator will catch them
+    // This test passes if no leaks are detected
+}
