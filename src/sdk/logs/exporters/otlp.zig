@@ -78,11 +78,104 @@ pub const OTLPExporter = struct {
     }
 
     fn logsToOTLPRequest(self: *Self, log_records: []logs.ReadableLogRecord) !pbcollector_logs.ExportLogsServiceRequest {
-        _ = self;
-        _ = log_records;
-        // TODO: Implement in next commit
+        var resource_logs = std.ArrayList(pblogs.ResourceLogs){};
+
+        // Group log records by instrumentation scope
+        var scope_groups = std.HashMap(
+            InstrumentationScope,
+            std.ArrayList(logs.ReadableLogRecord),
+            InstrumentationScope.HashContext,
+            std.hash_map.default_max_load_percentage,
+        ).init(self.allocator);
+        defer {
+            var iterator = scope_groups.valueIterator();
+            while (iterator.next()) |list| {
+                list.deinit(self.allocator);
+            }
+            scope_groups.deinit();
+        }
+
+        // Group log records by their instrumentation scope
+        for (log_records) |log_record| {
+            const scope_key = log_record.scope;
+            const result = try scope_groups.getOrPut(scope_key);
+            if (!result.found_existing) {
+                result.value_ptr.* = std.ArrayList(logs.ReadableLogRecord){};
+            }
+            try result.value_ptr.append(self.allocator, log_record);
+        }
+
+        var scope_logs_list = std.ArrayList(pblogs.ScopeLogs){};
+
+        // Convert each scope group to OTLP format
+        var scope_iterator = scope_groups.iterator();
+        while (scope_iterator.next()) |entry| {
+            const scope_log_records = entry.value_ptr.*;
+
+            var otlp_log_records = std.ArrayList(pblogs.LogRecord){};
+
+            // Convert each log record to OTLP format
+            for (scope_log_records.items) |log_record| {
+                const otlp_log = try self.logRecordToOTLP(log_record);
+                try otlp_log_records.append(self.allocator, otlp_log);
+            }
+
+            // Create scope information from the first log record's scope
+            const scope_info = if (scope_log_records.items.len > 0)
+                scope_log_records.items[0].scope
+            else
+                InstrumentationScope{
+                    .name = "unknown",
+                    .version = null,
+                    .schema_url = null,
+                    .attributes = null,
+                };
+
+            var scope_attributes = std.ArrayList(pbcommon.KeyValue){};
+            if (scope_info.attributes) |attrs| {
+                for (attrs) |attr| {
+                    const key_value = try attributeToOTLP(attr.key, attr.value);
+                    try scope_attributes.append(self.allocator, key_value);
+                }
+            }
+
+            const scope_log = pblogs.ScopeLogs{
+                .scope = pbcommon.InstrumentationScope{
+                    .name = (scope_info.name),
+                    .version = (scope_info.version orelse ""),
+                    .attributes = scope_attributes,
+                    .dropped_attributes_count = 0,
+                },
+                .log_records = otlp_log_records,
+                .schema_url = (scope_info.schema_url orelse ""),
+            };
+            try scope_logs_list.append(self.allocator, scope_log);
+        }
+
+        // Build resource from first log record (all share same resource from provider)
+        var resource_attributes = std.ArrayList(pbcommon.KeyValue){};
+        if (log_records.len > 0) {
+            if (log_records[0].resource) |attrs| {
+                for (attrs) |attr| {
+                    const key_value = try attributeToOTLP(attr.key, attr.value);
+                    try resource_attributes.append(self.allocator, key_value);
+                }
+            }
+        }
+
+        const resource_log = pblogs.ResourceLogs{
+            .resource = pbresource.Resource{
+                .attributes = resource_attributes,
+                .dropped_attributes_count = 0,
+                .entity_refs = std.ArrayList(pbcommon.EntityRef){},
+            },
+            .scope_logs = scope_logs_list,
+            .schema_url = (""),
+        };
+        try resource_logs.append(self.allocator, resource_log);
+
         return pbcollector_logs.ExportLogsServiceRequest{
-            .resource_logs = std.ArrayList(pblogs.ResourceLogs){},
+            .resource_logs = resource_logs,
         };
     }
 
