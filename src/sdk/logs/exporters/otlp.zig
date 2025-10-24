@@ -12,6 +12,8 @@ const pbresource = proto.resource_v1;
 
 const InstrumentationScope = @import("../../../scope.zig").InstrumentationScope;
 
+const log = std.log.scoped(.otlp_logs_exporter);
+
 /// OTLPExporter exports log data using the OpenTelemetry Protocol (OTLP).
 /// This exporter converts log records to OTLP protobuf format and sends them
 /// to an OTLP collector endpoint via HTTP.
@@ -54,14 +56,39 @@ pub const OTLPExporter = struct {
     }
 
     fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
-        _ = ctx;
-        _ = log_records;
-        // TODO: Implement in next commit
-        return;
+        const self: *Self = @ptrCast(@alignCast(ctx));
+
+        if (log_records.len == 0) return;
+
+        // Convert log records to OTLP format
+        var request = try self.logsToOTLPRequest(log_records);
+        // FIXME: This should be defer request.deinit(self.allocator)
+        // when protobuf supports auto-deinit
+        defer self.cleanupRequest(&request);
+
+        const otlp_data = otlp.Signal.Data{ .logs = request };
+
+        // Export using the OTLP transport
+        return otlp.Export(self.allocator, self.config, otlp_data);
     }
 
     fn shutdown(_: *anyopaque) anyerror!void {
         // OTLP exporter doesn't require special shutdown
         return;
+    }
+
+    fn logsToOTLPRequest(self: *Self, log_records: []logs.ReadableLogRecord) !pbcollector_logs.ExportLogsServiceRequest {
+        _ = self;
+        _ = log_records;
+        // TODO: Implement in next commit
+        return pbcollector_logs.ExportLogsServiceRequest{
+            .resource_logs = std.ArrayList(pblogs.ResourceLogs){},
+        };
+    }
+
+    fn cleanupRequest(self: *Self, request: *pbcollector_logs.ExportLogsServiceRequest) void {
+        _ = self;
+        _ = request;
+        // TODO: Implement in commit 5
     }
 };
