@@ -351,12 +351,26 @@ fn buildIntegrationTests(
     var integration_tests = std.ArrayList(*std.Build.Step.Compile){};
     errdefer integration_tests.deinit(b.allocator);
 
+    // Create common module for shared integration test utilities
+    const common_path = try integration_dir.join(b.allocator, "common.zig");
+    const common_mod = b.createModule(.{
+        .root_source_file = common_path,
+        .target = otel_mod.resolved_target.?,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "opentelemetry-sdk", .module = otel_mod },
+        },
+    });
+
     var test_dir = try integration_dir.getPath3(b, null).openDir("", .{ .iterate = true });
     defer test_dir.close();
 
     var iter = test_dir.iterate();
     while (try iter.next()) |file| {
         if (getZigFileName(file.name)) |name| {
+            // Skip common.zig as it's not a test executable
+            if (std.mem.eql(u8, name, "common")) continue;
+
             const file_name = try integration_dir.join(b.allocator, file.name);
 
             const b_mod = b.createModule(.{
@@ -366,6 +380,7 @@ fn buildIntegrationTests(
                 .optimize = .ReleaseSafe,
                 .imports = &.{
                     .{ .name = "opentelemetry-sdk", .module = otel_mod },
+                    .{ .name = "common", .module = common_mod },
                 },
             });
 

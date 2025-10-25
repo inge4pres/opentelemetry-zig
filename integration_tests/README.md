@@ -2,6 +2,20 @@
 
 This directory contains integration tests for the OpenTelemetry SDK that run against a real OTLP collector.
 
+## Structure
+
+The integration tests are split into separate test executables that can run in parallel:
+
+- `common.zig` - Shared utilities for Docker container management, file operations, and test setup
+- `metrics.zig` - Metrics export tests (uncompressed and gzip-compressed)
+- `traces.zig` - Traces export tests (uncompressed and gzip-compressed)
+- `logs.zig` - Logs export tests (uncompressed and gzip-compressed)
+
+Each test executable runs independently with its own:
+- Unique Docker container (named `otel-test-{signal}-{timestamp}-{random}`)
+- Temporary directory for output files
+- OTLP collector instance
+
 ## Prerequisites
 
 - Docker must be installed and running
@@ -15,28 +29,23 @@ To run all integration tests:
 zig build integration
 ```
 
+The tests will run with separate collector containers, allowing for parallel execution.
+
 ## What the Tests Do
 
-The integration tests:
+Each integration test:
 
 1. **Check Docker Availability**: Verify that Docker is installed and accessible
-2. **Setup Data Directory**: Create a temporary directory (`/tmp/otel-integration-test-data`) for output files
-3. **Start OTLP Collector**: Launch an OpenTelemetry collector container with the configuration from `otel-collector-config.yaml`
+2. **Setup Data Directory**: Create a unique temporary directory for output files
+3. **Start OTLP Collector**: Launch an OpenTelemetry collector container with a unique name
    - The data directory is mounted to `/tmp/otel-data` inside the container
-4. **Test Metrics Export**:
-   - Send test metrics data to the collector via OTLP HTTP
-   - Validate metrics were received by reading and parsing the generated `metrics.json` file
-   - Check for expected metric names and data points in the JSON output
-5. **Test Traces Export**:
-   - Send test trace spans to the collector via OTLP HTTP
-   - Validate traces were received by reading and parsing the generated `traces.json` file
-   - Check for expected span names and trace data in the JSON output
-6. **Test Logs Export**:
-   - Send test log records to the collector via OTLP HTTP
-   - Validate logs were received by reading and parsing the generated `logs.json` file
-   - Check for expected log records and severity levels in the JSON output
-7. **Test Compression**: Run the same tests with gzip compression enabled for metrics, traces, and logs
-8. **Cleanup**: Stop and remove the collector container, then remove the temporary data directory and all files
+   - Configuration is loaded from `otel-collector-config.yaml`
+4. **Test Signal Export** (for each signal type - metrics, traces, logs):
+   - Send test data to the collector via OTLP HTTP
+   - Validate data was received by reading and parsing the generated JSON file
+   - Check for expected content in the JSON output
+5. **Test Compression**: Run the same tests with gzip compression enabled
+6. **Cleanup**: Stop and remove the collector container
 
 ### JSON File Validation
 
@@ -70,12 +79,25 @@ The collector configuration is defined in `otel-collector-config.yaml`:
 To add new integration tests:
 
 1. Create a new `.zig` file in the `integration_tests/` directory
-2. Follow the same pattern as `otlp.zig`:
-   - Start the collector container
-   - Configure the SDK to use `localhost:4318`
-   - Run your test scenarios
-   - Clean up the container
-3. The test will automatically be discovered and run by `zig build integration`
+2. Import the `common` module and follow the pattern used in existing tests:
+   ```zig
+   const common = @import("common.zig");
+
+   pub fn main() !void {
+       const allocator = std.heap.page_allocator;
+       var ctx = try common.setupTestContext(allocator, "my-test");
+       defer common.cleanupTestContext(&ctx);
+
+       // Run your tests using ctx.tmp_dir
+   }
+   ```
+3. Use utilities from `common.zig` for:
+   - `setupTestContext()` - Sets up container and temporary directory
+   - `cleanupTestContext()` - Cleans up container and resources
+   - `waitForFile()` - Wait for collector to write output files
+   - `waitForFileContent()` - Wait for specific content in output files
+   - `readJsonFile()` - Read JSON output files
+4. The test will automatically be discovered and run by `zig build integration`
 
 ## Troubleshooting
 
