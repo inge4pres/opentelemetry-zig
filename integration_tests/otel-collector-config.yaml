@@ -19,6 +19,9 @@ exporters:
   file/metrics:
     path: /tmp/otel-data/metrics.json
     format: json
+  file/logs:
+    path: /tmp/otel-data/logs.json
+    format: json
 
 service:
   pipelines:
@@ -30,3 +33,7 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [file/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file/logs]

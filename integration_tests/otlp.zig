@@ -3,6 +3,7 @@ const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const trace_sdk = sdk.trace;
 const trace_api = sdk.api.trace;
+const logs_sdk = sdk.logs;
 
 const CONTAINER_NAME = "otel-collector-integration-test";
 const COLLECTOR_HTTP_PORT = "4318";
@@ -67,6 +68,11 @@ pub fn main() !void {
     try testTraces(allocator, tmp.dir);
     std.debug.print("✓ Traces test passed\n\n", .{});
 
+    // Run logs test
+    std.debug.print("Running logs integration test...\n", .{});
+    try testLogs(allocator, tmp.dir);
+    std.debug.print("✓ Logs test passed\n\n", .{});
+
     // Run compression tests
     std.debug.print("Running metrics compression test...\n", .{});
     try testMetricsWithCompression(allocator, tmp.dir);
@@ -75,6 +81,10 @@ pub fn main() !void {
     std.debug.print("Running traces compression test...\n", .{});
     try testTracesWithCompression(allocator, tmp.dir);
     std.debug.print("✓ Traces compression test passed\n\n", .{});
+
+    std.debug.print("Running logs compression test...\n", .{});
+    try testLogsWithCompression(allocator, tmp.dir);
+    std.debug.print("✓ Logs compression test passed\n\n", .{});
 }
 
 fn checkDockerAvailable(allocator: std.mem.Allocator) !void {
@@ -225,6 +235,31 @@ fn waitForFile(dir: std.fs.Dir, file_name: []const u8, max_retries: usize) !void
         }
     }
     return error.FileNotFound;
+}
+
+fn waitForFileContent(allocator: std.mem.Allocator, dir: std.fs.Dir, file_name: []const u8, expected_content: []const u8, max_retries: usize) ![]const u8 {
+    var retry: usize = 0;
+    while (retry < max_retries) : (retry += 1) {
+        const content = readJsonFile(allocator, dir, file_name) catch |err| {
+            if (err == error.FileNotFound and retry < max_retries - 1) {
+                std.Thread.sleep(1 * std.time.ns_per_s);
+                continue;
+            }
+            return err;
+        };
+
+        // Check if content contains expected string
+        if (std.mem.indexOf(u8, content, expected_content) != null) {
+            return content;
+        }
+
+        // Content doesn't match, free and retry
+        allocator.free(content);
+        if (retry < max_retries - 1) {
+            std.Thread.sleep(1 * std.time.ns_per_s);
+        }
+    }
+    return error.ExpectedContentNotFound;
 }
 
 fn testMetrics(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
@@ -414,13 +449,24 @@ fn testMetricsWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir)
     // Give the collector time to process
     std.Thread.sleep(1 * std.time.ns_per_s);
 
-    // Wait for the file (reusing the same file as the uncompressed test)
+    // Wait for the file with expected content
     std.debug.print("  Successfully sent {d} compressed metric data points\n", .{num_data_points});
-    std.debug.print("  Waiting for metrics JSON file...\n", .{});
+    std.debug.print("  Waiting for metrics JSON file with compressed data...\n", .{});
 
-    try waitForFile(tmp_dir, "metrics.json", 10);
-
-    const json_content = try readJsonFile(allocator, tmp_dir, "metrics.json");
+    const json_content = waitForFileContent(allocator, tmp_dir, "metrics.json", "test_counter_compressed", 15) catch |err| {
+        if (err == error.ExpectedContentNotFound) {
+            // Read the file to show what we got instead
+            const stale_content = readJsonFile(allocator, tmp_dir, "metrics.json") catch {
+                std.debug.print("  ERROR: Could not read metrics.json\n", .{});
+                return error.CompressedMetricsNotReceivedByCollector;
+            };
+            defer allocator.free(stale_content);
+            std.debug.print("  ERROR: Compressed metrics JSON doesn't contain expected data\n", .{});
+            std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{stale_content[0..@min(stale_content.len, 500)]});
+            return error.CompressedMetricsNotReceivedByCollector;
+        }
+        return err;
+    };
     defer allocator.free(json_content);
 
     // Verify the JSON contains expected compressed metric data
@@ -510,11 +556,28 @@ fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) 
 
     // Validate that the collector received the compressed traces
     std.debug.print("  Successfully sent {d} compressed trace spans\n", .{num_spans});
-    std.debug.print("  Waiting for traces JSON file...\n", .{});
+    std.debug.print("  Waiting for traces JSON file with compressed data...\n", .{});
 
-    try waitForFile(tmp_dir, "traces.json", 20);
-
-    const json_content = try readJsonFile(allocator, tmp_dir, "traces.json");
+    const json_content = waitForFileContent(allocator, tmp_dir, "traces.json", "test-span-compressed", 20) catch |err| {
+        if (err == error.ExpectedContentNotFound) {
+            // Read the file to show what we got instead
+            const stale_content = readJsonFile(allocator, tmp_dir, "traces.json") catch {
+                std.debug.print("  ERROR: Could not read traces.json\n", .{});
+                tracer_provider.shutdown();
+                otlp_exporter.deinit();
+                return error.CompressedTracesNotReceivedByCollector;
+            };
+            defer allocator.free(stale_content);
+            std.debug.print("  ERROR: Compressed traces JSON doesn't contain expected data\n", .{});
+            std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{stale_content[0..@min(stale_content.len, 500)]});
+            tracer_provider.shutdown();
+            otlp_exporter.deinit();
+            return error.CompressedTracesNotReceivedByCollector;
+        }
+        tracer_provider.shutdown();
+        otlp_exporter.deinit();
+        return err;
+    };
     defer allocator.free(json_content);
 
     // Verify the JSON contains expected compressed trace data
@@ -539,4 +602,181 @@ fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) 
     // Cleanup
     tracer_provider.shutdown();
     otlp_exporter.deinit();
+}
+
+fn testLogs(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
+    // Configure the OTLP exporter to use the collector
+    var config = try sdk.otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    // Configure to use HTTP on port 4318 (the collector's HTTP port)
+    config.endpoint = "localhost:4318";
+
+    // Create OTLP exporter
+    var otlp_exporter = try logs_sdk.OTLPExporter.init(allocator, config);
+    defer otlp_exporter.deinit();
+    const exporter = otlp_exporter.asLogRecordExporter();
+
+    // Create a simple processor (exports immediately)
+    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(allocator, exporter);
+    const processor = simple_processor.asLogRecordProcessor();
+
+    // Create resource attributes
+    const service_name: []const u8 = "integration-test";
+    const resource_attrs = try sdk.Attributes.from(allocator, .{
+        "service.name", service_name,
+    });
+    defer if (resource_attrs) |attrs| allocator.free(attrs);
+
+    // Create a logger provider
+    var provider = try logs_sdk.LoggerProvider.init(allocator, resource_attrs);
+    defer provider.deinit();
+
+    // Add the processor
+    try provider.addLogRecordProcessor(processor);
+
+    // Get a logger with instrumentation scope
+    const scope = sdk.scope.InstrumentationScope{
+        .name = "integration-test",
+        .version = "1.0.0",
+    };
+    const logger = try provider.getLogger(scope);
+
+    // Emit test log records with different severity levels
+    const num_logs = 5;
+    logger.emit(1, "TRACE", "Test trace log", null);
+    logger.emit(5, "DEBUG", "Test debug log", null);
+    logger.emit(9, "INFO", "Test info log", null);
+    logger.emit(13, "WARN", "Test warning log", null);
+    logger.emit(17, "ERROR", "Test error log", null);
+
+    // Emit a log with attributes
+    const attrs = [_]sdk.attributes.Attribute{
+        .{ .key = "test.iteration", .value = .{ .int = 1 } },
+        .{ .key = "test.name", .value = .{ .string = "integration-test" } },
+    };
+    logger.emit(9, "INFO", "Test log with attributes", &attrs);
+
+    // Shutdown to flush logs
+    try provider.shutdown();
+
+    // Give the collector some time to process and write the file
+    std.Thread.sleep(1 * std.time.ns_per_s);
+
+    // Validate that the collector received the logs by reading the JSON file
+    std.debug.print("  Successfully sent {d} log records\n", .{num_logs + 1});
+    std.debug.print("  Waiting for logs JSON file...\n", .{});
+
+    try waitForFile(tmp_dir, "logs.json", 10);
+
+    const json_content = try readJsonFile(allocator, tmp_dir, "logs.json");
+    defer allocator.free(json_content);
+
+    // Verify the JSON contains expected log data
+    const has_test_logs = std.mem.indexOf(u8, json_content, "Test") != null;
+    const has_resource_logs = std.mem.indexOf(u8, json_content, "resourceLogs") != null or
+        std.mem.indexOf(u8, json_content, "resource_logs") != null;
+    const has_integration_test = std.mem.indexOf(u8, json_content, "integration-test") != null;
+
+    if (!has_test_logs or !has_resource_logs or !has_integration_test) {
+        std.debug.print("  ERROR: Logs JSON doesn't contain expected data\n", .{});
+        std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
+        return error.LogsNotReceivedByCollector;
+    }
+
+    std.debug.print("  ✓ Logs JSON validated - found test log records\n", .{});
+}
+
+fn testLogsWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
+    // Configure the OTLP exporter with gzip compression
+    var config = try sdk.otlp.ConfigOptions.init(allocator);
+    defer config.deinit();
+
+    // Enable gzip compression
+    config.endpoint = "localhost:4318";
+    config.compression = .gzip;
+
+    // Create OTLP exporter with compression
+    var otlp_exporter = try logs_sdk.OTLPExporter.init(allocator, config);
+    defer otlp_exporter.deinit();
+    const exporter = otlp_exporter.asLogRecordExporter();
+
+    // Create a simple processor
+    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(allocator, exporter);
+    const processor = simple_processor.asLogRecordProcessor();
+
+    // Create resource attributes with compression indicator
+    const service_name: []const u8 = "integration-test-compression";
+    const resource_attrs = try sdk.Attributes.from(allocator, .{
+        "service.name", service_name,
+    });
+    defer if (resource_attrs) |attrs| allocator.free(attrs);
+
+    // Create a logger provider
+    var provider = try logs_sdk.LoggerProvider.init(allocator, resource_attrs);
+    defer provider.deinit();
+
+    // Add the processor
+    try provider.addLogRecordProcessor(processor);
+
+    // Get a logger with instrumentation scope
+    const scope = sdk.scope.InstrumentationScope{
+        .name = "integration-test-compression",
+        .version = "1.0.0",
+    };
+    const logger = try provider.getLogger(scope);
+
+    // Emit test log records with compression indicator
+    const num_logs = 3;
+    const attrs = [_]sdk.attributes.Attribute{
+        .{ .key = "compression", .value = .{ .string = "gzip" } },
+        .{ .key = "test.type", .value = .{ .string = "compression" } },
+    };
+
+    logger.emit(9, "INFO", "Compressed log 1", &attrs);
+    logger.emit(9, "INFO", "Compressed log 2", &attrs);
+    logger.emit(9, "INFO", "Compressed log 3", &attrs);
+
+    // Shutdown to flush logs
+    try provider.shutdown();
+
+    // Give the collector time to process
+    std.Thread.sleep(1 * std.time.ns_per_s);
+
+    // Validate that the collector received the compressed logs
+    std.debug.print("  Successfully sent {d} compressed log records\n", .{num_logs});
+    std.debug.print("  Waiting for logs JSON file with compressed data...\n", .{});
+
+    const json_content = waitForFileContent(allocator, tmp_dir, "logs.json", "Compressed log", 15) catch |err| {
+        if (err == error.ExpectedContentNotFound) {
+            // Read the file to show what we got instead
+            const stale_content = readJsonFile(allocator, tmp_dir, "logs.json") catch {
+                std.debug.print("  ERROR: Could not read logs.json\n", .{});
+                return error.CompressedLogsNotReceivedByCollector;
+            };
+            defer allocator.free(stale_content);
+            std.debug.print("  ERROR: Compressed logs JSON doesn't contain expected data\n", .{});
+            std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{stale_content[0..@min(stale_content.len, 500)]});
+            return error.CompressedLogsNotReceivedByCollector;
+        }
+        return err;
+    };
+    defer allocator.free(json_content);
+
+    // Verify the JSON contains expected compressed log data
+    const has_compressed_logs = std.mem.indexOf(u8, json_content, "Compressed log") != null;
+    const has_resource_logs = std.mem.indexOf(u8, json_content, "resourceLogs") != null or
+        std.mem.indexOf(u8, json_content, "resource_logs") != null;
+    const has_compression_attr = std.mem.indexOf(u8, json_content, "gzip") != null;
+
+    if (!has_compressed_logs or !has_resource_logs) {
+        std.debug.print("  ERROR: Compressed logs JSON doesn't contain expected data\n", .{});
+        std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
+        return error.CompressedLogsNotReceivedByCollector;
+    }
+
+    std.debug.print("  ✓ Compressed logs JSON validated - found compressed log records\n", .{});
+    if (has_compression_attr) {
+        std.debug.print("  ✓ Compression attribute 'gzip' found in logs\n", .{});
+    }
 }

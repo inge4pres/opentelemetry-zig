@@ -31,7 +31,12 @@ The integration tests:
    - Send test trace spans to the collector via OTLP HTTP
    - Validate traces were received by reading and parsing the generated `traces.json` file
    - Check for expected span names and trace data in the JSON output
-6. **Cleanup**: Stop and remove the collector container, then remove the temporary data directory and all files
+6. **Test Logs Export**:
+   - Send test log records to the collector via OTLP HTTP
+   - Validate logs were received by reading and parsing the generated `logs.json` file
+   - Check for expected log records and severity levels in the JSON output
+7. **Test Compression**: Run the same tests with gzip compression enabled for metrics, traces, and logs
+8. **Cleanup**: Stop and remove the collector container, then remove the temporary data directory and all files
 
 ### JSON File Validation
 
@@ -44,6 +49,11 @@ For traces, the validation checks for:
 - The expected span names (`test-span-0`, `test-span-1`, etc.)
 - The tracer name (`integration-test`)
 
+For logs, the validation checks for:
+- The presence of `resourceLogs` or log-related keywords
+- The expected log messages containing "Test"
+- The logger scope name (`integration-test`)
+
 ## Configuration
 
 The collector configuration is defined in `otel-collector-config.yaml`:
@@ -53,6 +63,7 @@ The collector configuration is defined in `otel-collector-config.yaml`:
 - **Exporters**:
   - File exporter for traces: `/tmp/otel-data/traces.json`
   - File exporter for metrics: `/tmp/otel-data/metrics.json`
+  - File exporter for logs: `/tmp/otel-data/logs.json`
 
 ## Adding New Integration Tests
 
