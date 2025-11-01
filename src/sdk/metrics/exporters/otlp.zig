@@ -198,6 +198,7 @@ fn attributeToProtobuf(allocator: std.mem.Allocator, attribute: Attribute) !pbco
             .string => pbcommon.AnyValue{ .value = .{ .string_value = try allocator.dupe(u8, attribute.value.string) } },
             .int => pbcommon.AnyValue{ .value = .{ .int_value = attribute.value.int } },
             .double => pbcommon.AnyValue{ .value = .{ .double_value = attribute.value.double } },
+            .baggage => unreachable, // Baggage is not a regular attribute
             // TODO include nested Attribute values
         },
     };

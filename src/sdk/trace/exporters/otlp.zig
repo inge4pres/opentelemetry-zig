@@ -287,6 +287,7 @@ pub const OTLPExporter = struct {
             .bool => |v| pbcommon.AnyValue{ .value = .{ .bool_value = v } },
             .int => |v| pbcommon.AnyValue{ .value = .{ .int_value = v } },
             .double => |v| pbcommon.AnyValue{ .value = .{ .double_value = v } },
+            .baggage => unreachable, // Baggage is not a regular attribute
         };
 
         return pbcommon.KeyValue{
