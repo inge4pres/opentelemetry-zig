@@ -615,6 +615,75 @@ test "baggage case sensitivity" {
     try std.testing.expectEqual(@as(usize, 2), baggage.count());
 }
 
+test "baggage case sensitivity - keys and values" {
+    const allocator = std.testing.allocator;
+
+    var baggage = Baggage.init();
+    // Different case keys should be treated as different entries
+    try baggage.setValue(allocator, "UserID", "alice", null);
+    try baggage.setValue(allocator, "userId", "bob", null);
+    try baggage.setValue(allocator, "USERID", "charlie", null);
+    // Values should also preserve case
+    try baggage.setValue(allocator, "email", "Alice@Example.COM", null);
+    defer baggage.deinit();
+
+    // Verify all three keys exist as separate entries
+    try std.testing.expectEqual(@as(usize, 4), baggage.count());
+    try std.testing.expectEqualStrings("alice", baggage.getValue("UserID").?.value);
+    try std.testing.expectEqualStrings("bob", baggage.getValue("userId").?.value);
+    try std.testing.expectEqualStrings("charlie", baggage.getValue("USERID").?.value);
+
+    // Verify values preserve case
+    try std.testing.expectEqualStrings("Alice@Example.COM", baggage.getValue("email").?.value);
+
+    // Verify lookups are case-sensitive
+    try std.testing.expect(baggage.getValue("userid") == null); // lowercase not found
+    try std.testing.expect(baggage.getValue("Email") == null); // capitalized not found
+}
+
+test "baggage case sensitivity - propagation round-trip" {
+    const allocator = std.testing.allocator;
+    const prop = @import("baggage/propagator.zig");
+
+    // Create baggage with case-sensitive keys and values
+    var original = Baggage.init();
+    try original.setValue(allocator, "UserID", "Alice", null);
+    try original.setValue(allocator, "userId", "Bob", null);
+    try original.setValue(allocator, "Email", "Test@Example.COM", null);
+    defer original.deinit();
+
+    // Inject into HTTP headers
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var value_it = headers.valueIterator();
+        while (value_it.next()) |value| {
+            allocator.free(value.*);
+        }
+        headers.deinit();
+    }
+
+    try prop.inject(allocator, original, &headers, prop.HttpSetter);
+
+    // Extract from headers
+    var extracted = try prop.extract(allocator, &headers, prop.HttpGetter);
+    if (extracted) |*bag| {
+        defer bag.deinit();
+
+        // Verify case was preserved through the round-trip
+        try std.testing.expectEqual(@as(usize, 3), bag.count());
+        try std.testing.expectEqualStrings("Alice", bag.getValue("UserID").?.value);
+        try std.testing.expectEqualStrings("Bob", bag.getValue("userId").?.value);
+        try std.testing.expectEqualStrings("Test@Example.COM", bag.getValue("Email").?.value);
+
+        // Verify wrong case doesn't match
+        try std.testing.expect(bag.getValue("userid") == null);
+        try std.testing.expect(bag.getValue("USERID") == null);
+        try std.testing.expect(bag.getValue("email") == null);
+    } else {
+        try std.testing.expect(false); // Should have extracted baggage
+    }
+}
+
 test "baggage setValue properly replaces existing key" {
     const allocator = std.testing.allocator;
 

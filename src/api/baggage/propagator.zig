@@ -389,7 +389,7 @@ test "inject and extract simple baggage" {
     const allocator = std.testing.allocator;
 
     var baggage = Baggage.init();
-    baggage = try baggage.setValue(allocator, "user_id", "alice", null);
+    try baggage.setValue(allocator, "user_id", "alice", null);
     defer baggage.deinit();
 
     var headers = std.StringHashMap([]const u8).init(allocator);
@@ -418,7 +418,7 @@ test "inject and extract baggage with metadata" {
     const allocator = std.testing.allocator;
 
     var baggage = Baggage.init();
-    baggage = try baggage.setValue(allocator, "account_id", "12345", "priority=high");
+    try baggage.setValue(allocator, "account_id", "12345", "priority=high");
     defer baggage.deinit();
 
     var headers = std.StringHashMap([]const u8).init(allocator);
@@ -444,9 +444,9 @@ test "inject and extract multiple entries" {
     const allocator = std.testing.allocator;
 
     var baggage = Baggage.init();
-    baggage = try baggage.setValue(allocator, "key1", "value1", null);
-    baggage = try baggage.setValue(allocator, "key2", "value2", "meta2");
-    baggage = try baggage.setValue(allocator, "key3", "value3", null);
+    try baggage.setValue(allocator, "key1", "value1", null);
+    try baggage.setValue(allocator, "key2", "value2", "meta2");
+    try baggage.setValue(allocator, "key3", "value3", null);
     defer baggage.deinit();
 
     var headers = std.StringHashMap([]const u8).init(allocator);
@@ -474,7 +474,7 @@ test "inject and extract with special characters" {
     const allocator = std.testing.allocator;
 
     var baggage = Baggage.init();
-    baggage = try baggage.setValue(allocator, "user email", "alice@example.com", null);
+    try baggage.setValue(allocator, "user email", "alice@example.com", null);
     defer baggage.deinit();
 
     var headers = std.StringHashMap([]const u8).init(allocator);
