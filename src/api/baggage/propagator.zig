@@ -230,9 +230,7 @@ pub fn extract(
         defer if (metadata) |m| allocator.free(m);
 
         // Add to baggage
-        const new_baggage = baggage.setValue(allocator, key, value, metadata) catch continue;
-        baggage.deinit();
-        baggage = new_baggage;
+        baggage.setValue(allocator, key, value, metadata) catch continue;
     }
 
     return baggage;

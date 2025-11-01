@@ -130,55 +130,25 @@ pub fn build(b: *std.Build) !void {
         },
     });
     // TODO add examples for other signals
-    const metrics_examples = buildExamples(
-        b,
-        b.path(b.pathJoin(&.{ "examples", "metrics" })),
-        sdk_mod,
-        otel_stub_mod,
-        otel_proto_mod,
-        examples_filter,
-    ) catch |err| {
-        std.debug.print("Error building metrics examples: {}\n", .{err});
-        return err;
-    };
-    defer b.allocator.free(metrics_examples);
-    for (metrics_examples) |step| {
-        const run_metrics_example = b.addRunArtifact(step);
-        examples_step.dependOn(&run_metrics_example.step);
-    }
 
-    const trace_examples = buildExamples(
-        b,
-        b.path(b.pathJoin(&.{ "examples", "trace" })),
-        sdk_mod,
-        otel_stub_mod,
-        otel_proto_mod,
-        examples_filter,
-    ) catch |err| {
-        std.debug.print("Error building trace examples: {}\n", .{err});
-        return err;
-    };
-    defer b.allocator.free(trace_examples);
-    for (trace_examples) |step| {
-        const run_trace_example = b.addRunArtifact(step);
-        examples_step.dependOn(&run_trace_example.step);
-    }
-
-    const logs_examples = buildExamples(
-        b,
-        b.path(b.pathJoin(&.{ "examples", "logs" })),
-        sdk_mod,
-        otel_stub_mod,
-        otel_proto_mod,
-        examples_filter,
-    ) catch |err| {
-        std.debug.print("Error building logs examples: {}\n", .{err});
-        return err;
-    };
-    defer b.allocator.free(logs_examples);
-    for (logs_examples) |step| {
-        const run_logs_example = b.addRunArtifact(step);
-        examples_step.dependOn(&run_logs_example.step);
+    const examples_dirs: []const []const u8 = &.{ "metrics", "trace", "logs", "baggage" };
+    for (examples_dirs) |example_dir| {
+        const example = buildExamples(
+            b,
+            b.path(b.pathJoin(&.{ "examples", example_dir })),
+            sdk_mod,
+            otel_stub_mod,
+            otel_proto_mod,
+            examples_filter,
+        ) catch |err| {
+            std.debug.print("Error building metrics examples: {}\n", .{err});
+            return err;
+        };
+        defer b.allocator.free(example);
+        for (example) |step| {
+            const run_example = b.addRunArtifact(step);
+            examples_step.dependOn(&run_example.step);
+        }
     }
 
     // Benchmarks
