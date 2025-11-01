@@ -1,4 +1,5 @@
 const std = @import("std");
+const Baggage = @import("api/baggage.zig").Baggage;
 
 // Converts a key-value pair into a pbcommon.KeyValue.
 // It only supports a subset of the possible value types available in attributes.
@@ -29,6 +30,8 @@ pub const AttributeValue = union(enum) {
     string: []const u8,
     int: i64,
     double: f64,
+    /// Baggage is stored directly in Context (not as a regular attribute)
+    baggage: Baggage,
 
     fn toString(self: AttributeValue, allocator: std.mem.Allocator) ![]const u8 {
         switch (self) {
@@ -47,6 +50,7 @@ pub const AttributeValue = union(enum) {
                 const result = std.fmt.bufPrint(&buf, "{d}", .{self.double}) catch unreachable;
                 return allocator.dupe(u8, result[0..result.len]);
             },
+            .baggage => return allocator.dupe(u8, "<baggage>"),
         }
     }
 
@@ -64,6 +68,18 @@ pub const AttributeValue = union(enum) {
                 const result = std.fmt.bufPrint(&buf, "{d}", .{self.double}) catch unreachable;
                 return result[0..result.len];
             },
+            .baggage => return "<baggage>",
+        }
+    }
+
+    /// Custom JSON serialization to handle baggage case
+    pub fn jsonStringify(self: AttributeValue, jws: anytype) !void {
+        switch (self) {
+            .bool => |v| try jws.write(v),
+            .string => |v| try jws.write(v),
+            .int => |v| try jws.write(v),
+            .double => |v| try jws.write(v),
+            .baggage => try jws.write("<baggage>"),
         }
     }
 };
