@@ -128,7 +128,6 @@ pub const Signal = enum {
             return switch (protocol) {
                 .http_json => {
                     switch (self) {
-                        // All protobuf-generated structs have a json_encode method.
                         inline else => |data| {
                             var list: std.ArrayList(u8) = .empty;
                             try list.ensureTotalCapacity(allocator, 4096);
@@ -145,10 +144,9 @@ pub const Signal = enum {
                             errdefer writer_ctx.deinit();
                             try data.encode(&writer_ctx.writer, allocator);
                             try writer_ctx.writer.flush();
-                            const result = try writer_ctx.toOwnedSlice();
                             // Note: toOwnedSlice() empties the buffer, so deinit() should be safe,
                             // but we skip it to avoid any potential double-free issues
-                            return result;
+                            return try writer_ctx.toOwnedSlice();
                         },
                     }
                 },
@@ -801,6 +799,29 @@ pub fn Export(
             },
         }
     };
+}
+
+pub fn ExportFile(
+    allocator: std.mem.Allocator,
+    otlp_payload: Signal.Data,
+    file: *std.fs.File,
+) !void {
+    // We always want the JSON format for file export.
+    // Single-line output for each entry is concatenated with newline before flushing.
+    const payload = otlp_payload.toOwnedSlice(allocator, .http_json) catch |err| {
+        log.err("failed to encode payload to JSON: {}", .{err});
+        return err;
+    };
+    defer allocator.free(payload);
+
+    // Position the file cursor at the end before writing
+    try file.seekFromEnd(0);
+
+    // Write payload and newline directly to file
+    try file.writeAll(payload);
+    try file.writeAll("\n");
+
+    try file.sync();
 }
 
 // NOTE: The following code **not used** in the current implementation, but it is here to show how it could be done.

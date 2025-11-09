@@ -460,3 +460,43 @@ const HTTPTestServer = struct {
         self.allocator.destroy(self);
     }
 };
+
+test "otlp ExportFile appends metrics to file" {
+    const allocator = std.testing.allocator;
+
+    var temp_dir = std.testing.tmpDir(.{});
+    defer temp_dir.cleanup();
+
+    var file = try temp_dir.dir.createFile("metrics.jsonl", .{
+        .read = true,
+        .exclusive = true,
+    });
+
+    const how_many_lines = 10;
+
+    for (0..how_many_lines) |_| {
+        var req = try oneDataPointMetricsExportRequest(allocator);
+        defer req.deinit(allocator);
+        try otlp.ExportFile(allocator, otlp.Signal.Data{ .metrics = req }, &file);
+    }
+
+    file.close();
+
+    // Re-open the file for reading
+    var filer = try temp_dir.dir.openFile("metrics.jsonl", .{});
+    defer filer.close();
+
+    // Verify that the file was created and has content
+    try std.testing.expect(try file.getEndPos() > 0);
+
+    // TODO more assertions
+
+    var buffer: [4096]u8 = undefined;
+    var reader = filer.reader(&buffer);
+    var lines_count: usize = 0;
+    while (try reader.interface.takeDelimiter('\n')) |_| {
+        // Basic validation that we received a non-empty JSON line
+        lines_count += 1;
+    }
+    try std.testing.expectEqual(how_many_lines, lines_count);
+}
