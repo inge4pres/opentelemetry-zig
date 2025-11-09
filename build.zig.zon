@@ -28,8 +28,8 @@
             .hash = "zbench-0.11.2-YTdc7zolAQDlBF9i0ywXIvDjafL3Kg27S-aFUq6dU5zy",
         },
         .opentelemetry_proto = .{
-            .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=v1.8.0#d90ccb1994410d7c34c0976e5953bac77b058189",
-            .hash = "opentelemetry_proto-1.8.0-S4Y0uzckAgDQ5JramCN1KvIP0PCS_gK7Z2siW2D-75lK",
+            .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=v1.9.0#a4cb1cece1ba93f0258de091ba826c2bbe025c7b",
+            .hash = "opentelemetry_proto-1.8.0-S4Y0u3mKAgAXNySR4KSAkeeLh-2XXJuVL12dj1ZIRSmh",
         },
         // TODO: remove when 0.16.0 is released
         .zlib = .{
