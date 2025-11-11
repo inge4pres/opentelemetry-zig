@@ -49,7 +49,7 @@ pub const FileExporter = struct {
             else
                 .{ .read = true, .truncate = true };
             break :blk try std.fs.cwd().createFile(path, flags);
-        } else std.io.getStdOut();
+        } else std.fs.File.stdout();
 
         const self = try allocator.create(Self);
         self.* = Self{
