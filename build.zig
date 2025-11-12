@@ -341,25 +341,47 @@ fn buildIntegrationTests(
             // Skip common.zig as it's not a test executable
             if (std.mem.eql(u8, name, "common")) continue;
 
+            // If integration filter is specified, skip non-matching tests
+            const integration_filter = b.args;
+
             const file_name = try integration_dir.join(b.allocator, file.name);
+            if (integration_filter) |filter| {
+                for (filter) |filter_entry| {
+                    if (std.mem.eql(u8, name, filter_entry)) {
+                        const b_mod = b.createModule(.{
+                            .root_source_file = file_name,
+                            .target = otel_mod.resolved_target.?,
+                            // Use ReleaseSafe for integration tests to have safety checks
+                            .optimize = .ReleaseSafe,
+                            .imports = &.{
+                                .{ .name = "opentelemetry-sdk", .module = otel_mod },
+                                .{ .name = "common", .module = common_mod },
+                            },
+                        });
 
-            const b_mod = b.createModule(.{
-                .root_source_file = file_name,
-                .target = otel_mod.resolved_target.?,
-                // Use ReleaseSafe for integration tests to have safety checks
-                .optimize = .ReleaseSafe,
-                .imports = &.{
-                    .{ .name = "opentelemetry-sdk", .module = otel_mod },
-                    .{ .name = "common", .module = common_mod },
-                },
-            });
+                        try integration_tests.append(b.allocator, b.addExecutable(.{
+                            .name = name,
+                            .root_module = b_mod,
+                        }));
+                    }
+                }
+            } else {
+                const b_mod = b.createModule(.{
+                    .root_source_file = file_name,
+                    .target = otel_mod.resolved_target.?,
+                    // Use ReleaseSafe for integration tests to have safety checks
+                    .optimize = .ReleaseSafe,
+                    .imports = &.{
+                        .{ .name = "opentelemetry-sdk", .module = otel_mod },
+                        .{ .name = "common", .module = common_mod },
+                    },
+                });
 
-            const test_exe = b.addExecutable(.{
-                .name = name,
-                .root_module = b_mod,
-            });
-
-            try integration_tests.append(b.allocator, test_exe);
+                try integration_tests.append(b.allocator, b.addExecutable(.{
+                    .name = name,
+                    .root_module = b_mod,
+                }));
+            }
         }
     }
 
