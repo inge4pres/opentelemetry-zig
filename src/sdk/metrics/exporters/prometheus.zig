@@ -134,15 +134,26 @@ pub const PrometheusFormatter = struct {
                 try writer.print("{s}_bucket", .{base_name});
 
                 // Build labels including 'le' for bucket boundary
-                var labels = std.array_list.Managed(LabelPair).init(self.allocator);
-                defer labels.deinit();
+                var labels: std.ArrayList(LabelPair) = .empty;
+                defer labels.deinit(self.allocator);
+
+                // Track allocated values that need to be freed
+                var allocated_values: std.ArrayList([]const u8) = .empty;
+                defer {
+                    for (allocated_values.items) |value| {
+                        self.allocator.free(value);
+                    }
+                    allocated_values.deinit(self.allocator);
+                }
 
                 // Add existing attributes
                 if (dp.attributes) |attrs| {
                     for (attrs) |attr| {
-                        try labels.append(.{
+                        const value = try self.attributeValueToString(attr.value);
+                        try allocated_values.append(self.allocator, value);
+                        try labels.append(self.allocator, .{
                             .name = attr.key,
-                            .value = try self.attributeValueToString(attr.value),
+                            .value = value,
                         });
                     }
                 }
@@ -152,9 +163,9 @@ pub const PrometheusFormatter = struct {
                     try std.fmt.allocPrint(self.allocator, "{d}", .{hist.explicit_bounds[i]})
                 else
                     try self.allocator.dupe(u8, "+Inf");
-                defer self.allocator.free(le_value);
+                try allocated_values.append(self.allocator, le_value);
 
-                try labels.append(.{ .name = "le", .value = le_value });
+                try labels.append(self.allocator, .{ .name = "le", .value = le_value });
 
                 try self.writeLabelsFromList(writer, labels.items);
                 try writer.print(" {d}\n", .{count});
@@ -445,8 +456,11 @@ pub const PrometheusExporter = struct {
     server_thread: ?std.Thread = null,
     should_stop: std.atomic.Value(bool),
     mutex: std.Thread.Mutex,
-    // Cached measurements from the last exportBatch call
+    // Cached measurements from the last exportBatch call for HTTP serving
     last_measurements: []Measurements = &[_]Measurements{},
+    // All measurement arrays collected across collections
+    // (needed because temporal aggregator maintains pointers to all of them)
+    all_measurements: std.array_list.Managed([]Measurements),
     // Implement the ExporterImpl interface
     exporter: ExporterImpl,
 
@@ -460,6 +474,7 @@ pub const PrometheusExporter = struct {
             .formatter = PrometheusFormatter.init(allocator, config.formatter_config),
             .should_stop = std.atomic.Value(bool).init(false),
             .mutex = .{},
+            .all_measurements = std.array_list.Managed([]Measurements).init(allocator),
             .exporter = ExporterImpl{
                 .exportFn = exportBatch,
             },
@@ -470,34 +485,39 @@ pub const PrometheusExporter = struct {
 
     /// ExporterImpl interface implementation.
     /// This is called by the MetricReader during collection.
-    /// The exporter takes ownership of the measurements and caches them for HTTP serving.
+    /// The exporter takes ownership of the measurements array and caches them for HTTP serving.
+    /// Note: We do NOT deinit the measurements contents because the temporal aggregator
+    /// maintains pointers to the attributes in its HashMap across collection cycles.
+    /// All measurement arrays are collected and freed during deinit() after the temporal
+    /// aggregator has been shut down.
     fn exportBatch(iface: *ExporterImpl, measurements: []Measurements) MetricReadError!void {
         const self: *Self = @fieldParentPtr("exporter", iface);
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Clean up old cached measurements
-        for (self.last_measurements) |*m| {
-            m.deinit(self.allocator);
-        }
-        if (self.last_measurements.len > 0) {
-            self.allocator.free(self.last_measurements);
-        }
+        // Store this measurements array for cleanup during shutdown
+        self.all_measurements.append(measurements) catch {
+            return MetricReadError.ExportFailed;
+        };
 
         // Cache the new measurements for HTTP serving
-        // Note: We take ownership of the measurements array
         self.last_measurements = measurements;
     }
 
     pub fn deinit(self: *Self) void {
         self.stop();
-        // Clean up cached measurements
-        for (self.last_measurements) |*m| {
-            m.deinit(self.allocator);
+
+        // Clean up all collected measurement arrays
+        // This is safe to do now because the temporal aggregator has been shut down
+        // (shutdown happens before deinit in the proper lifecycle)
+        for (self.all_measurements.items) |measurements| {
+            for (measurements) |*m| {
+                m.deinit(self.allocator);
+            }
+            self.allocator.free(measurements);
         }
-        if (self.last_measurements.len > 0) {
-            self.allocator.free(self.last_measurements);
-        }
+        self.all_measurements.deinit();
+
         self.allocator.destroy(self);
     }
 
@@ -616,8 +636,7 @@ pub const PrometheusExporter = struct {
         try stream.writeAll(writer_alloc.writer.buffer[0..writer_alloc.writer.end]);
     }
 
-    fn handleNotFound(self: *Self, stream: std.net.Stream) !void {
-        _ = self;
+    fn handleNotFound(_: *Self, stream: std.net.Stream) !void {
         const response =
             "HTTP/1.1 404 Not Found\r\n" ++
             "Content-Type: text/plain\r\n" ++
@@ -628,8 +647,7 @@ pub const PrometheusExporter = struct {
         try stream.writeAll(response);
     }
 
-    fn handleBadRequest(self: *Self, stream: std.net.Stream) !void {
-        _ = self;
+    fn handleBadRequest(_: *Self, stream: std.net.Stream) !void {
         const response =
             "HTTP/1.1 400 Bad Request\r\n" ++
             "Content-Type: text/plain\r\n" ++
@@ -1010,4 +1028,98 @@ test "PrometheusExporter: server handles invalid path with 404" {
 
     // Should return 404
     try std.testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 404"));
+}
+
+test "PrometheusExporter e2e" {
+    const allocator = std.testing.allocator;
+
+    const mp = try MeterProvider.init(allocator);
+    defer mp.shutdown();
+
+    // Create Prometheus exporter using factory function
+    const result = try MetricExporter.Prometheus(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19471, // Unique port for this test
+        .formatter_config = .{
+            .naming_convention = .UnderscoreEscapingWithSuffixes,
+            .include_scope_labels = true,
+        },
+    });
+    defer result.exporter.shutdown();
+    defer result.prometheus.deinit();
+
+    const reader = try MetricReader.init(allocator, result.exporter);
+    defer reader.shutdown();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{
+        .name = "test.memory.leak",
+        .version = "1.0.0",
+    });
+
+    // Create instruments matching the integration test
+    const request_counter = try meter.createCounter(u64, .{
+        .name = "http_requests",
+        .description = "Total HTTP requests",
+    });
+    const temperature_gauge = try meter.createGauge(f64, .{
+        .name = "temperature",
+        .description = "Temperature in Celsius",
+        .unit = "C",
+    });
+    const response_time = try meter.createHistogram(f64, .{
+        .name = "response_time",
+        .description = "Response time",
+        .unit = "s",
+    });
+
+    try request_counter.add(10, .{ "path", @as([]const u8, "/api/users"), "method", @as([]const u8, "GET") });
+    try request_counter.add(5, .{ "path", @as([]const u8, "/api/posts"), "method", @as([]const u8, "POST") });
+    try temperature_gauge.record(23.5, .{ "location", @as([]const u8, "office") });
+    try response_time.record(0.015, .{ "endpoint", @as([]const u8, "/api/users") });
+    try response_time.record(0.025, .{ "endpoint", @as([]const u8, "/api/users") });
+    try response_time.record(0.012, .{ "endpoint", @as([]const u8, "/api/posts") });
+
+    try result.prometheus.start();
+    defer result.prometheus.stop();
+
+    // Wait for server to be ready
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    try reader.collect();
+
+    // Verify we have cached measurements
+    result.prometheus.mutex.lock();
+    const cached_count = result.prometheus.last_measurements.len;
+    result.prometheus.mutex.unlock();
+    try std.testing.expect(cached_count > 0);
+
+    const address = try std.net.Address.parseIp("127.0.0.1", 19471);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    const request = "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    try stream.writeAll(request);
+
+    // Read response to ensure it works
+    var buf: [4096]u8 = undefined;
+    var total_read: usize = 0;
+    while (true) {
+        const n = stream.read(&buf) catch |err| {
+            if (err == error.WouldBlock) {
+                std.Thread.sleep(10 * std.time.ns_per_ms);
+                continue;
+            }
+            return err;
+        };
+        if (n == 0) break;
+        total_read += n;
+    }
+
+    // Cleanup happens via defer in reverse order:
+    // 1. result.prometheus.stop()
+    // 2. reader.shutdown()
+    // 3. result.prometheus.deinit()
+    // 4. result.exporter.shutdown()
+    // 5. mp.shutdown()
 }
