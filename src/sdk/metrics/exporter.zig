@@ -15,6 +15,8 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const InMemoryExporter = @import("exporters/in_memory.zig").InMemoryExporter;
 const StdoutExporter = @import("exporters/stdout.zig").StdoutExporter;
 const OTLPExporter = @import("exporters/otlp.zig").OTLPExporter;
+const PrometheusExporter = @import("exporters/prometheus.zig").PrometheusExporter;
+const PrometheusExporterConfig = @import("exporters/prometheus.zig").ExporterConfig;
 
 const otlp = @import("../../otlp.zig");
 
@@ -110,6 +112,28 @@ pub const MetricExporter = struct {
         exporter.aggregation = aggregation orelse view.DefaultAggregation;
 
         return .{ .exporter = exporter, .otlp = otlp_exporter };
+    }
+
+    /// Creates a Prometheus exporter that exposes metrics via an HTTP server.
+    /// This is a pull-based exporter where Prometheus scrapes metrics from the HTTP endpoint.
+    /// The exporter implements ExporterImpl and caches metrics when exportBatch is called.
+    ///
+    /// Per OpenTelemetry specification, Prometheus exporters MUST use Cumulative temporality.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/prometheus/
+    ///
+    /// The HTTP server must be started by calling prometheus.start() and stopped with prometheus.stop().
+    pub fn Prometheus(
+        allocator: std.mem.Allocator,
+        config: PrometheusExporterConfig,
+    ) !struct { exporter: *MetricExporter, prometheus: *PrometheusExporter } {
+        const prometheus = try PrometheusExporter.init(allocator, config);
+        const exporter = try MetricExporter.new(allocator, &prometheus.exporter);
+
+        // Prometheus MUST use Cumulative temporality per OpenTelemetry spec
+        exporter.temporality = view.TemporalityCumulative;
+        exporter.aggregation = view.DefaultAggregation;
+
+        return .{ .exporter = exporter, .prometheus = prometheus };
     }
 
     /// Exports a batch of metrics data by calling the exporter implementation.

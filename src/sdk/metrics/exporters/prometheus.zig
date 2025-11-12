@@ -59,14 +59,14 @@ pub const PrometheusFormatter = struct {
     }
 
     /// Format measurements into Prometheus text format.
-    /// The writer should be a std.io.Writer or similar.
-    pub fn format(self: Self, writer: anytype, measurements: []const Measurements) !void {
+    /// The writer must be a *std.Io.Writer.
+    pub fn format(self: Self, writer: *std.Io.Writer, measurements: []const Measurements) !void {
         for (measurements) |measurement| {
             try self.formatMeasurement(writer, measurement);
         }
     }
 
-    fn formatMeasurement(self: Self, writer: anytype, measurement: Measurements) !void {
+    fn formatMeasurement(self: Self, writer: *std.Io.Writer, measurement: Measurements) !void {
         // Translate the metric name according to naming convention
         const base_name = try self.translateName(measurement.instrumentOptions.name, measurement.instrumentOptions.unit, measurement.instrumentKind);
         defer self.allocator.free(base_name);
@@ -97,7 +97,7 @@ pub const PrometheusFormatter = struct {
         }
     }
 
-    fn formatDataPoints(self: Self, writer: anytype, base_name: []const u8, measurement: Measurements, datapoints: anytype) !void {
+    fn formatDataPoints(self: Self, writer: *std.Io.Writer, base_name: []const u8, measurement: Measurements, datapoints: anytype) !void {
         // Determine if we need to add suffix based on instrument kind
         const metric_name = try self.getMetricNameWithSuffix(base_name, measurement.instrumentKind);
         defer if (metric_name.ptr != base_name.ptr) self.allocator.free(metric_name);
@@ -125,7 +125,7 @@ pub const PrometheusFormatter = struct {
         }
     }
 
-    fn formatHistogram(self: Self, writer: anytype, base_name: []const u8, measurement: Measurements, datapoints: []const DataPoint(HistogramDataPoint)) !void {
+    fn formatHistogram(self: Self, writer: *std.Io.Writer, base_name: []const u8, measurement: Measurements, datapoints: []const DataPoint(HistogramDataPoint)) !void {
         for (datapoints) |dp| {
             const hist = dp.value;
 
@@ -174,7 +174,7 @@ pub const PrometheusFormatter = struct {
         }
     }
 
-    fn writeLabels(self: Self, writer: anytype, measurement: Measurements, attributes: ?[]Attribute) !void {
+    fn writeLabels(self: Self, writer: *std.Io.Writer, measurement: Measurements, attributes: ?[]Attribute) !void {
         var labels = std.array_list.Managed(LabelPair).init(self.allocator);
         defer labels.deinit();
 
@@ -222,7 +222,7 @@ pub const PrometheusFormatter = struct {
         value: []const u8,
     };
 
-    fn writeLabelsFromList(self: Self, writer: anytype, labels: []const LabelPair) !void {
+    fn writeLabelsFromList(self: Self, writer: *std.Io.Writer, labels: []const LabelPair) !void {
         if (labels.len == 0) {
             return;
         }
@@ -416,8 +416,11 @@ pub const PrometheusFormatter = struct {
 
 const MetricReader = @import("../reader.zig").MetricReader;
 const MetricExporter = @import("../exporter.zig").MetricExporter;
+const ExporterImpl = @import("../exporter.zig").ExporterImpl;
+const MetricReadError = @import("../reader.zig").MetricReadError;
 const InMemoryExporter = @import("in_memory.zig").InMemoryExporter;
 const MeterProvider = @import("../../../api/metrics/meter.zig").MeterProvider;
+const view = @import("../view.zig");
 
 /// Configuration options for the Prometheus exporter HTTP server.
 pub const ExporterConfig = struct {
@@ -431,66 +434,70 @@ pub const ExporterConfig = struct {
 
 /// Prometheus exporter that exposes metrics via HTTP server.
 /// Implements the pull-based model where Prometheus scrapes the /metrics endpoint.
+/// This exporter implements the ExporterImpl interface and MUST be used with
+/// Cumulative temporality as per OpenTelemetry specification.
 pub const PrometheusExporter = struct {
     const Self = @This();
 
     allocator: Allocator,
     config: ExporterConfig,
-    reader: *MetricReader,
-    in_memory_exporter: *InMemoryExporter,
-    metric_exporter: *MetricExporter,
     formatter: PrometheusFormatter,
     server_thread: ?std.Thread = null,
     should_stop: std.atomic.Value(bool),
     mutex: std.Thread.Mutex,
-    // Cached measurements from the last collection
+    // Cached measurements from the last exportBatch call
     last_measurements: []Measurements = &[_]Measurements{},
+    // Implement the ExporterImpl interface
+    exporter: ExporterImpl,
 
-    pub fn init(allocator: Allocator, meter_provider: *MeterProvider, config: ExporterConfig) !*Self {
+    pub fn init(allocator: Allocator, config: ExporterConfig) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
-
-        // Create an in-memory exporter to store metrics
-        const in_mem = try InMemoryExporter.init(allocator);
-        errdefer in_mem.deinit();
-
-        const metric_exporter = try MetricExporter.new(allocator, &in_mem.exporter);
-        errdefer metric_exporter.shutdown();
-
-        // Create a metric reader for pull-based collection
-        const reader = try MetricReader.init(allocator, metric_exporter);
-        errdefer reader.shutdown();
-
-        // Register the reader with the meter provider
-        try meter_provider.addReader(reader);
 
         self.* = Self{
             .allocator = allocator,
             .config = config,
-            .reader = reader,
-            .in_memory_exporter = in_mem,
-            .metric_exporter = metric_exporter,
             .formatter = PrometheusFormatter.init(allocator, config.formatter_config),
             .should_stop = std.atomic.Value(bool).init(false),
             .mutex = .{},
+            .exporter = ExporterImpl{
+                .exportFn = exportBatch,
+            },
         };
 
         return self;
+    }
+
+    /// ExporterImpl interface implementation.
+    /// This is called by the MetricReader during collection.
+    /// The exporter takes ownership of the measurements and caches them for HTTP serving.
+    fn exportBatch(iface: *ExporterImpl, measurements: []Measurements) MetricReadError!void {
+        const self: *Self = @fieldParentPtr("exporter", iface);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Clean up old cached measurements
+        for (self.last_measurements) |*m| {
+            m.deinit(self.allocator);
+        }
+        if (self.last_measurements.len > 0) {
+            self.allocator.free(self.last_measurements);
+        }
+
+        // Cache the new measurements for HTTP serving
+        // Note: We take ownership of the measurements array
+        self.last_measurements = measurements;
     }
 
     pub fn deinit(self: *Self) void {
         self.stop();
         // Clean up cached measurements
         for (self.last_measurements) |*m| {
-            var measurement = m.*;
-            measurement.deinit(self.allocator);
+            m.deinit(self.allocator);
         }
         if (self.last_measurements.len > 0) {
             self.allocator.free(self.last_measurements);
         }
-        self.reader.shutdown();
-        self.metric_exporter.shutdown();
-        self.in_memory_exporter.deinit();
         self.allocator.destroy(self);
     }
 
@@ -505,8 +512,27 @@ pub const PrometheusExporter = struct {
     pub fn stop(self: *Self) void {
         if (self.server_thread) |thread| {
             self.should_stop.store(true, .release);
+
+            // Make a dummy connection to wake up the accept() call
+            const address = std.net.Address.parseIp(self.config.host, self.config.port) catch {
+                thread.join();
+                self.server_thread = null;
+                self.should_stop.store(false, .release);
+                return;
+            };
+            const wake_stream = std.net.tcpConnectToAddress(address) catch {
+                // Connection failed, but thread might have already exited
+                thread.join();
+                self.server_thread = null;
+                self.should_stop.store(false, .release);
+                return;
+            };
+            wake_stream.close();
+
             thread.join();
             self.server_thread = null;
+            // Reset flag so server can be restarted
+            self.should_stop.store(false, .release);
         }
     }
 
@@ -526,15 +552,20 @@ pub const PrometheusExporter = struct {
         std.log.info("Prometheus exporter listening on {s}:{d}", .{ self.config.host, self.config.port });
 
         while (!self.should_stop.load(.acquire)) {
-            defer self.should_stop.store(false, .release);
-            // Accept with timeout so we can check should_stop
+            // Accept connection (will block until we get one or server stops)
             const connection = listener.accept() catch |err| {
-                if (err == error.WouldBlock) {
-                    std.Thread.sleep(100 * std.time.ns_per_ms);
-                    continue;
+                // If we get an error and should_stop is true, exit gracefully
+                if (self.should_stop.load(.acquire)) {
+                    return;
                 }
                 return err;
             };
+
+            // Check if we should stop before handling the connection
+            if (self.should_stop.load(.acquire)) {
+                connection.stream.close();
+                return;
+            }
 
             // Handle the connection
             self.handleConnection(connection.stream) catch |err| {
@@ -562,34 +593,17 @@ pub const PrometheusExporter = struct {
     }
 
     fn handleMetricsRequest(self: *Self, stream: std.net.Stream) !void {
-        // Collect metrics from the reader (thread-safe)
+        // Serve cached metrics from the last exportBatch call (thread-safe)
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Collect metrics - this will export them to the in-memory exporter
-        try self.reader.collect();
-
-        // Fetch metrics from the in-memory exporter
-        // Note: fetch() clears the in-memory exporter's data, so we cache it
-        const measurements = try self.in_memory_exporter.fetch(self.allocator);
-
-        // Clean up old cached measurements
-        for (self.last_measurements) |*m| {
-            var measurement = m.*;
-            measurement.deinit(self.allocator);
-        }
-        if (self.last_measurements.len > 0) {
-            self.allocator.free(self.last_measurements);
-        }
-
-        // Cache the new measurements for future scrapes
-        self.last_measurements = measurements;
-
         // Format metrics to Prometheus text format
-        var output = std.array_list.Managed(u8).init(self.allocator);
-        defer output.deinit();
+        var output = std.ArrayListUnmanaged(u8).empty;
+        var writer_alloc = std.Io.Writer.Allocating.fromArrayList(self.allocator, &output);
+        defer writer_alloc.deinit();
 
-        try self.formatter.format(output.writer(), self.last_measurements);
+        try self.formatter.format(&writer_alloc.writer, self.last_measurements);
+        try writer_alloc.writer.flush();
 
         // Send HTTP response
         const headers =
@@ -599,7 +613,7 @@ pub const PrometheusExporter = struct {
             "\r\n";
 
         try stream.writeAll(headers);
-        try stream.writeAll(output.items);
+        try stream.writeAll(writer_alloc.writer.buffer[0..writer_alloc.writer.end]);
     }
 
     fn handleNotFound(self: *Self, stream: std.net.Stream) !void {
@@ -649,10 +663,12 @@ test "PrometheusFormatter: format counter with suffix" {
         .data = .{ .int = datapoints },
     }};
 
-    var output = std.array_list.Managed(u8).init(allocator);
-    defer output.deinit();
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var writer_alloc = std.Io.Writer.Allocating.fromArrayList(allocator, &output);
+    defer writer_alloc.deinit();
 
-    try formatter.format(output.writer(), &measurements);
+    try formatter.format(&writer_alloc.writer, &measurements);
+    try writer_alloc.writer.flush();
 
     const expected =
         \\# HELP http_requests_total Total HTTP requests
@@ -661,7 +677,7 @@ test "PrometheusFormatter: format counter with suffix" {
         \\
     ;
 
-    try std.testing.expectEqualStrings(expected, output.items);
+    try std.testing.expectEqualStrings(expected, writer_alloc.writer.buffer[0..writer_alloc.writer.end]);
 }
 
 test "PrometheusFormatter: format gauge without suffix" {
@@ -688,10 +704,12 @@ test "PrometheusFormatter: format gauge without suffix" {
         .data = .{ .double = datapoints },
     }};
 
-    var output = std.array_list.Managed(u8).init(allocator);
-    defer output.deinit();
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var writer_alloc = std.Io.Writer.Allocating.fromArrayList(allocator, &output);
+    defer writer_alloc.deinit();
 
-    try formatter.format(output.writer(), &measurements);
+    try formatter.format(&writer_alloc.writer, &measurements);
+    try writer_alloc.writer.flush();
 
     const expected =
         \\# TYPE temperature_celsius gauge
@@ -699,7 +717,7 @@ test "PrometheusFormatter: format gauge without suffix" {
         \\
     ;
 
-    try std.testing.expectEqualStrings(expected, output.items);
+    try std.testing.expectEqualStrings(expected, writer_alloc.writer.buffer[0..writer_alloc.writer.end]);
 }
 
 test "PrometheusFormatter: format with labels and escaping" {
@@ -733,13 +751,15 @@ test "PrometheusFormatter: format with labels and escaping" {
         .data = .{ .int = datapoints },
     }};
 
-    var output = std.array_list.Managed(u8).init(allocator);
-    defer output.deinit();
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var writer_alloc = std.Io.Writer.Allocating.fromArrayList(allocator, &output);
+    defer writer_alloc.deinit();
 
-    try formatter.format(output.writer(), &measurements);
+    try formatter.format(&writer_alloc.writer, &measurements);
+    try writer_alloc.writer.flush();
 
     // Verify label escaping
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "path=\"/api/\\\"test\\\"\\n\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer_alloc.writer.buffer[0..writer_alloc.writer.end], "path=\"/api/\\\"test\\\"\\n\"") != null);
 }
 
 test "PrometheusFormatter: metric name with unit conversion" {
@@ -813,16 +833,181 @@ test "PrometheusFormatter: histogram formatting" {
         .data = .{ .histogram = datapoints },
     }};
 
-    var output = std.array_list.Managed(u8).init(allocator);
-    defer output.deinit();
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var writer_alloc = std.Io.Writer.Allocating.fromArrayList(allocator, &output);
+    defer writer_alloc.deinit();
 
-    try formatter.format(output.writer(), &measurements);
+    try formatter.format(&writer_alloc.writer, &measurements);
+    try writer_alloc.writer.flush();
+
+    const formatted_output = writer_alloc.writer.buffer[0..writer_alloc.writer.end];
 
     // Verify histogram output contains buckets, sum, and count
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "request_duration_bucket{le=\"0.1\"} 10") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "request_duration_bucket{le=\"0.5\"} 25") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "request_duration_bucket{le=\"1\"} 40") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "request_duration_bucket{le=\"+Inf\"} 50") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "request_duration_sum 15.5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "request_duration_count 50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_bucket{le=\"0.1\"} 10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_bucket{le=\"0.5\"} 25") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_bucket{le=\"1\"} 40") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_bucket{le=\"+Inf\"} 50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_sum 15.5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_count 50") != null);
+}
+
+// HTTP Server Lifecycle Tests
+
+test "PrometheusExporter: server start and stop" {
+    const allocator = std.testing.allocator;
+
+    const exporter = try PrometheusExporter.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19465, // Use unique port for test
+    });
+    defer exporter.deinit();
+
+    // Server should not be running initially
+    try std.testing.expectEqual(@as(?std.Thread, null), exporter.server_thread);
+
+    // Start the server
+    try exporter.start();
+    try std.testing.expect(exporter.server_thread != null);
+
+    // Wait a bit for server to be ready
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    // Stop the server (should not block)
+    exporter.stop();
+    try std.testing.expectEqual(@as(?std.Thread, null), exporter.server_thread);
+}
+
+test "PrometheusExporter: double start returns error" {
+    const allocator = std.testing.allocator;
+
+    const exporter = try PrometheusExporter.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19466, // Use unique port for test
+    });
+    defer exporter.deinit();
+
+    // Start the server
+    try exporter.start();
+    defer exporter.stop();
+
+    // Trying to start again should return error
+    try std.testing.expectError(error.AlreadyStarted, exporter.start());
+}
+
+test "PrometheusExporter: repeated start/stop cycles" {
+    const allocator = std.testing.allocator;
+
+    const exporter = try PrometheusExporter.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19467, // Use unique port for test
+    });
+    defer exporter.deinit();
+
+    // Perform multiple start/stop cycles
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        try exporter.start();
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+        exporter.stop();
+        std.Thread.sleep(50 * std.time.ns_per_ms);
+    }
+
+    // Verify server is stopped
+    try std.testing.expectEqual(@as(?std.Thread, null), exporter.server_thread);
+}
+
+test "PrometheusExporter: concurrent HTTP requests" {
+    const allocator = std.testing.allocator;
+
+    const exporter = try PrometheusExporter.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19468, // Use unique port for test
+    });
+    defer exporter.deinit();
+
+    try exporter.start();
+    defer exporter.stop();
+
+    // Wait for server to be ready
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    // Make multiple concurrent requests
+    const RequestThread = struct {
+        fn makeRequest(port: u16) void {
+            const address = std.net.Address.parseIp("127.0.0.1", port) catch return;
+            const stream = std.net.tcpConnectToAddress(address) catch return;
+            defer stream.close();
+
+            const request = "GET /metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+            stream.writeAll(request) catch return;
+
+            var buf: [4096]u8 = undefined;
+            _ = stream.read(&buf) catch return;
+        }
+    };
+
+    var threads: [3]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, RequestThread.makeRequest, .{19468});
+    }
+
+    // Wait for all threads to complete
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Server should still be running after concurrent requests
+    try std.testing.expect(exporter.server_thread != null);
+}
+
+test "PrometheusExporter: shutdown does not block" {
+    const allocator = std.testing.allocator;
+
+    const exporter = try PrometheusExporter.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19469, // Use unique port for test
+    });
+    defer exporter.deinit();
+
+    try exporter.start();
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    // Measure shutdown time (should be fast, not blocked)
+    const start_time = std.time.milliTimestamp();
+    exporter.stop();
+    const end_time = std.time.milliTimestamp();
+
+    const shutdown_time = end_time - start_time;
+    // Shutdown should complete within 1 second (generous timeout)
+    try std.testing.expect(shutdown_time < 1000);
+}
+
+test "PrometheusExporter: server handles invalid path with 404" {
+    const allocator = std.testing.allocator;
+
+    const exporter = try PrometheusExporter.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 19470, // Use unique port for test
+    });
+    defer exporter.deinit();
+
+    try exporter.start();
+    defer exporter.stop();
+
+    std.Thread.sleep(100 * std.time.ns_per_ms);
+
+    // Make request to invalid path
+    const address = try std.net.Address.parseIp("127.0.0.1", 19470);
+    const stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+
+    const request = "GET /invalid HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    try stream.writeAll(request);
+
+    var buf: [1024]u8 = undefined;
+    const n = try stream.read(&buf);
+    const response = buf[0..n];
+
+    // Should return 404
+    try std.testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 404"));
 }

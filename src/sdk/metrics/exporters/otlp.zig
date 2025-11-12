@@ -125,7 +125,7 @@ pub const OTLPExporter = struct {
     }
 };
 
-fn toProtobufMetric(
+pub fn toProtobufMetric(
     allocator: std.mem.Allocator,
     measurements: Measurements,
     temporailty: view.TemporalitySelector,
@@ -204,7 +204,7 @@ fn attributeToProtobuf(allocator: std.mem.Allocator, attribute: Attribute) !pbco
     };
 }
 
-fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
+pub fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
     if (attributes) |attrs| {
         var kvs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue){} };
         for (attrs) |a| {

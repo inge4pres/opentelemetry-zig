@@ -15,6 +15,8 @@ pub const View = @import("metrics/view.zig");
 pub const InMemoryExporter = @import("metrics/exporters/in_memory.zig").InMemoryExporter;
 pub const StdoutExporter = @import("metrics/exporters/stdout.zig").StdoutExporter;
 pub const OTLPExporter = @import("metrics/exporters/otlp.zig").OTLPExporter;
+pub const PrometheusExporter = @import("metrics/exporters/prometheus.zig").PrometheusExporter;
+pub const PrometheusExporterConfig = @import("metrics/exporters/prometheus.zig").ExporterConfig;
 
 test {
     _ = @import("metrics/exporter.zig");
