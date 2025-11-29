@@ -156,38 +156,24 @@ pub fn build(b: *std.Build) !void {
 
     const benchmark_mod = benchmarks_dep.module("zbench");
 
-    const metrics_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", "metrics" })), sdk_mod, benchmark_mod, benchmark_debug) catch |err| {
-        std.debug.print("Error building metrics benchmarks: {}\n", .{err});
-        return err;
-    };
-    defer b.allocator.free(metrics_benchmarks);
-    for (metrics_benchmarks) |step| {
-        const run_metrics_benchmark = b.addRunArtifact(step);
+    const benchmarked_signals: []const []const u8 = &.{ "logs", "metrics", "trace" };
+    for (benchmarked_signals) |signal| {
+        const signal_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", signal })), sdk_mod, benchmark_mod, benchmark_debug) catch |err| {
+            std.debug.print("Error building {s} benchmarks: {}\n", .{ signal, err });
+            return err;
+        };
+        defer b.allocator.free(signal_benchmarks);
+        for (signal_benchmarks) |step| {
+            const run_signal_benchmark = b.addRunArtifact(step);
 
-        // If output file is specified, redirect stderr to file
-        if (benchmark_output) |output_path| {
-            // Set stderr to write to file
-            run_metrics_benchmark.setEnvironmentVariable("BENCHMARK_OUTPUT_FILE", output_path);
+            // If output file is specified, redirect stderr to file
+            if (benchmark_output) |output_path| {
+                // Set stderr to write to file
+                run_signal_benchmark.setEnvironmentVariable("BENCHMARK_OUTPUT_FILE", output_path);
+            }
+
+            benchmarks_step.dependOn(&run_signal_benchmark.step);
         }
-
-        benchmarks_step.dependOn(&run_metrics_benchmark.step);
-    }
-
-    const trace_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", "trace" })), sdk_mod, benchmark_mod, benchmark_debug) catch |err| {
-        std.debug.print("Error building trace benchmarks: {}\n", .{err});
-        return err;
-    };
-    defer b.allocator.free(trace_benchmarks);
-    for (trace_benchmarks) |step| {
-        const run_trace_benchmark = b.addRunArtifact(step);
-
-        // If output file is specified, redirect stderr to file
-        if (benchmark_output) |output_path| {
-            // Set stderr to write to file
-            run_trace_benchmark.setEnvironmentVariable("BENCHMARK_OUTPUT_FILE", output_path);
-        }
-
-        benchmarks_step.dependOn(&run_trace_benchmark.step);
     }
 
     // Integration tests step
