@@ -558,6 +558,9 @@ test "integration: multiple processors in pipeline" {
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
         pub fn forceFlush(_: *anyopaque) anyerror!void {}
+        pub fn enabled(_: *anyopaque, _: EnabledParameters) bool {
+            return true;
+        }
 
         pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
             return LogRecordProcessor{
@@ -566,6 +569,7 @@ test "integration: multiple processors in pipeline" {
                     .onEmitFn = onEmit,
                     .shutdownFn = shutdown,
                     .forceFlushFn = forceFlush,
+                    .enabledFn = enabled,
                 },
             };
         }
@@ -589,6 +593,9 @@ test "integration: multiple processors in pipeline" {
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
         pub fn forceFlush(_: *anyopaque) anyerror!void {}
+        pub fn enabled(_: *anyopaque, _: EnabledParameters) bool {
+            return true;
+        }
 
         pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
             return LogRecordProcessor{
@@ -597,6 +604,7 @@ test "integration: multiple processors in pipeline" {
                     .onEmitFn = onEmit,
                     .shutdownFn = shutdown,
                     .forceFlushFn = forceFlush,
+                    .enabledFn = enabled,
                 },
             };
         }

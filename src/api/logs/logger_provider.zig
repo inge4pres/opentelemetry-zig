@@ -455,3 +455,227 @@ test "Log records inherit resource from provider" {
     try std.testing.expectEqualStrings("service.name", mock_exporter.captured_resource.?[0].key);
     try std.testing.expectEqualStrings("test-service", mock_exporter.captured_resource.?[0].value.string);
 }
+
+test "Logger.enabled() returns true with active processors" {
+    const allocator = std.testing.allocator;
+
+    // Mock exporter
+    const MockExporter = struct {
+        pub fn exportLogs(_: *anyopaque, _: []ReadableLogRecord) anyerror!void {}
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var mock_exporter = MockExporter{};
+    const exporter = mock_exporter.asLogRecordExporter();
+    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    const log_processor = processor.asLogRecordProcessor();
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    try provider.addLogRecordProcessor(log_processor);
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const logger = try provider.getLogger(scope);
+
+    const ctx = Context.init();
+
+    // Should be enabled with processor
+    try std.testing.expect(logger.enabled(.{ .context = ctx }));
+    try std.testing.expect(logger.enabled(.{ .context = ctx, .severity = 9 }));
+    try std.testing.expect(logger.enabled(.{ .context = ctx, .severity = 17 }));
+}
+
+test "Logger.enabled() returns false when no processors" {
+    const allocator = std.testing.allocator;
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const logger = try provider.getLogger(scope);
+
+    const ctx = Context.init();
+
+    // Should be disabled with no processors
+    try std.testing.expect(!logger.enabled(.{ .context = ctx }));
+    try std.testing.expect(!logger.enabled(.{ .context = ctx, .severity = 9 }));
+}
+
+test "Logger.enabled() returns false after shutdown" {
+    const allocator = std.testing.allocator;
+
+    // Mock exporter
+    const MockExporter = struct {
+        pub fn exportLogs(_: *anyopaque, _: []ReadableLogRecord) anyerror!void {}
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var mock_exporter = MockExporter{};
+    const exporter = mock_exporter.asLogRecordExporter();
+    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    const log_processor = processor.asLogRecordProcessor();
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    try provider.addLogRecordProcessor(log_processor);
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const logger = try provider.getLogger(scope);
+
+    const ctx = Context.init();
+
+    // Should be enabled before shutdown
+    try std.testing.expect(logger.enabled(.{ .context = ctx }));
+
+    // Shutdown
+    try provider.shutdown();
+
+    // Should be disabled after shutdown
+    try std.testing.expect(!logger.enabled(.{ .context = ctx }));
+}
+
+test "Logger.enabled() with multiple processors (OR logic)" {
+    const allocator = std.testing.allocator;
+
+    // Create a custom processor that always returns false
+    const AlwaysDisabledProcessor = struct {
+        fn onEmit(_: *anyopaque, _: *ReadWriteLogRecord, _: Context) void {}
+        fn shutdown(_: *anyopaque) anyerror!void {}
+        fn forceFlush(_: *anyopaque) anyerror!void {}
+        fn isEnabled(_: *anyopaque, _: EnabledParameters) bool {
+            return false;
+        }
+
+        pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
+            return LogRecordProcessor{
+                .ptr = self,
+                .vtable = &.{
+                    .onEmitFn = onEmit,
+                    .shutdownFn = shutdown,
+                    .forceFlushFn = forceFlush,
+                    .enabledFn = isEnabled,
+                },
+            };
+        }
+    };
+
+    // Create a custom processor that always returns true
+    const AlwaysEnabledProcessor = struct {
+        fn onEmit(_: *anyopaque, _: *ReadWriteLogRecord, _: Context) void {}
+        fn shutdown(_: *anyopaque) anyerror!void {}
+        fn forceFlush(_: *anyopaque) anyerror!void {}
+        fn isEnabled(_: *anyopaque, _: EnabledParameters) bool {
+            return true;
+        }
+
+        pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
+            return LogRecordProcessor{
+                .ptr = self,
+                .vtable = &.{
+                    .onEmitFn = onEmit,
+                    .shutdownFn = shutdown,
+                    .forceFlushFn = forceFlush,
+                    .enabledFn = isEnabled,
+                },
+            };
+        }
+    };
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    var disabled_proc = AlwaysDisabledProcessor{};
+    var enabled_proc = AlwaysEnabledProcessor{};
+
+    // Add disabled processor first
+    try provider.addLogRecordProcessor(disabled_proc.asLogRecordProcessor());
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const logger = try provider.getLogger(scope);
+    const ctx = Context.init();
+
+    // Should be false with only disabled processor
+    try std.testing.expect(!logger.enabled(.{ .context = ctx }));
+
+    // Add enabled processor
+    try provider.addLogRecordProcessor(enabled_proc.asLogRecordProcessor());
+
+    // Should be true with OR logic (at least one enabled)
+    try std.testing.expect(logger.enabled(.{ .context = ctx }));
+}
+
+test "Logger.enabled() with severity parameter" {
+    const allocator = std.testing.allocator;
+
+    // Create a severity-filtering processor
+    const SeverityFilterProcessor = struct {
+        min_severity: u8,
+
+        fn onEmit(_: *anyopaque, _: *ReadWriteLogRecord, _: Context) void {}
+        fn shutdown(_: *anyopaque) anyerror!void {}
+        fn forceFlush(_: *anyopaque) anyerror!void {}
+        fn isEnabled(ctx: *anyopaque, params: EnabledParameters) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (params.severity) |sev| {
+                return sev >= self.min_severity;
+            }
+            return true; // Default to true when severity not specified
+        }
+
+        pub fn asLogRecordProcessor(self: *@This()) LogRecordProcessor {
+            return LogRecordProcessor{
+                .ptr = self,
+                .vtable = &.{
+                    .onEmitFn = onEmit,
+                    .shutdownFn = shutdown,
+                    .forceFlushFn = forceFlush,
+                    .enabledFn = isEnabled,
+                },
+            };
+        }
+    };
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    var filter_proc = SeverityFilterProcessor{ .min_severity = 9 }; // INFO level
+    try provider.addLogRecordProcessor(filter_proc.asLogRecordProcessor());
+
+    const scope = InstrumentationScope{ .name = "test-logger" };
+    const logger = try provider.getLogger(scope);
+    const ctx = Context.init();
+
+    // DEBUG (5) should be disabled
+    try std.testing.expect(!logger.enabled(.{ .context = ctx, .severity = 5 }));
+
+    // INFO (9) should be enabled
+    try std.testing.expect(logger.enabled(.{ .context = ctx, .severity = 9 }));
+
+    // ERROR (17) should be enabled
+    try std.testing.expect(logger.enabled(.{ .context = ctx, .severity = 17 }));
+
+    // No severity specified should be enabled (defaults to true)
+    try std.testing.expect(logger.enabled(.{ .context = ctx }));
+}
