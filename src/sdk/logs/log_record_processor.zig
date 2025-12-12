@@ -4,6 +4,7 @@ const context = @import("../../api/context.zig");
 const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attribute = @import("../../attributes.zig").Attribute;
+const EnabledParameters = @import("../../api/logs/enabled_parameters.zig").EnabledParameters;
 
 /// LogRecordProcessor is an interface which allows hooks for LogRecord emitting.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#logrecordprocessor
@@ -26,6 +27,11 @@ pub const LogRecordProcessor = struct {
         /// forceFlush ensures completion of pending LogRecord tasks.
         /// Should prioritize honoring the specified timeout.
         forceFlushFn: *const fn (ctx: *anyopaque) anyerror!void,
+
+        /// enabled checks if this processor would process a log record with the given parameters.
+        /// Implementations should default to returning true when uncertain.
+        /// This method MUST be safe to call concurrently.
+        enabledFn: *const fn (ctx: *anyopaque, params: EnabledParameters) bool,
     };
 
     /// Called when a log record is emitted
@@ -41,6 +47,11 @@ pub const LogRecordProcessor = struct {
     /// Forces a flush of any buffered log records
     pub fn forceFlush(self: Self) anyerror!void {
         return self.vtable.forceFlushFn(self.ptr);
+    }
+
+    /// Check if this processor would process a log record with the given parameters
+    pub fn enabled(self: Self, params: EnabledParameters) bool {
+        return self.vtable.enabledFn(self.ptr, params);
     }
 };
 
@@ -68,6 +79,7 @@ pub const SimpleLogRecordProcessor = struct {
                 .onEmitFn = onEmit,
                 .shutdownFn = shutdown,
                 .forceFlushFn = forceFlush,
+                .enabledFn = enabled,
             },
         };
     }
@@ -101,6 +113,12 @@ pub const SimpleLogRecordProcessor = struct {
     fn forceFlush(_: *anyopaque) anyerror!void {
         // SimpleLogRecordProcessor exports immediately, so nothing to flush
         return;
+    }
+
+    fn enabled(ctx: *anyopaque, params: EnabledParameters) bool {
+        _ = ctx;
+        _ = params;
+        return true;
     }
 };
 
@@ -173,6 +191,7 @@ pub const BatchingLogRecordProcessor = struct {
                 .onEmitFn = onEmit,
                 .shutdownFn = shutdown,
                 .forceFlushFn = forceFlush,
+                .enabledFn = enabled,
             },
         };
     }
@@ -295,6 +314,19 @@ pub const BatchingLogRecordProcessor = struct {
         self.exporter.exportLogs(export_logs) catch |err| {
             std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
         };
+    }
+
+    fn enabled(ctx: *anyopaque, params: EnabledParameters) bool {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        _ = params;
+
+        // Not enabled if shutting down
+        if (self.should_shutdown.load(.acquire)) {
+            return false;
+        }
+
+        // Default to true per spec (even if queue might be full)
+        return true;
     }
 };
 
