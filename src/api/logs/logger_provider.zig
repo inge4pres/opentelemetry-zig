@@ -6,6 +6,7 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Context = @import("../context/context.zig").Context;
+const EnabledParameters = @import("enabled_parameters.zig").EnabledParameters;
 
 /// ReadWriteLogRecord is a mutable log record used during emission.
 /// Processors can modify this record, and mutations are visible to subsequent processors.
@@ -257,6 +258,51 @@ pub const Logger = struct {
         for (self.provider.processors.items) |processor| {
             processor.onEmit(&log_record, ctx);
         }
+    }
+
+    /// Check if logging is enabled for the given parameters.
+    /// Returns true if ANY processor would process a log record with these parameters.
+    ///
+    /// This method is useful for avoiding expensive operations when logging is disabled:
+    /// ```zig
+    /// if (logger.enabled(.{ .context = ctx, .severity = 9 })) {
+    ///     const expensive_data = computeExpensiveDebugInfo();
+    ///     logger.emit(9, "INFO", expensive_data, null);
+    /// }
+    /// ```
+    ///
+    /// See: https://opentelemetry.io/docs/specs/otel/logs/bridge-api/#enabled
+    pub fn enabled(self: *Self, params: struct {
+        context: Context,
+        severity: ?u8 = null,
+        event_name: ?[]const u8 = null,
+    }) bool {
+        // Early return if provider is shutdown
+        if (self.provider.is_shutdown.load(.acquire)) {
+            return false;
+        }
+
+        // Create full parameters with this logger's scope
+        const full_params = EnabledParameters{
+            .scope = self.scope,
+            .severity = params.severity,
+            .event_name = params.event_name,
+            .context = params.context,
+        };
+
+        // Check with processors - if ANY processor would process it, return true
+        self.provider.mutex.lock();
+        defer self.provider.mutex.unlock();
+
+        for (self.provider.processors.items) |processor| {
+            if (processor.enabled(full_params)) {
+                return true;
+            }
+        }
+
+        // If no processors, return false
+        // Per Go implementation: return false when no processor would handle it
+        return false;
     }
 };
 
