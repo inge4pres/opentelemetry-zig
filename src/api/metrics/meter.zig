@@ -26,6 +26,11 @@ const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
 
 const AsyncInstrument = @import("async_instrument.zig");
 
+// Import configuration module
+const Configuration = @import("../../sdk/config.zig").Configuration;
+const MetricsConfig = @import("../../sdk/config.zig").MetricsConfig;
+const resource_attributes = @import("../../sdk/resource.zig");
+
 var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 /// MeterProvider is responsble for creating and managing meters.
@@ -40,6 +45,11 @@ pub const MeterProvider = struct {
     ),
     readers: std.ArrayListUnmanaged(*MetricReader),
     views: std.ArrayListUnmanaged(view.View),
+    sdk_disabled: bool,
+    // Configuration (accessed internally from global singleton)
+    config: ?*const Configuration,
+    // Resource attributes for this provider
+    resource: ?[]const Attribute = null,
 
     mx: std.Thread.Mutex = std.Thread.Mutex{},
 
@@ -47,32 +57,35 @@ pub const MeterProvider = struct {
 
     /// Create a new custom meter provider, using the specified allocator.
     pub fn init(alloc: std.mem.Allocator) !*Self {
+        // Access global configuration (transparent to user)
+        const cfg = Configuration.get();
+        const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
+
         const provider = try alloc.create(Self);
         provider.* = Self{
             .allocator = alloc,
             .meters = .empty,
             .readers = .empty,
             .views = .empty,
+            .sdk_disabled = sdk_disabled,
+            .config = cfg,
+            // Build resource attributes from config (empty if SDK disabled)
+            .resource = if (sdk_disabled) null else if (cfg) |c| try resource_attributes.buildFromConfig(alloc, c) else null,
         };
+
+        if (sdk_disabled) {
+            std.log.info("MeterProvider: SDK disabled via OTEL_SDK_DISABLED", .{});
+        }
 
         return provider;
     }
 
     /// Adopt the default MeterProvider.
     pub fn default() !*Self {
-        var gpa = switch (builtin.mode) {
-            .Debug, .ReleaseSafe => debug_allocator.allocator(),
-            .ReleaseFast, .ReleaseSmall => std.heap.smp_allocator,
-        };
-        const provider = try gpa.create(Self);
-        provider.* = Self{
-            .allocator = gpa,
-            .meters = .empty,
-            .readers = .empty,
-            .views = .empty,
-        };
-
-        return provider;
+        switch (builtin.mode) {
+            .Debug, .ReleaseSafe => return try Self.init(debug_allocator.allocator()),
+            .ReleaseFast, .ReleaseSmall => return try Self.init(std.heap.smp_allocator),
+        }
     }
 
     /// Delete the meter provider and free up the memory allocated for it,
@@ -80,14 +93,19 @@ pub const MeterProvider = struct {
     pub fn shutdown(self: *Self) void {
         self.mx.lock();
 
-        // TODO call shutdown on all readers.
         var meters = self.meters.valueIterator();
         while (meters.next()) |m| {
             m.deinit();
         }
         self.meters.deinit(self.allocator);
+        // TODO call shutdown on all readers?
+        // This means users should not call shutdown on readers directly.
         self.readers.deinit(self.allocator);
         self.views.deinit(self.allocator);
+
+        if (self.resource) |res| {
+            resource_attributes.freeResource(self.allocator, res);
+        }
 
         // Unlock before destroying the struct
         self.mx.unlock();
@@ -131,6 +149,21 @@ pub const MeterProvider = struct {
         defer self.mx.unlock();
 
         try self.views.append(self.allocator, new_view);
+    }
+
+    /// Helper: Create a MetricReader configured with environment variable settings
+    /// This convenience method uses OTEL_METRIC_* environment variables
+    pub fn createReaderFromConfig(
+        self: *Self,
+        metric_exporter: *@import("../../sdk/metrics/exporter.zig").MetricExporter,
+    ) !*MetricReader {
+        const mc = self.config.metrics_config;
+        const reader = try MetricReader.init(self.allocator, metric_exporter);
+
+        // Apply export timeout from config
+        reader.exportTimeout = mc.export_timeout_ms;
+
+        return reader;
     }
 };
 
@@ -292,6 +325,21 @@ test "custom meter provider can be created" {
     defer mp.shutdown();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
+}
+
+test "meter provider with config from environment" {
+    const cfg = try Configuration.initFromEnv(std.testing.allocator);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    const mp = try MeterProvider.init(std.testing.allocator);
+    defer mp.shutdown();
+
+    // Verify config was loaded with defaults
+    try std.testing.expectEqual(@as(u64, 60000), mp.config.?.metrics_config.export_interval_ms);
+    try std.testing.expectEqual(@as(u64, 30000), mp.config.?.metrics_config.export_timeout_ms);
+    try std.testing.expectEqual(MetricsConfig.ExporterType.otlp, mp.config.?.metrics_config.exporter);
+    try std.testing.expectEqual(MetricsConfig.ExemplarFilter.trace_based, mp.config.?.metrics_config.exemplar_filter);
 }
 
 test "meter can be created from custom provider" {

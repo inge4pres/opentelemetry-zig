@@ -1,6 +1,8 @@
 const std = @import("std");
 const context = @import("../../api/context.zig");
 const SpanProcessor = @import("span_processor.zig").SpanProcessor;
+const BatchingProcessor = @import("span_processor.zig").BatchingProcessor;
+const SimpleProcessor = @import("span_processor.zig").SimpleProcessor;
 const IDGenerator = @import("id_generator.zig").IDGenerator;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
@@ -11,6 +13,14 @@ const TracerAPI = trace_api.TracerImpl;
 const RandomIDGenerator = @import("id_generator.zig").RandomIDGenerator;
 
 const Attributes = @import("../../attributes.zig").Attributes;
+const Attribute = @import("../../attributes.zig").Attribute;
+
+const SpanExporter = @import("span_exporter.zig").SpanExporter;
+
+// Import configuration module
+const Configuration = @import("../config.zig").Configuration;
+const TraceConfig = @import("../config.zig").TraceConfig;
+const resource_attributes = @import("../resource.zig");
 
 /// SDK TracerProvider implementation
 pub const TracerProvider = struct {
@@ -29,8 +39,17 @@ pub const TracerProvider = struct {
     is_shutdown: std.atomic.Value(bool),
     // Interface implementation
     tracer_provider: TracerProviderAPI,
+    // Configuration (accessed internally from global singleton)
+    config: ?*const Configuration,
+    sdk_disabled: bool,
+    // Resource attributes for this provider
+    resource: ?[]const Attribute,
 
     pub fn init(allocator: std.mem.Allocator, id_generator: IDGenerator) !*Self {
+        // Access global configuration (transparent to user)
+        const cfg = Configuration.get();
+        const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
+
         const self = try allocator.create(Self);
 
         self.* = Self{
@@ -44,13 +63,45 @@ pub const TracerProvider = struct {
                 .getTracerFn = getTracerImpl,
                 .shutdownFn = shutdownImpl,
             },
+            .sdk_disabled = sdk_disabled,
+            .config = cfg,
+            .resource = if (sdk_disabled) null else if (cfg) |c| try resource_attributes.buildFromConfig(allocator, c) else null,
         };
+
+        if (sdk_disabled) {
+            std.log.info("TracerProvider: SDK disabled via OTEL_SDK_DISABLED", .{});
+        }
 
         return self;
     }
 
+    /// Helper: Create a BatchingProcessor configured from environment variables
+    /// This is a convenience method that uses OTEL_BSP_* environment variables
+    pub fn createBatchProcessorFromConfig(
+        self: *Self,
+        exporter: SpanExporter,
+    ) !*BatchingProcessor {
+        const tc = self.config.?.trace_config;
+        return try BatchingProcessor.init(self.allocator, exporter, .{
+            .max_queue_size = @intCast(tc.bsp_max_queue_size),
+            .scheduled_delay_millis = tc.bsp_schedule_delay_ms,
+            .export_timeout_millis = tc.bsp_export_timeout_ms,
+            .max_export_batch_size = @intCast(tc.bsp_max_export_batch_size),
+        });
+    }
+
     pub fn deinit(self: *Self) void {
+        // Clean up all tracers
+        var it = self.tracers.valueIterator();
+        while (it.next()) |tracer| {
+            self.allocator.destroy(tracer.*);
+        }
+        self.tracers.deinit(self.allocator);
+
         self.processors.deinit(self.allocator);
+        if (self.resource) |res| {
+            resource_attributes.freeResource(self.allocator, res);
+        }
     }
 
     /// Get the TracerProvider interface for this implementation
@@ -154,7 +205,7 @@ pub const TracerProvider = struct {
 
     /// Internal method called by SDKTracer when a span starts
     pub fn onSpanStart(self: *Self, span: *trace_api.Span, parent_context: context.Context) void {
-        if (self.is_shutdown.load(.acquire)) return;
+        if (self.sdk_disabled or self.is_shutdown.load(.acquire)) return;
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -166,7 +217,7 @@ pub const TracerProvider = struct {
 
     /// Internal method called by SDKTracer when a span ends
     pub fn onSpanEnd(self: *Self, span: trace_api.Span) void {
-        if (self.is_shutdown.load(.acquire)) return;
+        if (self.sdk_disabled or self.is_shutdown.load(.acquire)) return;
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -396,10 +447,31 @@ test "TracerProvider with processors" {
     try std.testing.expectEqual(@as(usize, 1), mock_processor.started_spans.items.len);
 }
 
+test "TracerProvider with config from environment" {
+    const allocator = std.testing.allocator;
+
+    const cfg = try Configuration.initFromEnv(allocator);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    // Create provider (it will read default config from env)
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+
+    // Verify config was loaded with defaults
+    try std.testing.expectEqual(@as(u32, 2048), provider.config.?.trace_config.bsp_max_queue_size);
+    try std.testing.expectEqual(@as(u64, 5000), provider.config.?.trace_config.bsp_schedule_delay_ms);
+    try std.testing.expectEqual(@as(u32, 512), provider.config.?.trace_config.bsp_max_export_batch_size);
+    try std.testing.expectEqual(TraceConfig.Sampler.parentbased_always_on, provider.config.?.trace_config.sampler);
+}
+
 test "TracerProvider end span with links and events" {
     const allocator = std.testing.allocator;
 
-    // Create ID generator
     const seed = 0;
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());

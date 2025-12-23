@@ -1,12 +1,18 @@
 const std = @import("std");
 const LogRecordExporter = @import("../../sdk/logs/log_record_exporter.zig").LogRecordExporter;
 const SimpleLogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").SimpleLogRecordProcessor;
+const BatchingLogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").BatchingLogRecordProcessor;
 const LogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").LogRecordProcessor;
 const Attribute = @import("../../attributes.zig").Attribute;
+const AttributeValue = @import("../../attributes.zig").AttributeValue;
 const Attributes = @import("../../attributes.zig").Attributes;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Context = @import("../context/context.zig").Context;
 const EnabledParameters = @import("enabled_parameters.zig").EnabledParameters;
+
+// Import configuration module
+const Configuration = @import("../../sdk/config.zig").Configuration;
+const resource_attributes = @import("../../sdk/resource.zig");
 
 /// ReadWriteLogRecord is a mutable log record used during emission.
 /// Processors can modify this record, and mutations are visible to subsequent processors.
@@ -102,11 +108,17 @@ pub const LoggerProvider = struct {
     processors: std.ArrayListUnmanaged(LogRecordProcessor),
     resource: ?[]const Attribute,
     is_shutdown: std.atomic.Value(bool),
+    sdk_disabled: bool,
     mutex: std.Thread.Mutex,
+    config: ?*const Configuration,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, resource: ?[]const Attribute) !*Self {
+        const cfg = Configuration.get();
+        const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
+        const cfg_resource_attributes: []Attribute = if (cfg) |c| try resource_attributes.buildFromConfig(allocator, c) else &.{};
+
         const provider = try allocator.create(Self);
         provider.* = Self{
             .allocator = allocator,
@@ -117,10 +129,21 @@ pub const LoggerProvider = struct {
                 std.hash_map.default_max_load_percentage,
             ){},
             .processors = std.ArrayListUnmanaged(LogRecordProcessor){},
-            .resource = if (resource) |r| try allocator.dupe(Attribute, r) else null,
+            .resource = if (sdk_disabled) null else try resource_attributes.mergeResources(
+                allocator,
+                if (resource) |r| r else &.{},
+                cfg_resource_attributes,
+            ),
             .is_shutdown = std.atomic.Value(bool).init(false),
+            .sdk_disabled = sdk_disabled,
             .mutex = std.Thread.Mutex{},
+            .config = cfg,
         };
+
+        if (sdk_disabled) {
+            std.log.info("LoggerProvider: SDK disabled via OTEL_SDK_DISABLED", .{});
+        }
+
         return provider;
     }
 
@@ -134,7 +157,7 @@ pub const LoggerProvider = struct {
 
         self.processors.deinit(self.allocator);
 
-        if (self.resource) |r| self.allocator.free(r);
+        if (self.resource) |r| resource_attributes.freeResource(self.allocator, r);
 
         self.allocator.destroy(self);
     }
@@ -196,6 +219,20 @@ pub const LoggerProvider = struct {
             try processor.forceFlush();
         }
     }
+
+    /// Create a BatchingLogRecordProcessor with configuration from the global config
+    pub fn createBatchProcessorFromConfig(
+        self: *Self,
+        exporter: LogRecordExporter,
+    ) !*BatchingLogRecordProcessor {
+        const lc = self.config.?.logs_config;
+        return try BatchingLogRecordProcessor.init(self.allocator, exporter, .{
+            .max_queue_size = @intCast(lc.blrp_max_queue_size),
+            .scheduled_delay_millis = lc.blrp_schedule_delay_ms,
+            .export_timeout_millis = lc.blrp_export_timeout_ms,
+            .max_export_batch_size = @intCast(lc.blrp_max_export_batch_size),
+        });
+    }
 };
 
 /// Logger implementation
@@ -228,7 +265,7 @@ pub const Logger = struct {
         body: ?[]const u8,
         attributes: ?[]const Attribute,
     ) void {
-        if (self.provider.is_shutdown.load(.acquire)) {
+        if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) {
             return;
         }
 
@@ -277,8 +314,8 @@ pub const Logger = struct {
         severity: ?u8 = null,
         event_name: ?[]const u8 = null,
     }) bool {
-        // Early return if provider is shutdown
-        if (self.provider.is_shutdown.load(.acquire)) {
+        // Early return if SDK is disabled or provider is shutdown
+        if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) {
             return false;
         }
 
@@ -398,7 +435,7 @@ test "LoggerProvider with custom resource" {
     try std.testing.expectEqualStrings("my-service", provider.resource.?[0].value.string);
 }
 
-test "Log records inherit resource from provider" {
+test "Logger log records inherit resource from provider" {
     const allocator = std.testing.allocator;
 
     const service_name: []const u8 = "test-service";
@@ -678,4 +715,48 @@ test "Logger.enabled() with severity parameter" {
 
     // No severity specified should be enabled (defaults to true)
     try std.testing.expect(logger.enabled(.{ .context = ctx }));
+}
+
+test "LoggerProvider with config from environment" {
+    const allocator = std.testing.allocator;
+
+    const cfg = try Configuration.initFromEnv(allocator);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    // Verify that we can create a batch processor using config
+    const MockExporter = struct {
+        pub fn exportLogs(_: *anyopaque, _: []ReadableLogRecord) anyerror!void {}
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var mock_exporter = MockExporter{};
+    const exporter = mock_exporter.asLogRecordExporter();
+
+    var batch_processor = try provider.createBatchProcessorFromConfig(exporter);
+    defer {
+        const processor = batch_processor.asLogRecordProcessor();
+        processor.shutdown() catch {};
+        batch_processor.deinit();
+    }
+
+    // Verify processor was created with config values
+    const lc = provider.config.?.logs_config;
+    try std.testing.expectEqual(@as(usize, @intCast(lc.blrp_max_queue_size)), batch_processor.max_queue_size);
+    try std.testing.expectEqual(lc.blrp_schedule_delay_ms, batch_processor.scheduled_delay_millis);
+    try std.testing.expectEqual(lc.blrp_export_timeout_ms, batch_processor.export_timeout_millis);
+    try std.testing.expectEqual(@as(usize, @intCast(lc.blrp_max_export_batch_size)), batch_processor.max_export_batch_size);
 }

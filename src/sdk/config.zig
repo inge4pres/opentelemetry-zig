@@ -266,107 +266,99 @@ pub const LogsConfig = struct {
     }
 };
 
-/// Global SDK Configuration singleton
-pub const Configuration = struct {
-    allocator: std.mem.Allocator,
+/// Global SDK Configuration
+pub const Configuration = @This();
 
-    // Global settings
-    sdk_disabled: bool,
-    service_name: ?[]const u8,
-    resource_attributes: ?[]const u8,
-    log_level: LogLevel,
-    trace_propagators: []const TracePropagator,
+allocator: std.mem.Allocator,
 
-    // Signal-specific configurations
-    trace_config: TraceConfig,
-    metrics_config: MetricsConfig,
-    logs_config: LogsConfig,
+// Global settings
+sdk_disabled: bool,
+service_name: ?[]const u8,
+resource_attributes: ?[]const u8,
+log_level: LogLevel,
+trace_propagators: []const TracePropagator,
 
-    // Singleton instance
-    var instance: ?*Configuration = null;
-    var mutex: std.Thread.Mutex = .{};
+// Signal-specific configurations
+trace_config: TraceConfig,
+metrics_config: MetricsConfig,
+logs_config: LogsConfig,
 
-    /// Get or create the global configuration singleton
-    /// This is called internally by SDK components, not by users
-    pub fn global(allocator: std.mem.Allocator) !*Configuration {
-        mutex.lock();
-        defer mutex.unlock();
+var mutex: std.Thread.Mutex = .{};
 
-        if (instance) |cfg| return cfg;
+/// Singleton instance.
+/// Meant to be immutable after initialization.
+var Instance: ?*Configuration = null;
 
-        instance = try allocator.create(Configuration);
-        instance.?.* = try Configuration.initFromEnv(allocator);
-        return instance.?;
+/// Get the configuration singleton if available.
+pub fn get() ?*const Configuration {
+    mutex.lock();
+    defer mutex.unlock();
+
+    if (Instance) |cfg| {
+        return cfg;
     }
+    return null;
+}
 
-    /// Advanced: Set a custom global configuration (for testing/override)
-    /// This is optional and typically not needed by users
-    pub fn setGlobal(allocator: std.mem.Allocator, cfg: Configuration) !void {
-        mutex.lock();
-        defer mutex.unlock();
+/// Set the global configuration singleton.
+pub fn set(cfg: *Configuration) void {
+    mutex.lock();
+    defer mutex.unlock();
 
-        if (instance) |old| {
-            old.deinit();
-        }
+    Instance = cfg;
+}
 
-        instance = try allocator.create(Configuration);
-        instance.?.* = cfg;
-    }
+fn fromMap(allocator: std.mem.Allocator, env_map: *const std.process.EnvMap) !*Configuration {
+    const cfg = try allocator.create(Configuration);
 
-    /// Reset the singleton (useful for testing)
-    pub fn reset() void {
-        mutex.lock();
-        defer mutex.unlock();
+    cfg.* = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = parseBool(env_map, "OTEL_SDK_DISABLED") orelse false,
+        .service_name = if (env_map.get("OTEL_SERVICE_NAME")) |s|
+            try allocator.dupe(u8, s)
+        else
+            null,
+        .resource_attributes = if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |s|
+            try allocator.dupe(u8, s)
+        else
+            null,
+        .log_level = if (env_map.get("OTEL_LOG_LEVEL")) |s|
+            LogLevel.fromString(s) orelse .info
+        else
+            .info,
+        .trace_propagators = try parsePropagators(env_map, allocator),
+        .trace_config = try TraceConfig.fromEnv(env_map, allocator),
+        .metrics_config = try MetricsConfig.fromEnv(env_map, allocator),
+        .logs_config = try LogsConfig.fromEnv(env_map, allocator),
+    };
+    return cfg;
+}
 
-        if (instance) |cfg| {
-            cfg.deinit();
-        }
-        instance = null;
-    }
+/// Initialize configuration from environment variables.
+/// Caller owns the returned Configuration instance and must call deinit() when done.
+pub fn initFromEnv(allocator: std.mem.Allocator) !*Configuration {
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
 
-    /// Initialize configuration from environment variables
-    pub fn initFromEnv(allocator: std.mem.Allocator) !Configuration {
-        var env_map = try std.process.getEnvMap(allocator);
-        defer env_map.deinit();
+    return try fromMap(allocator, &env_map);
+}
 
-        return Configuration{
-            .allocator = allocator,
-            .sdk_disabled = parseBool(&env_map, "OTEL_SDK_DISABLED") orelse false,
-            .service_name = if (env_map.get("OTEL_SERVICE_NAME")) |s|
-                try allocator.dupe(u8, s)
-            else
-                null,
-            .resource_attributes = if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |s|
-                try allocator.dupe(u8, s)
-            else
-                null,
-            .log_level = if (env_map.get("OTEL_LOG_LEVEL")) |s|
-                LogLevel.fromString(s) orelse .info
-            else
-                .info,
-            .trace_propagators = try parsePropagators(&env_map, allocator),
-            .trace_config = try TraceConfig.fromEnv(&env_map, allocator),
-            .metrics_config = try MetricsConfig.fromEnv(&env_map, allocator),
-            .logs_config = try LogsConfig.fromEnv(&env_map, allocator),
-        };
-    }
+/// Deinitialize and destroy the Configuration (for heap-allocated instances)
+/// This method is safe to call multiple times and from multiple threads
+pub fn deinit(self: *Configuration) void {
+    mutex.lock();
+    defer mutex.unlock();
 
-    /// Clean up owned fields (but don't destroy the Configuration itself)
-    pub fn deinitFields(self: *Configuration) void {
-        if (self.service_name) |name| self.allocator.free(name);
-        if (self.resource_attributes) |attrs| self.allocator.free(attrs);
-        self.allocator.free(self.trace_propagators);
-        self.trace_config.deinit(self.allocator);
-        self.metrics_config.deinit(self.allocator);
-        self.logs_config.deinit(self.allocator);
-    }
+    if (self.service_name) |name| self.allocator.free(name);
+    if (self.resource_attributes) |attrs| self.allocator.free(attrs);
+    self.allocator.free(self.trace_propagators);
+    self.trace_config.deinit(self.allocator);
+    self.metrics_config.deinit(self.allocator);
+    self.logs_config.deinit(self.allocator);
 
-    /// Deinitialize and destroy the Configuration (for heap-allocated instances)
-    pub fn deinit(self: *Configuration) void {
-        self.deinitFields();
-        self.allocator.destroy(self);
-    }
-};
+    self.allocator.destroy(self);
+    Instance = null;
+}
 
 // ============================================================================
 // Parsing Utilities
@@ -637,7 +629,7 @@ test "Configuration.initFromEnv - defaults" {
     const allocator = std.testing.allocator;
 
     var config = try Configuration.initFromEnv(allocator);
-    defer config.deinitFields(); // Use deinitFields for stack-allocated config
+    defer config.deinit();
 
     try std.testing.expectEqual(false, config.sdk_disabled);
     try std.testing.expectEqual(@as(?[]const u8, null), config.service_name);
@@ -673,22 +665,163 @@ test "Configuration.initFromEnv - custom values" {
     try std.testing.expectEqual(TraceConfig.Sampler.always_on, trace_config.sampler);
 }
 
-test "Configuration singleton" {
+test Configuration {
     const allocator = std.testing.allocator;
+    var config = try Configuration.initFromEnv(allocator);
+    defer config.deinit();
 
-    // Reset singleton before test
-    Configuration.reset();
+    Configuration.set(config);
 
     // First access creates instance
-    const config1 = try Configuration.global(allocator);
+    const config1 = Configuration.get();
 
     // Second access returns same instance
-    const config2 = try Configuration.global(allocator);
+    const config2 = Configuration.get();
+
     try std.testing.expectEqual(config1, config2);
+}
 
-    // Verify it's actually the same instance by checking address
-    try std.testing.expectEqual(@intFromPtr(config1), @intFromPtr(config2));
+const TracerProvider = @import("trace/provider.zig").TracerProvider;
+const RandomIDGenerator = @import("trace/id_generator.zig").RandomIDGenerator;
 
-    // Reset for cleanup
-    Configuration.reset();
+const MeterProvider = @import("../api/metrics/meter.zig").MeterProvider;
+
+const LoggerProvider = @import("../api/logs/logger_provider.zig").LoggerProvider;
+const Context = @import("../api/context/context.zig").Context;
+
+test "TracerProvider with SDK disabled" {
+    const allocator = std.testing.allocator;
+    var testMap = std.process.EnvMap.init(allocator);
+    defer testMap.deinit();
+    try testMap.put("OTEL_SDK_DISABLED", "true");
+
+    // Create configuration with SDK disabled
+    var config_from_env = try Configuration.fromMap(allocator, &testMap);
+    defer config_from_env.deinit();
+    Configuration.set(config_from_env);
+
+    // Create TracerProvider
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+    const id_gen = IDGenerator{ .Random = random_generator };
+
+    var provider = try TracerProvider.init(allocator, id_gen);
+    defer provider.deinit();
+    defer allocator.destroy(provider);
+
+    // Verify SDK is disabled
+    try std.testing.expect(provider.sdk_disabled);
+
+    // Verify resource is empty
+    try std.testing.expectEqual(null, provider.resource);
+
+    // Verify no processors are called (sdk_disabled check should prevent it)
+    const tracer = try provider.getTracer(.{ .name = "test", .version = "1.0.0" });
+    var span = try tracer.startSpan(allocator, "test-span", .{});
+    defer span.deinit();
+
+    // Spans should be created but not processed
+    try std.testing.expectEqualStrings("test-span", span.name);
+}
+
+test "MeterProvider with SDK disabled" {
+    const allocator = std.testing.allocator;
+
+    // Create configuration with SDK disabled
+    var config_from_env = try Configuration.initFromEnv(allocator);
+    defer config_from_env.deinit();
+
+    config_from_env.sdk_disabled = true;
+    Configuration.set(config_from_env);
+
+    // Create MeterProvider
+    var provider = try MeterProvider.init(allocator);
+    defer provider.shutdown();
+
+    // Verify SDK is disabled
+    try std.testing.expect(provider.sdk_disabled);
+
+    // Verify resource is empty
+    try std.testing.expectEqual(null, provider.resource);
+
+    // Meters should still be created but won't record metrics
+    const meter = try provider.getMeter(.{ .name = "test", .version = "1.0.0" });
+    try std.testing.expectEqualStrings("test", meter.scope.name);
+}
+
+test "LoggerProvider with SDK disabled" {
+    const allocator = std.testing.allocator;
+
+    // Create configuration with SDK disabled
+    var config_from_env = try Configuration.initFromEnv(allocator);
+    defer config_from_env.deinit();
+
+    config_from_env.sdk_disabled = true;
+    Configuration.set(config_from_env);
+
+    // Create LoggerProvider
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    // Verify SDK is disabled
+    try std.testing.expect(provider.sdk_disabled);
+
+    // Verify resource is empty (null)
+    try std.testing.expect(provider.resource == null);
+
+    // Get logger
+    const logger = try provider.getLogger(.{ .name = "test", .version = "1.0.0" });
+
+    // Verify enabled() returns false when SDK disabled
+    const ctx = Context.init();
+    try std.testing.expect(!logger.enabled(.{ .context = ctx }));
+
+    // Emit should do nothing (no crash, no processing)
+    logger.emit(9, "INFO", "test message", null);
+}
+
+const IDGenerator = @import("trace/id_generator.zig").IDGenerator;
+
+test "SDK disabled with OTEL_SDK_DISABLED=false" {
+    const allocator = std.testing.allocator;
+
+    // Create configuration with SDK explicitly enabled
+    var config_from_env = try Configuration.initFromEnv(allocator);
+    defer config_from_env.deinit();
+
+    config_from_env.sdk_disabled = false;
+    Configuration.set(config_from_env);
+
+    // Create providers
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+    const id_gen = IDGenerator{ .Random = random_generator };
+
+    var tracer_provider = try TracerProvider.init(allocator, id_gen);
+    defer tracer_provider.deinit();
+    defer allocator.destroy(tracer_provider);
+
+    var meter_provider = try MeterProvider.init(allocator);
+    defer meter_provider.shutdown();
+
+    var logger_provider = try LoggerProvider.init(allocator, null);
+    defer logger_provider.deinit();
+
+    // Verify SDK is NOT disabled
+    try std.testing.expect(!tracer_provider.sdk_disabled);
+    try std.testing.expect(!meter_provider.sdk_disabled);
+    try std.testing.expect(!logger_provider.sdk_disabled);
+}
+
+test "SDK disabled by default is false" {
+    const allocator = std.testing.allocator;
+
+    // Don't set OTEL_SDK_DISABLED - should default to false
+    var config_from_env = try Configuration.initFromEnv(allocator);
+    defer config_from_env.deinit();
+
+    // Verify SDK is enabled by default
+    try std.testing.expect(!config_from_env.sdk_disabled);
 }

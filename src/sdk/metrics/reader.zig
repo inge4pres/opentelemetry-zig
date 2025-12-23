@@ -6,6 +6,9 @@ const pbcommon = @import("opentelemetry-proto").common;
 const pbresource = @import("opentelemetry-proto").resource;
 const pbmetrics = @import("opentelemetry-proto").metrics;
 
+// Import configuration module for tests
+const Configuration = @import("../config.zig").Configuration;
+
 const instrument = @import("../../api/metrics/instrument.zig");
 const Instrument = instrument.Instrument;
 const Kind = instrument.Kind;

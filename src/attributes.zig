@@ -98,6 +98,24 @@ pub const Attribute = struct {
         const ret = try std.fmt.bufPrint(&buf, "{s}={s}", .{ self.key, value });
         return allocator.dupe(u8, ret[0..ret.len]);
     }
+
+    pub fn dupe(allocator: std.mem.Allocator, attr: Attribute) !Attribute {
+        const key = try allocator.dupe(u8, attr.key);
+        errdefer allocator.free(key);
+
+        const value = switch (attr.value) {
+            .string => AttributeValue{ .string = try allocator.dupe(u8, attr.value.string) },
+            .bool => AttributeValue{ .bool = attr.value.bool },
+            .int => AttributeValue{ .int = attr.value.int },
+            .double => AttributeValue{ .double = attr.value.double },
+            .baggage => AttributeValue{ .baggage = attr.value.baggage },
+        };
+
+        return Attribute{
+            .key = key,
+            .value = value,
+        };
+    }
 };
 
 /// Creates a slice of attributes from a list of key-value pairs.
