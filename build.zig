@@ -131,7 +131,7 @@ pub fn build(b: *std.Build) !void {
     });
     // TODO add examples for other signals
 
-    const examples_dirs: []const []const u8 = &.{ "metrics", "trace", "logs", "baggage" };
+    const examples_dirs: []const []const u8 = &.{ "metrics", "trace", "logs", "baggage", "propagation" };
     for (examples_dirs) |example_dir| {
         const example = buildExamples(
             b,
