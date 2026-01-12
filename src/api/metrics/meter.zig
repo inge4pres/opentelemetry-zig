@@ -169,7 +169,7 @@ pub const MeterProvider = struct {
 
 /// Meter is a named instance that is used to record measurements.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meter
-const Meter = struct {
+pub const Meter = struct {
     scope: InstrumentationScope,
     instruments: std.StringHashMapUnmanaged(*Instrument),
     allocator: std.mem.Allocator,

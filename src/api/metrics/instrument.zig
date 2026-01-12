@@ -276,6 +276,22 @@ pub fn Counter(comptime T: type) type {
             try self.data_points.append(self.allocator, dp);
         }
 
+        /// Add the given delta to the counter with a pre-built attribute slice.
+        /// This is primarily used for C interop where attributes are passed as a slice.
+        pub fn addWithSlice(self: *Self, delta: T, attributes: ?[]Attribute) !void {
+            self.lock.lock();
+            defer self.lock.unlock();
+
+            const dp = DataPoint(T){
+                .value = delta,
+                .attributes = if (attributes) |attrs|
+                    try self.allocator.dupe(Attribute, attrs)
+                else
+                    null,
+            };
+            try self.data_points.append(self.allocator, dp);
+        }
+
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lock();
             defer self.lock.unlock();
@@ -340,6 +356,22 @@ pub fn Histogram(comptime T: type) type {
             defer self.lock.unlock();
 
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
+            try self.data_points.append(self.allocator, dp);
+        }
+
+        /// Record a value with a pre-built attribute slice.
+        /// This is primarily used for C interop where attributes are passed as a slice.
+        pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
+            self.lock.lock();
+            defer self.lock.unlock();
+
+            const dp = DataPoint(T){
+                .value = value,
+                .attributes = if (attributes) |attrs|
+                    try self.allocator.dupe(Attribute, attrs)
+                else
+                    null,
+            };
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -417,6 +449,22 @@ pub fn Gauge(comptime T: type) type {
             defer self.lock.unlock();
 
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
+            try self.data_points.append(self.allocator, dp);
+        }
+
+        /// Record a value with a pre-built attribute slice.
+        /// This is primarily used for C interop where attributes are passed as a slice.
+        pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
+            self.lock.lock();
+            defer self.lock.unlock();
+
+            const dp = DataPoint(T){
+                .value = value,
+                .attributes = if (attributes) |attrs|
+                    try self.allocator.dupe(Attribute, attrs)
+                else
+                    null,
+            };
             try self.data_points.append(self.allocator, dp);
         }
 
