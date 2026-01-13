@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const trace = @import("../../../api/trace.zig");
 const SpanExporter = @import("../span_exporter.zig").SpanExporter;
@@ -35,8 +34,6 @@ const SerializableSpan = struct {
     }
 };
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-
 /// GenericWriterExporter is the generic SpanExporter that outputs spans to the given writer.
 fn GenericWriterExporter(
     comptime Writer: type,
@@ -45,11 +42,6 @@ fn GenericWriterExporter(
         writer: Writer,
 
         const Self = @This();
-
-        const allocator = switch (builtin.mode) {
-            .Debug => debug_allocator.allocator(),
-            else => std.heap.smp_allocator,
-        };
 
         pub fn init(writer: Writer) Self {
             return Self{
@@ -62,14 +54,14 @@ fn GenericWriterExporter(
 
             // Convert spans to serializable format
             var serializable_spans = std.ArrayList(SerializableSpan){};
-            defer serializable_spans.deinit(allocator);
+            defer serializable_spans.deinit(std.heap.page_allocator);
 
             for (spans) |span| {
-                try serializable_spans.append(allocator, SerializableSpan.fromSpan(span));
+                try serializable_spans.append(std.heap.page_allocator, SerializableSpan.fromSpan(span));
             }
 
             // Handle both File.Writer (which has .interface) and direct Io.Writer types
-            var writer_interface = if (@hasField(Writer, "interface"))
+            const writer_interface = if (@hasField(Writer, "interface"))
                 &self.writer.interface
             else
                 &self.writer;
@@ -94,6 +86,14 @@ fn GenericWriterExporter(
 /// StdoutExporter outputs spans into OS stdout.
 /// ref: https://opentelemetry.io/docs/specs/otel/trace/sdk_exporters/stdout/
 pub const StdoutExporter = GenericWriterExporter(std.fs.File.Writer);
+
+/// DeprecatedStdoutExporter uses the simpler GenericWriter that doesn't require a buffer.
+/// This is useful for C bindings where buffer management is more complex.
+pub const DeprecatedStdoutExporter = GenericWriterExporter(std.io.GenericWriter(
+    std.fs.File,
+    std.fs.File.WriteError,
+    std.fs.File.write,
+));
 
 /// InmemoryExporter exports spans to in-memory buffer.
 /// it is designed for testing GenericWriterExporter.

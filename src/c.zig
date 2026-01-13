@@ -17,6 +17,7 @@
 //!
 //! Currently supported signals:
 //! - Metrics (see `c/metrics.zig`)
+//! - Traces (see `c/trace.zig`)
 //!
 //! ## Memory Management
 //!
@@ -36,9 +37,14 @@
 /// Provides MeterProvider, Meter, Counter, Histogram, Gauge, and related types.
 pub const metrics = @import("c/metrics.zig");
 
+/// Tracing signal C bindings.
+/// Provides TracerProvider, Tracer, Span, SpanProcessor, SpanExporter, and related types.
+pub const trace = @import("c/trace.zig");
+
 // Force the metrics module to be analyzed at comptime so exports are registered
 comptime {
     _ = metrics;
+    _ = trace;
 }
 
 // ============================================================================
@@ -71,10 +77,23 @@ pub const OtelGaugeF64 = metrics.OtelGaugeF64;
 pub const OtelMetricReader = metrics.OtelMetricReader;
 pub const OtelMetricExporter = metrics.OtelMetricExporter;
 
+// Trace opaque handle types
+pub const OtelTracerProvider = trace.OtelTracerProvider;
+pub const OtelTracer = trace.OtelTracer;
+pub const OtelSpan = trace.OtelSpan;
+pub const OtelSpanProcessor = trace.OtelSpanProcessor;
+pub const OtelSpanExporter = trace.OtelSpanExporter;
+
+// Trace enum types
+pub const OtelSpanKind = trace.OtelSpanKind;
+pub const OtelSpanStatusCode = trace.OtelSpanStatusCode;
+pub const OtelSpanStartOptions = trace.OtelSpanStartOptions;
+
 // ============================================================================
 // Tests
 // ============================================================================
 
 test {
     _ = metrics;
+    _ = trace;
 }

@@ -502,6 +502,413 @@ otel_status_t otel_metric_reader_collect(otel_metric_reader_t* reader);
  */
 void otel_metric_reader_shutdown(otel_metric_reader_t* reader);
 
+/* ============================================================================
+ * Tracing API - Opaque Handle Types
+ * ============================================================================ */
+
+/**
+ * @brief Opaque handle to a TracerProvider.
+ *
+ * TracerProvider is the entry point for the Tracing API. It provides access
+ * to Tracers which are used to create Spans.
+ */
+typedef struct otel_tracer_provider otel_tracer_provider_t;
+
+/**
+ * @brief Opaque handle to a Tracer.
+ *
+ * A Tracer is used to create Spans for recording distributed traces.
+ */
+typedef struct otel_tracer otel_tracer_t;
+
+/**
+ * @brief Opaque handle to a Span.
+ *
+ * A Span represents a single operation within a trace. Spans can be
+ * nested to form a trace tree.
+ */
+typedef struct otel_span otel_span_t;
+
+/**
+ * @brief Opaque handle to a SpanProcessor.
+ *
+ * A SpanProcessor processes spans as they are started and ended.
+ */
+typedef struct otel_span_processor otel_span_processor_t;
+
+/**
+ * @brief Opaque handle to a SpanExporter.
+ *
+ * A SpanExporter exports spans to a destination (stdout, OTLP, etc.).
+ */
+typedef struct otel_span_exporter otel_span_exporter_t;
+
+/* ============================================================================
+ * Tracing API - Enums
+ * ============================================================================ */
+
+/**
+ * @brief Span kind values.
+ *
+ * SpanKind describes the relationship between the Span, its parents,
+ * and its children in a Trace.
+ */
+typedef enum {
+    OTEL_SPAN_KIND_INTERNAL = 0, /**< Default. Internal operation */
+    OTEL_SPAN_KIND_SERVER = 1,   /**< Server-side handling of a request */
+    OTEL_SPAN_KIND_CLIENT = 2,   /**< Client-side request to a remote service */
+    OTEL_SPAN_KIND_PRODUCER = 3, /**< Initiation of an async operation */
+    OTEL_SPAN_KIND_CONSUMER = 4  /**< Processing of an async operation */
+} otel_span_kind_t;
+
+/**
+ * @brief Span status codes.
+ */
+typedef enum {
+    OTEL_SPAN_STATUS_UNSET = 0, /**< Default status */
+    OTEL_SPAN_STATUS_OK = 1,    /**< Operation completed successfully */
+    OTEL_SPAN_STATUS_ERROR = 2  /**< Operation failed */
+} otel_span_status_code_t;
+
+/**
+ * @brief Options for starting a span.
+ */
+typedef struct {
+    otel_span_kind_t kind;           /**< Span kind (default: INTERNAL) */
+    const otel_attribute_t* attributes; /**< Initial attributes (can be NULL) */
+    size_t attr_count;               /**< Number of attributes */
+    uint64_t start_timestamp_ns;     /**< Start time in nanoseconds (0 = now) */
+} otel_span_start_options_t;
+
+/* ============================================================================
+ * TracerProvider API
+ * ============================================================================ */
+
+/**
+ * @brief Create a new TracerProvider.
+ *
+ * Creates a TracerProvider that manages Tracers and their Spans.
+ * The provider must be shut down with otel_tracer_provider_shutdown()
+ * when no longer needed.
+ *
+ * @return Pointer to the TracerProvider, or NULL on error.
+ *
+ * Example:
+ * ```c
+ * otel_tracer_provider_t* provider = otel_tracer_provider_create();
+ * if (provider) {
+ *     // Use the provider...
+ *     otel_tracer_provider_shutdown(provider);
+ * }
+ * ```
+ */
+otel_tracer_provider_t* otel_tracer_provider_create(void);
+
+/**
+ * @brief Shutdown the TracerProvider and release all resources.
+ *
+ * This function flushes all pending spans, shuts down all associated
+ * processors and exporters, and frees all memory. After calling this
+ * function, the provider handle becomes invalid and must not be used.
+ *
+ * @param provider The TracerProvider to shutdown. Can be NULL (no-op).
+ */
+void otel_tracer_provider_shutdown(otel_tracer_provider_t* provider);
+
+/**
+ * @brief Get a Tracer from the TracerProvider.
+ *
+ * Returns a Tracer for the given instrumentation scope. If a Tracer with
+ * the same scope already exists, it is returned. Otherwise, a new Tracer
+ * is created.
+ *
+ * @param provider The TracerProvider handle.
+ * @param name The name of the instrumentation scope (required, null-terminated).
+ * @param version Optional version string (null-terminated, can be NULL).
+ * @param schema_url Optional schema URL (null-terminated, can be NULL).
+ * @return Pointer to the Tracer, or NULL on error.
+ *
+ * Example:
+ * ```c
+ * otel_tracer_t* tracer = otel_tracer_provider_get_tracer(
+ *     provider, "my-library", "1.0.0", NULL);
+ * ```
+ */
+otel_tracer_t* otel_tracer_provider_get_tracer(
+    otel_tracer_provider_t* provider,
+    const char* name,
+    const char* version,
+    const char* schema_url);
+
+/**
+ * @brief Add a SpanProcessor to the TracerProvider.
+ *
+ * Registers a SpanProcessor with the provider. The processor will be
+ * called for all spans created by tracers from this provider.
+ *
+ * @param provider The TracerProvider handle.
+ * @param processor The SpanProcessor to add.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_tracer_provider_add_span_processor(
+    otel_tracer_provider_t* provider,
+    otel_span_processor_t* processor);
+
+/**
+ * @brief Force flush all span processors.
+ *
+ * @param provider The TracerProvider handle.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_tracer_provider_force_flush(otel_tracer_provider_t* provider);
+
+/* ============================================================================
+ * Tracer API
+ * ============================================================================ */
+
+/**
+ * @brief Start a new Span.
+ *
+ * Creates a new span with the given name. The span must be ended with
+ * otel_span_end() when the operation completes.
+ *
+ * @param tracer The Tracer handle.
+ * @param name The span name (required, null-terminated).
+ * @param options Optional span start options (can be NULL for defaults).
+ * @return Pointer to the Span, or NULL on error.
+ *
+ * Example:
+ * ```c
+ * otel_span_t* span = otel_tracer_start_span(tracer, "my-operation", NULL);
+ * // ... do work ...
+ * otel_span_end(span);
+ * ```
+ */
+otel_span_t* otel_tracer_start_span(
+    otel_tracer_t* tracer,
+    const char* name,
+    const otel_span_start_options_t* options);
+
+/**
+ * @brief Check if the tracer is enabled.
+ *
+ * @param tracer The Tracer handle.
+ * @return true if the tracer is enabled, false otherwise.
+ */
+bool otel_tracer_is_enabled(otel_tracer_t* tracer);
+
+/* ============================================================================
+ * Span API
+ * ============================================================================ */
+
+/**
+ * @brief End a Span.
+ *
+ * Ends the span and exports it via the configured processors.
+ * After calling this function, the span handle becomes invalid.
+ *
+ * @param span The Span to end. Can be NULL (no-op).
+ */
+void otel_span_end(otel_span_t* span);
+
+/**
+ * @brief End a Span with a specific timestamp.
+ *
+ * @param span The Span to end.
+ * @param timestamp_ns End timestamp in nanoseconds since epoch.
+ */
+void otel_span_end_with_timestamp(otel_span_t* span, uint64_t timestamp_ns);
+
+/**
+ * @brief Set a string attribute on the Span.
+ *
+ * @param span The Span handle.
+ * @param key Attribute key (null-terminated).
+ * @param value Attribute value (null-terminated).
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_set_attribute_string(
+    otel_span_t* span,
+    const char* key,
+    const char* value);
+
+/**
+ * @brief Set an integer attribute on the Span.
+ *
+ * @param span The Span handle.
+ * @param key Attribute key (null-terminated).
+ * @param value Attribute value.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_set_attribute_int(
+    otel_span_t* span,
+    const char* key,
+    int64_t value);
+
+/**
+ * @brief Set a double attribute on the Span.
+ *
+ * @param span The Span handle.
+ * @param key Attribute key (null-terminated).
+ * @param value Attribute value.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_set_attribute_double(
+    otel_span_t* span,
+    const char* key,
+    double value);
+
+/**
+ * @brief Set a boolean attribute on the Span.
+ *
+ * @param span The Span handle.
+ * @param key Attribute key (null-terminated).
+ * @param value Attribute value.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_set_attribute_bool(
+    otel_span_t* span,
+    const char* key,
+    bool value);
+
+/**
+ * @brief Add an event to the Span.
+ *
+ * Events represent something that happened during a Span's lifetime.
+ *
+ * @param span The Span handle.
+ * @param name Event name (null-terminated).
+ * @param attributes Array of attributes (can be NULL).
+ * @param attr_count Number of attributes.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_add_event(
+    otel_span_t* span,
+    const char* name,
+    const otel_attribute_t* attributes,
+    size_t attr_count);
+
+/**
+ * @brief Add an event with a specific timestamp.
+ *
+ * @param span The Span handle.
+ * @param name Event name (null-terminated).
+ * @param timestamp_ns Event timestamp in nanoseconds since epoch.
+ * @param attributes Array of attributes (can be NULL).
+ * @param attr_count Number of attributes.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_add_event_with_timestamp(
+    otel_span_t* span,
+    const char* name,
+    uint64_t timestamp_ns,
+    const otel_attribute_t* attributes,
+    size_t attr_count);
+
+/**
+ * @brief Set the status of the Span.
+ *
+ * @param span The Span handle.
+ * @param code Status code.
+ * @param description Optional description (null-terminated, can be NULL).
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_set_status(
+    otel_span_t* span,
+    otel_span_status_code_t code,
+    const char* description);
+
+/**
+ * @brief Update the name of the Span.
+ *
+ * @param span The Span handle.
+ * @param name New span name (null-terminated).
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_update_name(otel_span_t* span, const char* name);
+
+/**
+ * @brief Record an exception on the Span.
+ *
+ * Records an exception as an event with standard exception attributes.
+ *
+ * @param span The Span handle.
+ * @param exception_type Exception type (null-terminated).
+ * @param message Exception message (null-terminated).
+ * @param stacktrace Optional stack trace (null-terminated, can be NULL).
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_record_exception(
+    otel_span_t* span,
+    const char* exception_type,
+    const char* message,
+    const char* stacktrace);
+
+/**
+ * @brief Check if the Span is recording.
+ *
+ * @param span The Span handle.
+ * @return true if the span is recording, false otherwise.
+ */
+bool otel_span_is_recording(otel_span_t* span);
+
+/**
+ * @brief Get the trace ID as a hex string.
+ *
+ * @param span The Span handle.
+ * @param buffer Buffer to write the hex string (must be at least 33 bytes).
+ * @param buffer_size Size of the buffer.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_get_trace_id_hex(
+    otel_span_t* span,
+    char* buffer,
+    size_t buffer_size);
+
+/**
+ * @brief Get the span ID as a hex string.
+ *
+ * @param span The Span handle.
+ * @param buffer Buffer to write the hex string (must be at least 17 bytes).
+ * @param buffer_size Size of the buffer.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_span_get_span_id_hex(
+    otel_span_t* span,
+    char* buffer,
+    size_t buffer_size);
+
+/* ============================================================================
+ * SpanExporter API
+ * ============================================================================ */
+
+/**
+ * @brief Create a stdout SpanExporter for debugging.
+ *
+ * Creates an exporter that writes spans to standard output in a
+ * human-readable JSON format. Useful for debugging and development.
+ *
+ * @return Pointer to the SpanExporter, or NULL on error.
+ */
+otel_span_exporter_t* otel_span_exporter_stdout_create(void);
+
+/* ============================================================================
+ * SpanProcessor API
+ * ============================================================================ */
+
+/**
+ * @brief Create a SimpleSpanProcessor.
+ *
+ * A SimpleSpanProcessor exports spans immediately when they end.
+ * This is useful for debugging but may not be suitable for production
+ * due to the synchronous export on the critical path.
+ *
+ * @param exporter The SpanExporter to use.
+ * @return Pointer to the SpanProcessor, or NULL on error.
+ */
+otel_span_processor_t* otel_simple_span_processor_create(
+    otel_span_exporter_t* exporter);
+
 #ifdef __cplusplus
 }
 #endif

@@ -122,33 +122,42 @@ pub fn build(b: *std.Build) !void {
     // Also install the C test executable
     b.installArtifact(c_test_exe);
 
-    // C example: basic_metrics
-    const c_example_step = b.step("example-c", "Run C basic_metrics example");
+    // C examples: basic_metrics, basic_trace
+    const c_example_step = b.step("example-c", "Build and run C examples");
 
-    const c_example_exe = b.addExecutable(.{
-        .name = "basic_metrics",
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    c_example_exe.addCSourceFile(.{
-        .file = b.path("examples/c/basic_metrics.c"),
-        .flags = &.{
-            "-std=c11",
-            "-Wall",
-            "-Wextra",
-        },
-    });
-    c_example_exe.addIncludePath(b.path("include"));
-    c_example_exe.linkLibrary(sdk_lib);
+    const c_examples = [_][]const u8{
+        "basic_metrics",
+        "basic_trace",
+    };
 
-    const run_c_example = b.addRunArtifact(c_example_exe);
-    c_example_step.dependOn(&run_c_example.step);
+    for (c_examples) |example_name| {
+        const c_example_exe = b.addExecutable(.{
+            .name = example_name,
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
 
-    // Also install the C example executable
-    b.installArtifact(c_example_exe);
+        const source_path = b.fmt("examples/c/{s}.c", .{example_name});
+        c_example_exe.addCSourceFile(.{
+            .file = b.path(source_path),
+            .flags = &.{
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+            },
+        });
+        c_example_exe.addIncludePath(b.path("include"));
+        c_example_exe.linkLibrary(sdk_lib);
+
+        const run_c_example = b.addRunArtifact(c_example_exe);
+        c_example_step.dependOn(&run_c_example.step);
+
+        // Also install each C example executable
+        b.installArtifact(c_example_exe);
+    }
 
     // Providing a way for the user to request running the unit tests.
     const test_step = b.step("test", "Run unit tests");
