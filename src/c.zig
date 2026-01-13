@@ -18,6 +18,7 @@
 //! Currently supported signals:
 //! - Metrics (see `c/metrics.zig`)
 //! - Traces (see `c/trace.zig`)
+//! - Logs (see `c/logs.zig`)
 //!
 //! ## Memory Management
 //!
@@ -41,10 +42,15 @@ pub const metrics = @import("c/metrics.zig");
 /// Provides TracerProvider, Tracer, Span, SpanProcessor, SpanExporter, and related types.
 pub const trace = @import("c/trace.zig");
 
-// Force the metrics module to be analyzed at comptime so exports are registered
+/// Logs signal C bindings.
+/// Provides LoggerProvider, Logger, LogRecordProcessor, LogRecordExporter, and related types.
+pub const logs = @import("c/logs.zig");
+
+// Force the modules to be analyzed at comptime so exports are registered
 comptime {
     _ = metrics;
     _ = trace;
+    _ = logs;
 }
 
 // ============================================================================

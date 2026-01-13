@@ -909,6 +909,203 @@ otel_span_exporter_t* otel_span_exporter_stdout_create(void);
 otel_span_processor_t* otel_simple_span_processor_create(
     otel_span_exporter_t* exporter);
 
+/* ============================================================================
+ * LOGS API
+ * ============================================================================ */
+
+/* ============================================================================
+ * Logs Opaque Handle Types
+ * ============================================================================ */
+
+/**
+ * @brief Opaque handle to a LoggerProvider.
+ *
+ * A LoggerProvider is the entry point for the Logs SDK. It provides
+ * Loggers and manages log record processors.
+ */
+typedef struct otel_logger_provider_t otel_logger_provider_t;
+
+/**
+ * @brief Opaque handle to a Logger.
+ *
+ * A Logger emits log records to the configured log record processors.
+ */
+typedef struct otel_logger_t otel_logger_t;
+
+/**
+ * @brief Opaque handle to a LogRecordProcessor.
+ *
+ * A LogRecordProcessor receives log records from Loggers and forwards
+ * them to LogRecordExporters.
+ */
+typedef struct otel_log_record_processor_t otel_log_record_processor_t;
+
+/**
+ * @brief Opaque handle to a LogRecordExporter.
+ *
+ * A LogRecordExporter exports log records to a backend.
+ */
+typedef struct otel_log_record_exporter_t otel_log_record_exporter_t;
+
+/* ============================================================================
+ * Severity Levels
+ * ============================================================================ */
+
+/**
+ * @brief Severity number values for logs (OpenTelemetry specification).
+ */
+typedef enum {
+    OTEL_SEVERITY_UNSPECIFIED = 0,
+    OTEL_SEVERITY_TRACE = 1,
+    OTEL_SEVERITY_TRACE2 = 2,
+    OTEL_SEVERITY_TRACE3 = 3,
+    OTEL_SEVERITY_TRACE4 = 4,
+    OTEL_SEVERITY_DEBUG = 5,
+    OTEL_SEVERITY_DEBUG2 = 6,
+    OTEL_SEVERITY_DEBUG3 = 7,
+    OTEL_SEVERITY_DEBUG4 = 8,
+    OTEL_SEVERITY_INFO = 9,
+    OTEL_SEVERITY_INFO2 = 10,
+    OTEL_SEVERITY_INFO3 = 11,
+    OTEL_SEVERITY_INFO4 = 12,
+    OTEL_SEVERITY_WARN = 13,
+    OTEL_SEVERITY_WARN2 = 14,
+    OTEL_SEVERITY_WARN3 = 15,
+    OTEL_SEVERITY_WARN4 = 16,
+    OTEL_SEVERITY_ERROR = 17,
+    OTEL_SEVERITY_ERROR2 = 18,
+    OTEL_SEVERITY_ERROR3 = 19,
+    OTEL_SEVERITY_ERROR4 = 20,
+    OTEL_SEVERITY_FATAL = 21,
+    OTEL_SEVERITY_FATAL2 = 22,
+    OTEL_SEVERITY_FATAL3 = 23,
+    OTEL_SEVERITY_FATAL4 = 24
+} otel_severity_number_t;
+
+/* ============================================================================
+ * LoggerProvider API
+ * ============================================================================ */
+
+/**
+ * @brief Create a new LoggerProvider.
+ *
+ * Creates a new LoggerProvider with default configuration.
+ *
+ * @return Pointer to the LoggerProvider, or NULL on error.
+ */
+otel_logger_provider_t* otel_logger_provider_create(void);
+
+/**
+ * @brief Shutdown the LoggerProvider and release all resources.
+ *
+ * Flushes any pending log records and releases all associated resources.
+ * After calling this function, the provider handle becomes invalid.
+ *
+ * @param provider The LoggerProvider to shutdown. Can be NULL (no-op).
+ */
+void otel_logger_provider_shutdown(otel_logger_provider_t* provider);
+
+/**
+ * @brief Get a Logger from the LoggerProvider.
+ *
+ * @param provider The LoggerProvider handle.
+ * @param name The name of the logger (null-terminated).
+ * @param version Optional version string (null-terminated, can be NULL).
+ * @param schema_url Optional schema URL (null-terminated, can be NULL).
+ * @return Pointer to the Logger, or NULL on error.
+ */
+otel_logger_t* otel_logger_provider_get_logger(
+    otel_logger_provider_t* provider,
+    const char* name,
+    const char* version,
+    const char* schema_url);
+
+/**
+ * @brief Add a LogRecordProcessor to the LoggerProvider.
+ *
+ * @param provider The LoggerProvider handle.
+ * @param processor The LogRecordProcessor to add.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_logger_provider_add_log_record_processor(
+    otel_logger_provider_t* provider,
+    otel_log_record_processor_t* processor);
+
+/**
+ * @brief Force flush all log record processors.
+ *
+ * Forces immediate export of all log records that have not yet been exported.
+ *
+ * @param provider The LoggerProvider handle.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_logger_provider_force_flush(otel_logger_provider_t* provider);
+
+/* ============================================================================
+ * Logger API
+ * ============================================================================ */
+
+/**
+ * @brief Emit a log record.
+ *
+ * @param logger The Logger handle.
+ * @param severity_number Severity level (use otel_severity_number_t values).
+ * @param severity_text Severity text (e.g., "INFO", "ERROR", null-terminated, can be NULL).
+ * @param body Log message body (null-terminated, can be NULL).
+ * @param attributes Array of attributes (can be NULL).
+ * @param attr_count Number of attributes.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_logger_emit(
+    otel_logger_t* logger,
+    int severity_number,
+    const char* severity_text,
+    const char* body,
+    const otel_attribute_t* attributes,
+    size_t attr_count);
+
+/**
+ * @brief Check if logging is enabled for the given severity.
+ *
+ * This method is useful for avoiding expensive operations when logging is disabled.
+ *
+ * @param logger The Logger handle.
+ * @param severity_number Severity level to check.
+ * @return true if logging is enabled, false otherwise.
+ */
+bool otel_logger_is_enabled(otel_logger_t* logger, int severity_number);
+
+/* ============================================================================
+ * LogRecordExporter API
+ * ============================================================================ */
+
+/**
+ * @brief Create a stdout LogRecordExporter for debugging.
+ *
+ * Creates an exporter that writes log records to standard output.
+ * Useful for debugging and development.
+ *
+ * @return Pointer to the LogRecordExporter, or NULL on error.
+ */
+otel_log_record_exporter_t* otel_log_record_exporter_stdout_create(void);
+
+/* ============================================================================
+ * LogRecordProcessor API
+ * ============================================================================ */
+
+/**
+ * @brief Create a SimpleLogRecordProcessor.
+ *
+ * A SimpleLogRecordProcessor exports log records immediately when they are emitted.
+ * This is useful for debugging but may not be suitable for production
+ * due to the synchronous export on the critical path.
+ *
+ * @param exporter The LogRecordExporter to use.
+ * @return Pointer to the LogRecordProcessor, or NULL on error.
+ */
+otel_log_record_processor_t* otel_simple_log_record_processor_create(
+    otel_log_record_exporter_t* exporter);
+
 #ifdef __cplusplus
 }
 #endif

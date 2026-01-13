@@ -128,6 +128,7 @@ pub fn build(b: *std.Build) !void {
     const c_examples = [_][]const u8{
         "basic_metrics",
         "basic_trace",
+        "basic_logs",
     };
 
     for (c_examples) |example_name| {
