@@ -45,6 +45,27 @@ const sdk = b.dependency("opentelemetry-sdk", .{
 });
 ```
 
+## Specification Support State
+
+### Signals
+
+| Signal | Status |
+|--------|--------|
+| Traces | ✅ |
+| Metrics | ✅ |
+| Logs | ✅ |
+| Profiles | ❌ |
+
+### OTLP Protocol
+
+| Feature | Status |
+|---------|--------|
+| HTTP/Protobuf | ✅ |
+| HTTP/JSON | ✅ |
+| gRPC | ❌ |
+| Compression (gzip) | ✅ |
+
+
 ## Features
 
 ### `std.log` Bridge for Seamless Migration
@@ -87,29 +108,62 @@ pub fn main() !void {
 
 See [examples/logs/std_log_basic.zig](./examples/logs/std_log_basic.zig) and [examples/logs/std_log_migration.zig](./examples/logs/std_log_migration.zig) for complete examples.
 
-## Specification Support State
+## C Language Bindings
 
-### Signals
+The SDK provides C-compatible bindings, allowing C programs to use OpenTelemetry instrumentation. The C API covers all three signals: Traces, Metrics, and Logs.
 
-| Signal | Status |
-|--------|--------|
-| Traces | ✅ |
-| Metrics | ✅ |
-| Logs | ✅ |
-| Profiles | ❌ |
+### Using from C
 
-### OTLP Protocol
+1. **Link with the compiled library**: Build the Zig library and link it with your C project.
 
-| Feature | Status |
-|---------|--------|
-| HTTP/Protobuf | ✅ |
-| HTTP/JSON | ✅ |
-| gRPC | ❌ |
-| Compression (gzip) | ✅ |
+2. **Include the header**: Add `include/opentelemetry.h` to your project.
+
+3. **Basic usage example**:
+
+```c
+#include "opentelemetry.h"
+
+int main() {
+    // Create a meter provider
+    otel_meter_provider_t* provider = otel_meter_provider_create();
+
+    // Create an exporter and reader
+    otel_metric_exporter_t* exporter = otel_metric_exporter_stdout_create();
+    otel_metric_reader_t* reader = otel_metric_reader_create(exporter);
+    otel_meter_provider_add_reader(provider, reader);
+
+    // Get a meter
+    otel_meter_t* meter = otel_meter_provider_get_meter(
+        provider, "my-service", "1.0.0", NULL);
+
+    // Create and use a counter
+    otel_counter_u64_t* counter = otel_meter_create_counter_u64(
+        meter, "requests", "Total requests", "1");
+    otel_counter_add_u64(counter, 1, NULL, 0);
+
+    // Collect and export metrics
+    otel_metric_reader_collect(reader);
+
+    // Cleanup
+    otel_meter_provider_shutdown(provider);
+    return 0;
+}
+```
+
+### C API Features
+
+- **Opaque handles**: All SDK objects are exposed as opaque handles for type safety
+- **Memory management**: The C API manages memory internally using page allocators
+- **Error handling**: Functions return status codes (0 for success, negative for errors)
+- **Examples**: See `examples/c/` for complete examples of traces, metrics, and logs
+
+For detailed API documentation, refer to `include/opentelemetry.h`.
 
 ## Examples
 
-Check out the [examples](./examples) folder for practical usage examples of traces, metrics, and logs.
+Check out the [examples](./examples) folder for practical usage examples:
+- `examples/` - Zig examples for traces, metrics, and logs
+- `examples/c/` - C language examples demonstrating the C API bindings
 
 ## Contributing
 

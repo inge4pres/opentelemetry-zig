@@ -95,71 +95,6 @@ pub fn build(b: *std.Build) !void {
 
     b.installArtifact(sdk_lib);
 
-    // C bindings test executable
-    const c_test_step = b.step("test-c", "Run C bindings tests");
-
-    const c_test_exe = b.addExecutable(.{
-        .name = "test_c_bindings",
-        .root_module = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    c_test_exe.addCSourceFile(.{
-        .file = b.path("examples/c/test_c_bindings.c"),
-        .flags = &.{
-            "-std=c11",
-            "-Wall",
-            "-Wextra",
-        },
-    });
-    c_test_exe.linkLibrary(sdk_lib);
-
-    const run_c_test = b.addRunArtifact(c_test_exe);
-    c_test_step.dependOn(&run_c_test.step);
-
-    // Also install the C test executable
-    b.installArtifact(c_test_exe);
-
-    // C examples: basic_metrics, basic_trace
-    const c_example_step = b.step("example-c", "Build and run C examples");
-
-    const c_examples = [_][]const u8{
-        "basic_metrics",
-        "basic_trace",
-        "basic_logs",
-    };
-
-    for (c_examples) |example_name| {
-        const c_example_exe = b.addExecutable(.{
-            .name = example_name,
-            .root_module = b.createModule(.{
-                .target = target,
-                .optimize = optimize,
-                .link_libc = true,
-            }),
-        });
-
-        const source_path = b.fmt("examples/c/{s}.c", .{example_name});
-        c_example_exe.addCSourceFile(.{
-            .file = b.path(source_path),
-            .flags = &.{
-                "-std=c11",
-                "-Wall",
-                "-Wextra",
-            },
-        });
-        c_example_exe.addIncludePath(b.path("include"));
-        c_example_exe.linkLibrary(sdk_lib);
-
-        const run_c_example = b.addRunArtifact(c_example_exe);
-        c_example_step.dependOn(&run_c_example.step);
-
-        // Also install each C example executable
-        b.installArtifact(c_example_exe);
-    }
-
     // Providing a way for the user to request running the unit tests.
     const test_step = b.step("test", "Run unit tests");
 
@@ -220,6 +155,47 @@ pub fn build(b: *std.Build) !void {
             const run_example = b.addRunArtifact(step);
             examples_step.dependOn(&run_example.step);
         }
+    }
+
+    // C examples
+    const c_example_step = b.step("examples-c", "Build and run C examples");
+
+    const c_examples = [_][]const u8{
+        "logs",
+        "metrics",
+        "trace",
+    };
+
+    for (c_examples) |example_name| {
+        const c_example_exe = b.addExecutable(.{
+            .name = example_name,
+            .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+
+        c_example_exe.addCSourceFile(.{
+            .file = b.path(b.pathJoin(&.{
+                "examples",
+                "c",
+                b.fmt("{s}.c", .{example_name}),
+            })),
+            .flags = &.{
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+            },
+        });
+        c_example_exe.addIncludePath(b.path("include"));
+        c_example_exe.linkLibrary(sdk_lib);
+
+        const run_c_example = b.addRunArtifact(c_example_exe);
+        c_example_step.dependOn(&run_c_example.step);
+
+        // Also install each C example executable
+        b.installArtifact(c_example_exe);
     }
 
     // Benchmarks
