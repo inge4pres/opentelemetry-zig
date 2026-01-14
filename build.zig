@@ -95,6 +95,13 @@ pub fn build(b: *std.Build) !void {
 
     b.installArtifact(sdk_lib);
 
+    // Install include headers for C users
+    b.installDirectory(.{
+        .source_dir = b.path("include"),
+        .install_dir = .header,
+        .install_subdir = "",
+    });
+
     // Providing a way for the user to request running the unit tests.
     const test_step = b.step("test", "Run unit tests");
 
