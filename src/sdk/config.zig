@@ -317,7 +317,7 @@ fn fromMap(allocator: std.mem.Allocator, env_map: *const std.process.EnvMap) !*C
         .service_name = if (env_map.get("OTEL_SERVICE_NAME")) |s|
             try allocator.dupe(u8, s)
         else
-            null,
+            try allocator.dupe(u8, "unknown_service"),
         .resource_attributes = if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |s|
             try allocator.dupe(u8, s)
         else
@@ -632,7 +632,7 @@ test "Configuration.initFromEnv - defaults" {
     defer config.deinit();
 
     try std.testing.expectEqual(false, config.sdk_disabled);
-    try std.testing.expectEqual(@as(?[]const u8, null), config.service_name);
+    try std.testing.expectEqualStrings("unknown_service", config.service_name.?);
     try std.testing.expectEqual(LogLevel.info, config.log_level);
     try std.testing.expectEqual(@as(usize, 2), config.trace_propagators.len);
 }
@@ -681,6 +681,17 @@ test Configuration {
     try std.testing.expectEqual(config1, config2);
 }
 
+test "Configuration OTEL_SERVICE_NAME default is unknown_service" {
+    const allocator = std.testing.allocator;
+    var env_map = std.process.EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    const config = try Configuration.fromMap(allocator, &env_map);
+    defer config.deinit();
+
+    try std.testing.expectEqualStrings("unknown_service", config.service_name.?);
+}
+
 const TracerProvider = @import("trace/provider.zig").TracerProvider;
 const RandomIDGenerator = @import("trace/id_generator.zig").RandomIDGenerator;
 
@@ -689,7 +700,7 @@ const MeterProvider = @import("../api/metrics/meter.zig").MeterProvider;
 const LoggerProvider = @import("../api/logs/logger_provider.zig").LoggerProvider;
 const Context = @import("../api/context/context.zig").Context;
 
-test "TracerProvider with SDK disabled" {
+test "Configuration TracerProvider with SDK disabled" {
     const allocator = std.testing.allocator;
     var testMap = std.process.EnvMap.init(allocator);
     defer testMap.deinit();
@@ -725,7 +736,7 @@ test "TracerProvider with SDK disabled" {
     try std.testing.expectEqualStrings("test-span", span.name);
 }
 
-test "MeterProvider with SDK disabled" {
+test "ConfigurationMeterProvider with SDK disabled" {
     const allocator = std.testing.allocator;
 
     // Create configuration with SDK disabled
@@ -750,7 +761,7 @@ test "MeterProvider with SDK disabled" {
     try std.testing.expectEqualStrings("test", meter.scope.name);
 }
 
-test "LoggerProvider with SDK disabled" {
+test "Configuration LoggerProvider with SDK disabled" {
     const allocator = std.testing.allocator;
 
     // Create configuration with SDK disabled
@@ -783,7 +794,7 @@ test "LoggerProvider with SDK disabled" {
 
 const IDGenerator = @import("trace/id_generator.zig").IDGenerator;
 
-test "SDK disabled with OTEL_SDK_DISABLED=false" {
+test "Configuration SDK disabled with OTEL_SDK_DISABLED=false" {
     const allocator = std.testing.allocator;
 
     // Create configuration with SDK explicitly enabled
@@ -815,7 +826,7 @@ test "SDK disabled with OTEL_SDK_DISABLED=false" {
     try std.testing.expect(!logger_provider.sdk_disabled);
 }
 
-test "SDK disabled by default is false" {
+test "Configuration SDK disabled by default is false" {
     const allocator = std.testing.allocator;
 
     // Don't set OTEL_SDK_DISABLED - should default to false

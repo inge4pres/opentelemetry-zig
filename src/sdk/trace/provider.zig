@@ -182,6 +182,11 @@ pub const TracerProvider = struct {
 
         self.processors.deinit(self.allocator);
 
+        // Free resource attributes
+        if (self.resource) |res| {
+            resource_attributes.freeResource(self.allocator, res);
+        }
+
         // Unlock before destroying the struct
         self.mutex.unlock();
 

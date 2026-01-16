@@ -18,6 +18,7 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
     }
 
     // Add service.name if configured
+    const has_service_name = config.service_name != null;
     if (config.service_name) |service_name| {
         const key = try allocator.dupe(u8, "service.name");
         const value = try allocator.dupe(u8, service_name);
@@ -28,8 +29,9 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
     }
 
     // Parse and add resource attributes
+    // Skip service.name from resource_attributes if OTEL_SERVICE_NAME is set (it takes precedence)
     if (config.resource_attributes) |resource_attrs| {
-        try parseResourceAttributes(allocator, resource_attrs, &attributes);
+        try parseResourceAttributes(allocator, resource_attrs, &attributes, has_service_name);
     }
 
     return try attributes.toOwnedSlice(allocator);
@@ -37,10 +39,12 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
 
 /// Parse resource attributes from comma-separated key=value pairs
 /// Format: "key1=value1,key2=value2"
+/// If skip_service_name is true, service.name entries will be skipped (OTEL_SERVICE_NAME takes precedence)
 fn parseResourceAttributes(
     allocator: std.mem.Allocator,
     attrs_str: []const u8,
     attributes: *std.ArrayList(Attribute),
+    skip_service_name: bool,
 ) !void {
     var iter = std.mem.splitScalar(u8, attrs_str, ',');
     while (iter.next()) |pair| {
@@ -58,6 +62,11 @@ fn parseResourceAttributes(
 
         if (key_part.len == 0) {
             std.log.warn("Invalid resource attribute (empty key): {s}", .{trimmed});
+            continue;
+        }
+
+        // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
+        if (skip_service_name and std.mem.eql(u8, key_part, "service.name")) {
             continue;
         }
 
@@ -228,4 +237,63 @@ test "buildFromConfig with no resource configuration" {
 
     // Should return empty slice
     try std.testing.expectEqual(@as(usize, 0), resource.len);
+}
+
+test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .service_name = "override-service",
+        .resource_attributes = "service.name=original-service,key1=value1",
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    // Should have 2 attributes: service.name (override) and key1
+    try std.testing.expectEqual(@as(usize, 2), resource.len);
+
+    // service.name should be from OTEL_SERVICE_NAME
+    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings("override-service", resource[0].value.string);
+
+    // key1 should be from OTEL_RESOURCE_ATTRIBUTES
+    try std.testing.expectEqualStrings("key1", resource[1].key);
+    try std.testing.expectEqualStrings("value1", resource[1].value.string);
+}
+
+test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .service_name = null,
+        .resource_attributes = "service.name=from-resource-attrs,key1=value1",
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    // Should have 2 attributes
+    try std.testing.expectEqual(@as(usize, 2), resource.len);
+
+    // service.name should be from OTEL_RESOURCE_ATTRIBUTES
+    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings("from-resource-attrs", resource[0].value.string);
+
+    try std.testing.expectEqualStrings("key1", resource[1].key);
+    try std.testing.expectEqualStrings("value1", resource[1].value.string);
 }

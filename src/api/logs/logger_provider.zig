@@ -117,7 +117,17 @@ pub const LoggerProvider = struct {
     pub fn init(allocator: std.mem.Allocator, resource: ?[]const Attribute) !*Self {
         const cfg = Configuration.get();
         const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
-        const cfg_resource_attributes: []Attribute = if (cfg) |c| try resource_attributes.buildFromConfig(allocator, c) else &.{};
+
+        // Only build resource attributes from config if SDK is enabled
+        const merged_resource = if (!sdk_disabled) blk: {
+            const cfg_resource_attributes: []Attribute = if (cfg) |c| try resource_attributes.buildFromConfig(allocator, c) else &.{};
+            defer if (cfg_resource_attributes.len > 0) resource_attributes.freeResource(allocator, cfg_resource_attributes);
+            break :blk try resource_attributes.mergeResources(
+                allocator,
+                if (resource) |r| r else &.{},
+                cfg_resource_attributes,
+            );
+        } else null;
 
         const provider = try allocator.create(Self);
         provider.* = Self{
@@ -129,11 +139,7 @@ pub const LoggerProvider = struct {
                 std.hash_map.default_max_load_percentage,
             ){},
             .processors = std.ArrayListUnmanaged(LogRecordProcessor){},
-            .resource = if (sdk_disabled) null else try resource_attributes.mergeResources(
-                allocator,
-                if (resource) |r| r else &.{},
-                cfg_resource_attributes,
-            ),
+            .resource = merged_resource,
             .is_shutdown = std.atomic.Value(bool).init(false),
             .sdk_disabled = sdk_disabled,
             .mutex = std.Thread.Mutex{},
