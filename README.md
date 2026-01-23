@@ -83,3 +83,7 @@ You can read more about the original proposal and discussion at:
 https://github.com/open-telemetry/community/issues/2514
 
 For a more in-depth read of why OpenTelemetry needs a Zig SDK, see ["Zig is great for Observability"](https://inge.4pr.es/zig-is-great-for-observability/).
+
+## Join the community
+
+You can find the Zig OTel SDK developers in the [Zig-o11y Discord server](https://discord.gg/5TzezG2n).
