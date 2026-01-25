@@ -17,9 +17,13 @@ pub const StdoutExporter = @import("logs/exporters/generic.zig").StdoutExporter;
 pub const InMemoryExporter = @import("logs/exporters/generic.zig").InMemoryExporter;
 pub const OTLPExporter = @import("logs/exporters/otlp.zig").OTLPExporter;
 
+// std.log bridge
+pub const std_log_bridge = @import("logs/std_log_bridge.zig");
+
 test {
     _ = @import("logs/log_record_processor.zig");
     _ = @import("logs/log_record_exporter.zig");
     _ = @import("logs/exporters/generic.zig");
     _ = @import("logs/exporters/otlp.zig");
+    _ = @import("logs/std_log_bridge.zig");
 }
