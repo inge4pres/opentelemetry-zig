@@ -6,6 +6,7 @@
 
 **[Zig docs] &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Installation](#installation) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
+**[Features](#features) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Contributing](#contributing)**
 
 [Zig docs]: https://zig-o11y.github.io/opentelemetry-sdk/
@@ -41,6 +42,48 @@ const sdk = b.dependency("opentelemetry-sdk", .{
     .optimize = optimize,
 });
 ```
+
+## Features
+
+### `std.log` Bridge for Seamless Migration
+
+The SDK includes a bridge that allows you to route Zig's standard `std.log` calls to OpenTelemetry without refactoring your entire codebase. This is perfect for gradual adoption of observability.
+
+**Quick Start:**
+
+```zig
+const std = @import("std");
+const sdk = @import("opentelemetry-sdk");
+
+// Override std.log to use OpenTelemetry
+pub const std_options: std.Options = .{
+    .logFn = sdk.logs.std_log_bridge.logFn,
+};
+
+pub fn main() !void {
+    var provider = try sdk.logs.LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    // Configure the bridge
+    try sdk.logs.std_log_bridge.configure(.{
+        .provider = provider,
+        .also_log_to_stderr = true, // Dual mode: OTel + stderr
+    });
+    defer sdk.logs.std_log_bridge.shutdown();
+
+    // Now std.log calls automatically go to OpenTelemetry!
+    std.log.info("Application started", .{});
+}
+```
+
+**Key Features:**
+- **Dual-mode logging**: Send logs to both OpenTelemetry and stderr during migration
+- **Thread-safe**: Safe for concurrent use across multiple threads
+- **Scope strategies**: Single scope for all logs, or separate scopes per Zig module
+- **Automatic severity mapping**: Zig log levels map to OpenTelemetry severity numbers
+- **Source location tracking**: Optional file/line information as attributes
+
+See [examples/logs/std_log_basic.zig](./examples/logs/std_log_basic.zig) and [examples/logs/std_log_migration.zig](./examples/logs/std_log_migration.zig) for complete examples.
 
 ## Specification Support State
 
