@@ -324,3 +324,55 @@ test "std_log_bridge severity text mapping" {
     try std.testing.expectEqualStrings("info", mapSeverityText(.info));
     try std.testing.expectEqualStrings("debug", mapSeverityText(.debug));
 }
+
+const sdk = @import("../../sdk.zig");
+const InMemoryExporter = @import("../../sdk/logs/exporters/generic.zig").InMemoryExporter;
+
+test "std_log_bridge logFn prints text for body" {
+    const provider = try LoggerProvider.init(std.testing.allocator, null);
+    defer provider.deinit();
+
+    var buf = try std.ArrayList(u8).initCapacity(std.testing.allocator, 1024);
+    defer buf.deinit(std.testing.allocator);
+
+    var in_mem: InMemoryExporter = .init(buf.writer(std.testing.allocator));
+    const exporter = in_mem.asLogRecordExporter();
+
+    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(std.testing.allocator, exporter);
+    const processor = simple_processor.asLogRecordProcessor();
+    try provider.addLogRecordProcessor(processor);
+
+    const cfg = Config{
+        .provider = provider,
+        .also_log_to_stderr = false,
+    };
+
+    try configure(cfg);
+
+    logFn(std.log.Level.debug, .test_scope, "test text", .{});
+
+    const result = try buf.toOwnedSlice(std.testing.allocator);
+    defer std.testing.allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "test text") != null);
+}
+
+test "std_log_bridge shutdown cleans up state" {
+    const allocator = std.testing.allocator;
+
+    var provider = try LoggerProvider.init(allocator, null);
+    defer provider.deinit();
+
+    try configure(.{
+        .provider = provider,
+        .also_log_to_stderr = false,
+    });
+
+    shutdown();
+
+    const state = State.get();
+    state.mutex.lock();
+    defer state.mutex.unlock();
+
+    try std.testing.expect(state.config == null);
+    try std.testing.expect(state.logger == null);
+}

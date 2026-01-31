@@ -299,12 +299,6 @@ pub const BatchingLogRecordProcessor = struct {
 
         // Remove exported log records from queue
         std.mem.copyForwards(logs.ReadableLogRecord, self.queue.items, self.queue.items[batch_size..]);
-
-        // Deinit the exported records before shrinking
-        for (export_logs) |log_record| {
-            log_record.deinit(self.allocator);
-        }
-
         self.queue.shrinkRetainingCapacity(self.queue.items.len - batch_size);
 
         // Export the batch (unlock mutex during export)
@@ -314,6 +308,11 @@ pub const BatchingLogRecordProcessor = struct {
         self.exporter.exportLogs(export_logs) catch |err| {
             std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
         };
+
+        // Deinit the exported records after export is complete
+        for (export_logs) |log_record| {
+            log_record.deinit(self.allocator);
+        }
     }
 
     fn enabled(ctx: *anyopaque, params: EnabledParameters) bool {
@@ -359,14 +358,25 @@ test "SimpleLogRecordProcessor basic functionality" {
                 const attrs = try self.allocator.alloc(@import("../../attributes.zig").Attribute, log_record.attributes.len);
                 @memcpy(attrs, log_record.attributes);
 
+                // Copy severity_text and body strings since they will be freed after export
+                const severity_text = if (log_record.severity_text) |text|
+                    try self.allocator.dupe(u8, text)
+                else
+                    null;
+
+                const body = if (log_record.body) |b|
+                    try self.allocator.dupe(u8, b)
+                else
+                    null;
+
                 try self.exported_logs.append(self.allocator, .{
                     .timestamp = log_record.timestamp,
                     .observed_timestamp = log_record.observed_timestamp,
                     .trace_id = log_record.trace_id,
                     .span_id = log_record.span_id,
                     .severity_number = log_record.severity_number,
-                    .severity_text = log_record.severity_text,
-                    .body = log_record.body,
+                    .severity_text = severity_text,
+                    .body = body,
                     .attributes = attrs,
                     .resource = log_record.resource,
                     .scope = log_record.scope,

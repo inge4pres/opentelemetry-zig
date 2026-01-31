@@ -57,7 +57,22 @@ pub const ReadWriteLogRecord = struct {
     /// Convert to immutable ReadableLogRecord for export
     pub fn toReadable(self: *const Self, allocator: std.mem.Allocator) !ReadableLogRecord {
         const attrs = try allocator.alloc(Attribute, self.attributes.items.len);
+        errdefer allocator.free(attrs);
         @memcpy(attrs, self.attributes.items);
+
+        // Copy severity_text if present
+        const severity_text = if (self.severity_text) |text|
+            try allocator.dupe(u8, text)
+        else
+            null;
+        errdefer if (severity_text) |text| allocator.free(text);
+
+        // Copy body if present
+        const body = if (self.body) |b|
+            try allocator.dupe(u8, b)
+        else
+            null;
+        errdefer if (body) |b| allocator.free(b);
 
         return ReadableLogRecord{
             .timestamp = self.timestamp,
@@ -65,8 +80,8 @@ pub const ReadWriteLogRecord = struct {
             .trace_id = self.trace_id,
             .span_id = self.span_id,
             .severity_number = self.severity_number,
-            .severity_text = self.severity_text,
-            .body = self.body,
+            .severity_text = severity_text,
+            .body = body,
             .attributes = attrs,
             .resource = self.resource,
             .scope = self.scope,
@@ -92,6 +107,8 @@ pub const ReadableLogRecord = struct {
 
     pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
         allocator.free(self.attributes);
+        if (self.severity_text) |text| allocator.free(text);
+        if (self.body) |b| allocator.free(b);
     }
 };
 
