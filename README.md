@@ -8,7 +8,7 @@
 **[Installation](#installation) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Features](#features) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Examples](#examples) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
-**[Contributing](#contributing) &nbsp;&nbsp;&bull;&nbsp;&nbsp;****
+**[Contributing](#contributing) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Community](#join-the-community)**
 
 [Zig docs]: https://zig-o11y.github.io/opentelemetry-sdk/
