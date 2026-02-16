@@ -26,4 +26,5 @@ test {
     _ = @import("logs/exporters/generic.zig");
     _ = @import("logs/exporters/otlp.zig");
     _ = @import("logs/std_log_bridge.zig");
+    _ = @import("logs/concurrency_test.zig");
 }
