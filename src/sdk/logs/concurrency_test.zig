@@ -3,7 +3,6 @@ const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attribute = @import("../../attributes.zig").Attribute;
 const Context = @import("../../api.zig").context.Context;
 
-// Import from the logger_provider.zig file directly
 const logger_provider = @import("../../api/logs/logger_provider.zig");
 const LoggerProvider = logger_provider.LoggerProvider;
 const Logger = logger_provider.Logger;
@@ -18,28 +17,11 @@ const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;
 const SimpleLogRecordProcessor = @import("log_record_processor.zig").SimpleLogRecordProcessor;
 const BatchingLogRecordProcessor = @import("log_record_processor.zig").BatchingLogRecordProcessor;
 
-/// Thread-safe counter for tracking operations in concurrent tests
-const AtomicCounter = struct {
-    value: std.atomic.Value(usize),
-
-    fn init() AtomicCounter {
-        return .{ .value = std.atomic.Value(usize).init(0) };
-    }
-
-    fn increment(self: *AtomicCounter) void {
-        _ = self.value.fetchAdd(1, .monotonic);
-    }
-
-    fn get(self: *AtomicCounter) usize {
-        return self.value.load(.monotonic);
-    }
-};
-
 /// Mock processor that counts onEmit calls
 const CountingProcessor = struct {
-    counter: *AtomicCounter,
+    counter: *std.atomic.Value(usize),
 
-    fn init(counter: *AtomicCounter) CountingProcessor {
+    fn init(counter: *std.atomic.Value(usize)) CountingProcessor {
         return .{ .counter = counter };
     }
 
@@ -139,8 +121,6 @@ const MockProcessor = struct {
     }
 };
 
-// Test helper functions
-
 fn getLoggerWorker(provider: *LoggerProvider, scope: InstrumentationScope, logger_ptr: **Logger) !void {
     const logger = try provider.getLogger(scope);
     logger_ptr.* = logger;
@@ -162,14 +142,14 @@ fn forceFlushWorker(provider: *LoggerProvider) void {
     provider.forceFlush() catch {};
 }
 
-fn enabledWorker(logger: *Logger, count: usize, counter: *AtomicCounter) void {
+fn enabledWorker(logger: *Logger, count: usize, counter: *std.atomic.Value(usize)) void {
     for (0..count) |_| {
         if (logger.enabled(.{
             .context = Context.init(),
             .severity = 9,
             .event_name = null,
         })) {
-            counter.increment();
+            _ = counter.fetchAdd(1, .monotonic);
         }
     }
 }
@@ -179,8 +159,6 @@ fn addProcessorWorker(provider: *LoggerProvider, processor: LogRecordProcessor) 
     std.Thread.sleep(1 * std.time.ns_per_ms);
     provider.addLogRecordProcessor(processor) catch {};
 }
-
-// Tests start here
 
 test "concurrent logger acquisition - same scope" {
     var provider = try LoggerProvider.init(std.testing.allocator, null);
@@ -413,7 +391,7 @@ test "concurrent enabled checks" {
     const num_threads = 10;
     const checks_per_thread = 100;
     var threads: [num_threads]std.Thread = undefined;
-    var counter = AtomicCounter.init();
+    var counter = std.atomic.Value(usize).init(0);
 
     // Spawn threads that call enabled() concurrently
     for (0..num_threads) |i| {
@@ -427,7 +405,7 @@ test "concurrent enabled checks" {
 
     // Verify all enabled checks returned true (processor.should_enable = true)
     const expected_count = num_threads * checks_per_thread;
-    try std.testing.expectEqual(expected_count, counter.get());
+    try std.testing.expectEqual(expected_count, counter.load(.monotonic));
     try std.testing.expectEqual(expected_count, mock_processor.getEnabledCount());
 }
 
@@ -533,7 +511,7 @@ test "mixed operations stress test" {
     var emit_threads: [num_emit_threads]std.Thread = undefined;
     var enabled_threads: [num_enabled_threads]std.Thread = undefined;
     var flush_threads: [num_flush_threads]std.Thread = undefined;
-    var counter = AtomicCounter.init();
+    var counter = std.atomic.Value(usize).init(0);
 
     // Start emit threads
     for (0..num_emit_threads) |i| {
@@ -574,5 +552,5 @@ test "mixed operations stress test" {
     // mock_processor2 may or may not receive calls depending on timing (added mid-flight)
     // Just verify it exists and doesn't crash - actual count is timing-dependent
     try std.testing.expect(mock_processor1.getFlushCount() >= 1);
-    try std.testing.expect(counter.get() > 0);
+    try std.testing.expect(counter.load(.monotonic) > 0);
 }
