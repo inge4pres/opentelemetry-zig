@@ -13,6 +13,11 @@ const pbcollector_metrics = @import("opentelemetry-proto").collector_metrics_v1;
 const pbcommon = @import("opentelemetry-proto").common_v1;
 const pbmetrics = @import("opentelemetry-proto").metrics_v1;
 
+const Attributes = @import("attributes.zig").Attributes;
+const Attribute = @import("attributes.zig").Attribute;
+
+const attributesToProtobufKeyValueList = @import("sdk/metrics/exporters/otlp.zig").attributesToProtobufKeyValueList;
+
 test "otlp HTTPClient send fails on non-retryable error" {
     const allocator = std.testing.allocator;
 
@@ -92,7 +97,7 @@ test "otlp HTTPClient uncompressed protobuf metrics payload" {
     defer allocator.free(endpoint);
     config.endpoint = endpoint;
 
-    var req = try oneDataPointMetricsExportRequest(allocator);
+    var req = try oneDataPointMetricsExportRequest(allocator, null);
     defer req.deinit(allocator);
 
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
@@ -115,7 +120,34 @@ test "otlp HTTPClient uncompressed json metrics payload" {
     defer allocator.free(endpoint);
     config.endpoint = endpoint;
 
-    var req = try oneDataPointMetricsExportRequest(allocator);
+    var req = try oneDataPointMetricsExportRequest(allocator, null);
+    defer req.deinit(allocator);
+
+    try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
+}
+
+// Some zig-protobuf versions incorrectly serializes `oneof` fields (e.g. AnyValue) with an extra
+// "value" wrapper in JSON output, making the payload non-conformant with the OTel spec.
+// See https://github.com/zig-o11y/opentelemetry-sdk/issues/124
+test "otlp HTTPClient http_json payload has correctly formatted attribute values" {
+    const allocator = std.testing.allocator;
+
+    var server = try HTTPTestServer.init(allocator, assertJsonAttributeValueNotDoubleNested);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    const config = try ConfigOptions.init(allocator);
+    defer config.deinit();
+    config.protocol = .http_json;
+
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+
+    var attrs_slice = [_]Attribute{.{ .key = "test.attribute", .value = .{ .string = "test-value" } }};
+    var req = try oneDataPointMetricsExportRequest(allocator, Attributes.with(&attrs_slice));
     defer req.deinit(allocator);
 
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
@@ -139,7 +171,7 @@ test "otlp HTTPClient compressed json metrics payload" {
     defer allocator.free(endpoint);
     config.endpoint = endpoint;
 
-    var req = try oneDataPointMetricsExportRequest(allocator);
+    var req = try oneDataPointMetricsExportRequest(allocator, null);
     defer req.deinit(allocator);
 
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
@@ -161,7 +193,7 @@ test "otlp HTTPClient compressed protobuf metrics payload" {
     config.endpoint = endpoint;
 
     config.compression = otlp.Compression.gzip;
-    var req = try oneDataPointMetricsExportRequest(allocator);
+    var req = try oneDataPointMetricsExportRequest(allocator, null);
     defer req.deinit(allocator);
 
     try otlp.Export(allocator, config, otlp.Signal.Data{ .metrics = req });
@@ -201,12 +233,17 @@ fn emptyMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.
     };
 }
 
-fn oneDataPointMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.ExportMetricsServiceRequest {
+fn oneDataPointMetricsExportRequest(allocator: std.mem.Allocator, data_point_attributes: ?Attributes) !pbcollector_metrics.ExportMetricsServiceRequest {
+    const pb_attrs = (try attributesToProtobufKeyValueList(
+        allocator,
+        if (data_point_attributes) |a| a.attributes else null,
+    ));
+
     var data_points = try allocator.alloc(pbmetrics.NumberDataPoint, 1);
     const data_points0 = pbmetrics.NumberDataPoint{
         .value = .{ .as_int = 42 },
         .start_time_unix_nano = @intCast(std.time.nanoTimestamp()),
-        .attributes = .empty,
+        .attributes = pb_attrs.values,
         .exemplars = .empty,
     };
     data_points[0] = data_points0;
@@ -270,6 +307,30 @@ fn assertUncompressedJsonMetricsBodyCanBeParsed(request: *http.Server.Request) a
     try std.testing.expect(body.len > 0);
     // JSON uses camelCase for field names
     try std.testing.expect(std.mem.indexOf(u8, body, "resourceMetrics") != null);
+
+    try request.respond("", .{ .status = .ok });
+}
+
+// assertJsonAttributeValueNotDoubleNested validates that the JSON body has correctly
+// serialized AnyValue fields. The zig-protobuf library has a bug where oneof fields
+// (like AnyValue.value) are wrapped with an extra "value" key in JSON output, producing:
+//   WRONG:   {"key":"test.attribute","value":{"value":{"stringValue":"test-value"}}}
+//   CORRECT: {"key":"test.attribute","value":{"stringValue":"test-value"}}
+// See https://github.com/Arwalk/zig-protobuf/issues/147
+fn assertJsonAttributeValueNotDoubleNested(request: *http.Server.Request) anyerror!void {
+    var buffer: [4096]u8 = undefined;
+    const reader = request.readerExpectNone(&buffer);
+    const body = try reader.allocRemaining(std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(body.len > 0);
+
+    // The faulty serialization includes a double "value" nesting from the oneof field.
+    // Assert the pattern is absent — this fails when the zig-protobuf bug is present.
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"value\":{\"value\":") == null);
+
+    // The string value must be present and at the correct nesting level.
+    try std.testing.expect(std.mem.indexOf(u8, body, "stringValue") != null);
 
     try request.respond("", .{ .status = .ok });
 }
@@ -475,7 +536,7 @@ test "otlp ExportFile appends metrics to file" {
     const how_many_lines = 10;
 
     for (0..how_many_lines) |_| {
-        var req = try oneDataPointMetricsExportRequest(allocator);
+        var req = try oneDataPointMetricsExportRequest(allocator, null);
         defer req.deinit(allocator);
         try otlp.ExportFile(allocator, otlp.Signal.Data{ .metrics = req }, &file);
     }
