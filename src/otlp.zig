@@ -16,6 +16,7 @@ const zlib = @cImport({
 const log = std.log.scoped(.otlp);
 
 const proto = @import("opentelemetry-proto");
+const protobuf = @import("protobuf");
 
 const pbmetrics = proto.metrics_v1;
 const pblogs = proto.logs_v1;
@@ -129,10 +130,7 @@ pub const Signal = enum {
                 .http_json => {
                     switch (self) {
                         inline else => |data| {
-                            var list: std.ArrayList(u8) = .empty;
-                            try list.ensureTotalCapacity(allocator, 4096);
-                            try list.writer(allocator).print("{f}", .{std.json.fmt(data, .{})});
-                            return try list.toOwnedSlice(allocator);
+                            return try protobuf.json.encode(data, .{}, .{ .emit_oneof_field_name = false }, allocator);
                         },
                     }
                 },
