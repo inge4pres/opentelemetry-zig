@@ -62,16 +62,7 @@ fn testMetricsHttpJson(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void 
         "test_counter_http_json",
         15,
     ) catch |err| {
-        if (err == error.ExpectedContentNotFound) {
-            const stale = common.readJsonFile(allocator, tmp_dir, "metrics.json") catch {
-                std.debug.print("  ERROR: metrics.json was never created\n", .{});
-                return error.HttpJsonMetricsNotReceivedByCollector;
-            };
-            defer allocator.free(stale);
-            std.debug.print("  ERROR: collector did not parse the http/json payload\n", .{});
-            std.debug.print("  File content (first 500 chars):\n{s}\n", .{stale[0..@min(stale.len, 500)]});
-            return error.HttpJsonMetricsNotReceivedByCollector;
-        }
+        std.debug.print("  ERROR: collector did not parse the http/json payload\n", .{});
         return err;
     };
     defer allocator.free(json_content);

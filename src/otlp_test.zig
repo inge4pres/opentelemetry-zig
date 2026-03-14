@@ -234,10 +234,10 @@ fn emptyMetricsExportRequest(allocator: std.mem.Allocator) !pbcollector_metrics.
 }
 
 fn oneDataPointMetricsExportRequest(allocator: std.mem.Allocator, data_point_attributes: ?Attributes) !pbcollector_metrics.ExportMetricsServiceRequest {
-    const pb_attrs = (try attributesToProtobufKeyValueList(
+    const pb_attrs = try attributesToProtobufKeyValueList(
         allocator,
         if (data_point_attributes) |a| a.attributes else null,
-    ));
+    );
 
     var data_points = try allocator.alloc(pbmetrics.NumberDataPoint, 1);
     const data_points0 = pbmetrics.NumberDataPoint{
