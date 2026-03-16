@@ -1,0 +1,7 @@
+# Learn about membership in the OpenTelemetry community:
+# https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md
+#
+# Learn about CODEOWNERS file format:
+# https://help.github.com/en/articles/about-code-owners
+
+* @open-telemetry/zig-approvers
