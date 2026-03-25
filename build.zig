@@ -232,10 +232,9 @@ pub fn build(b: *std.Build) !void {
 
     // Integration tests step
     const integration_step = b.step("integration", "Run integration tests (requires Docker)");
-
-    const integration_tests = buildIntegrationTests(b, b.path("integration_tests"), sdk_mod) catch |err| {
-        std.debug.print("Error building integration tests: {}\n", .{err});
-        return err;
+    const integration_tests = buildIntegrationTests(b, b.path("integration_tests"), sdk_mod) catch |build_err| {
+        std.debug.print("Error building integration tests: {}\n", .{build_err});
+        return build_err;
     };
     defer b.allocator.free(integration_tests);
     for (integration_tests) |step| {
@@ -361,6 +360,12 @@ fn buildIntegrationTests(
     var integration_tests = std.ArrayList(*std.Build.Step.Compile){};
     errdefer integration_tests.deinit(b.allocator);
 
+    var test_dir = integration_dir.getPath3(b, null).openDir("", .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return integration_tests.toOwnedSlice(b.allocator),
+        else => return err,
+    };
+    defer test_dir.close();
+
     // Create common module for shared integration test utilities
     const common_path = try integration_dir.join(b.allocator, "common.zig");
     const common_mod = b.createModule(.{
@@ -371,9 +376,6 @@ fn buildIntegrationTests(
             .{ .name = "opentelemetry-sdk", .module = otel_mod },
         },
     });
-
-    var test_dir = try integration_dir.getPath3(b, null).openDir("", .{ .iterate = true });
-    defer test_dir.close();
 
     var iter = test_dir.iterate();
     while (try iter.next()) |file| {
