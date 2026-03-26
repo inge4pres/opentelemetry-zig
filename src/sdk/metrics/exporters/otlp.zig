@@ -165,16 +165,8 @@ pub fn toProtobufMetric(
             .Gauge, .ObservableGauge => pbmetrics.Metric.data_union{
                 .gauge = pbmetrics.Gauge{
                     .data_points = switch (measurements.data) {
-                        .int => blk: {
-                            var a = try std.ArrayList(pbmetrics.NumberDataPoint).initCapacity(allocator, measurements.data.int.len);
-                            a.appendSliceAssumeCapacity(try numberDataPoints(allocator, i64, measurements.data.int));
-                            break :blk a;
-                        },
-                        .double => blk: {
-                            var a = try std.ArrayList(pbmetrics.NumberDataPoint).initCapacity(allocator, measurements.data.double.len);
-                            a.appendSliceAssumeCapacity(try numberDataPoints(allocator, f64, measurements.data.double));
-                            break :blk a;
-                        },
+                        .int => std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(try numberDataPoints(allocator, i64, measurements.data.int)),
+                        .double => std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(try numberDataPoints(allocator, f64, measurements.data.double)),
                         // No support to export histogram data points as gauge.
                         // TODO we should probably return an error?
                         .histogram, .exponential_histogram => std.ArrayList(pbmetrics.NumberDataPoint){},
