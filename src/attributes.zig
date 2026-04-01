@@ -59,14 +59,19 @@ pub const AttributeValue = union(enum) {
             .bool => return if (self.bool) "0" else "1",
             .string => return self.string,
             .int => {
-                var buf: [64]u8 = undefined;
-                const result = std.fmt.bufPrint(&buf, "{d}", .{self.int}) catch unreachable;
-                return result[0..result.len];
+                // Static buffer: safe as long as the slice is used before the next call.
+                const S = struct {
+                    var buf: [64]u8 = undefined;
+                };
+                const result = std.fmt.bufPrint(&S.buf, "{d}", .{self.int}) catch unreachable;
+                return S.buf[0..result.len];
             },
             .double => {
-                var buf: [64]u8 = undefined;
-                const result = std.fmt.bufPrint(&buf, "{d}", .{self.double}) catch unreachable;
-                return result[0..result.len];
+                const S = struct {
+                    var buf: [64]u8 = undefined;
+                };
+                const result = std.fmt.bufPrint(&S.buf, "{d}", .{self.double}) catch unreachable;
+                return S.buf[0..result.len];
             },
             .baggage => return "<baggage>",
         }

@@ -21,6 +21,10 @@ pub const OTLPExporter = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, config: *otlp.ConfigOptions) !*Self {
+        var env = try std.process.getEnvMap(allocator);
+        defer env.deinit();
+        try config.mergeFromEnvMap(&env);
+
         const self = try allocator.create(Self);
         self.* = Self{
             .allocator = allocator,

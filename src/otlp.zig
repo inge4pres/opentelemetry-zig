@@ -207,6 +207,9 @@ pub const ConfigOptions = struct {
 
     retryConfig: ExpBackoffconfig = .{},
 
+    // Tracks whether `endpoint` was allocated by us and must be freed on deinit.
+    endpoint_owned: bool = false,
+
     pub fn init(allocator: std.mem.Allocator) !*ConfigOptions {
         const s = try allocator.create(ConfigOptions);
         s.* = ConfigOptions{
@@ -221,6 +224,9 @@ pub const ConfigOptions = struct {
     }
 
     pub fn deinit(self: *ConfigOptions) void {
+        if (self.endpoint_owned) self.allocator.free(self.endpoint);
+        var it = self.custom_signal_urls.valueIterator();
+        while (it.next()) |v| self.allocator.free(v.*);
         self.custom_signal_urls.deinit();
         self.allocator.destroy(self);
     }
@@ -244,17 +250,23 @@ pub const ConfigOptions = struct {
     /// Pass the "environ" argument with std.process.getEnvMap().
     pub fn mergeFromEnvMap(self: *ConfigOptions, environ: *const std.process.EnvMap) !void {
         // customize endpoint and URLs
+        // Strings from the EnvMap are borrowed — dupe them so they outlive the EnvMap.
         if (entryFromEnvMap(environ, "ENDPOINT")) |endpoint| {
-            self.endpoint = endpoint;
+            if (self.endpoint_owned) self.allocator.free(self.endpoint);
+            self.endpoint = try self.allocator.dupe(u8, endpoint);
+            self.endpoint_owned = true;
         }
         if (entryFromEnvMap(environ, "TRACES_ENDPOINT")) |traces| {
-            try self.custom_signal_urls.put(Signal.traces, traces);
+            const owned = try self.allocator.dupe(u8, traces);
+            if (try self.custom_signal_urls.fetchPut(Signal.traces, owned)) |old| self.allocator.free(old.value);
         }
         if (entryFromEnvMap(environ, "METRICS_ENDPOINT")) |metrics| {
-            try self.custom_signal_urls.put(Signal.metrics, metrics);
+            const owned = try self.allocator.dupe(u8, metrics);
+            if (try self.custom_signal_urls.fetchPut(Signal.metrics, owned)) |old| self.allocator.free(old.value);
         }
         if (entryFromEnvMap(environ, "LOGS_ENDPOINT")) |logs| {
-            try self.custom_signal_urls.put(Signal.logs, logs);
+            const owned = try self.allocator.dupe(u8, logs);
+            if (try self.custom_signal_urls.fetchPut(Signal.logs, owned)) |old| self.allocator.free(old.value);
         }
         // connection configs
         if (entryFromEnvMap(environ, "COMPRESSION")) |compression| {
@@ -443,10 +455,6 @@ const HTTPClient = struct {
     client: http.Client,
 
     pub fn init(allocator: std.mem.Allocator, config: *ConfigOptions) !*Self {
-        var env = try std.process.getEnvMap(allocator);
-        defer env.deinit();
-        // Merge the environment variables into the config.
-        try config.mergeFromEnvMap(&env);
         try config.validate();
 
         const s = try allocator.create(Self);

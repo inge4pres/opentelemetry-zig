@@ -264,7 +264,7 @@ test "concurrent processor operations" {
     const logger = try provider.getLogger(.{ .name = "test-logger" });
 
     const num_emit_threads = 5;
-    const logs_per_thread = 50;
+    const logs_per_thread = 2000;
     var emit_threads: [num_emit_threads]std.Thread = undefined;
 
     // Spawn threads that emit logs
@@ -272,8 +272,17 @@ test "concurrent processor operations" {
         emit_threads[i] = try std.Thread.spawn(.{}, emitLogWorker, .{ logger, logs_per_thread });
     }
 
-    // While emitting, add another processor
-    const add_thread = try std.Thread.spawn(.{}, addProcessorWorker, .{ provider, mock_processor2.asLogRecordProcessor() });
+    // Add processor2 once emission has started, ensuring it receives some logs.
+    // Spin-waiting on mock_processor1's counter avoids relying on timing.
+    const AddWorker = struct {
+        fn run(p: *LoggerProvider, proc: LogRecordProcessor, emit_count: *const std.atomic.Value(usize)) void {
+            while (emit_count.load(.acquire) == 0) std.Thread.yield() catch {};
+            p.addLogRecordProcessor(proc) catch {};
+        }
+    };
+    const add_thread = try std.Thread.spawn(.{}, AddWorker.run, .{
+        provider, mock_processor2.asLogRecordProcessor(), &mock_processor1.emit_count,
+    });
 
     // Wait for all threads
     for (0..num_emit_threads) |i| {
@@ -284,7 +293,7 @@ test "concurrent processor operations" {
     // Verify both processors received calls (processor2 may have fewer due to timing)
     const total_expected = num_emit_threads * logs_per_thread;
     try std.testing.expectEqual(total_expected, mock_processor1.getEmitCount());
-    // mock_processor2 should have some calls, but exact count depends on when it was added
+    // mock_processor2 should have some calls since it was added while logs were still being emitted
     try std.testing.expect(mock_processor2.getEmitCount() > 0);
 }
 
