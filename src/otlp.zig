@@ -252,9 +252,7 @@ pub const ConfigOptions = struct {
         // customize endpoint and URLs
         // Strings from the EnvMap are borrowed — dupe them so they outlive the EnvMap.
         if (entryFromEnvMap(environ, "ENDPOINT")) |endpoint| {
-            if (self.endpoint_owned) self.allocator.free(self.endpoint);
-            self.endpoint = try self.allocator.dupe(u8, endpoint);
-            self.endpoint_owned = true;
+            try self.setEndpointFromUrl(endpoint);
         }
         if (entryFromEnvMap(environ, "TRACES_ENDPOINT")) |traces| {
             const owned = try self.allocator.dupe(u8, traces);
@@ -276,6 +274,26 @@ pub const ConfigOptions = struct {
             self.protocol = try Protocol.fromString(protocol);
         }
         // TODO implement the rest of the environment variables.
+    }
+
+    // Accepts bare host:port or a full URL; splits any scheme into self.scheme.
+    fn setEndpointFromUrl(self: *ConfigOptions, raw: []const u8) !void {
+        var value = raw;
+        if (std.mem.indexOf(u8, raw, "://") != null) {
+            const uri = Uri.parse(raw) catch return ConfigError.InvalidEndpoint;
+            var buf: ["https".len]u8 = undefined;
+            if (uri.scheme.len > buf.len) return ConfigError.InvalidScheme;
+            const lower = std.ascii.lowerString(buf[0..uri.scheme.len], uri.scheme);
+            const Scheme = @FieldType(ConfigOptions, "scheme");
+            self.scheme = std.meta.stringToEnum(Scheme, lower) orelse return ConfigError.InvalidScheme;
+            value = raw[uri.scheme.len + "://".len ..];
+        }
+        value = std.mem.trimRight(u8, value, "/");
+        if (value.len == 0) return ConfigError.InvalidEndpoint;
+        const owned = try self.allocator.dupe(u8, value);
+        if (self.endpoint_owned) self.allocator.free(self.endpoint);
+        self.endpoint = owned;
+        self.endpoint_owned = true;
     }
 
     fn entryFromEnvMap(environ: *const std.process.EnvMap, varSuffix: []const u8) ?[]const u8 {
@@ -325,6 +343,86 @@ test "otlp config from env" {
     try std.testing.expectEqualStrings(new_endpoint, config.endpoint);
     try std.testing.expectEqual(Compression.gzip, config.compression);
     try std.testing.expectEqual(Protocol.grpc, config.protocol);
+}
+
+test "otlp config from env with URL scheme in endpoint" {
+    const allocator = std.testing.allocator;
+
+    const Case = struct {
+        env: []const u8,
+        endpoint: []const u8,
+        scheme: @FieldType(ConfigOptions, "scheme"),
+        url: []const u8,
+        signal: Signal,
+    };
+    const cases = [_]Case{
+        .{
+            .env = "http://localhost:4318",
+            .endpoint = "localhost:4318",
+            .scheme = .http,
+            .signal = .traces,
+            .url = "http://localhost:4318/v1/traces",
+        },
+        .{
+            .env = "https://collector.example.com:4318/",
+            .endpoint = "collector.example.com:4318",
+            .scheme = .https,
+            .signal = .metrics,
+            .url = "https://collector.example.com:4318/v1/metrics",
+        },
+        // Uppercase scheme is still a valid URI per RFC 3986.
+        .{
+            .env = "HTTPS://collector:4318",
+            .endpoint = "collector:4318",
+            .scheme = .https,
+            .signal = .logs,
+            .url = "https://collector:4318/v1/logs",
+        },
+        // Path prefix must be preserved; spec appends /v1/{signal} to it.
+        .{
+            .env = "http://host:4318/mycollector/",
+            .endpoint = "host:4318/mycollector",
+            .scheme = .http,
+            .signal = .traces,
+            .url = "http://host:4318/mycollector/v1/traces",
+        },
+        // Multiple trailing slashes all trimmed.
+        .{
+            .env = "http://host:4318///",
+            .endpoint = "host:4318",
+            .scheme = .http,
+            .signal = .traces,
+            .url = "http://host:4318/v1/traces",
+        },
+    };
+
+    for (cases) |c| {
+        var map = std.process.EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", c.env);
+
+        var config = try ConfigOptions.init(allocator);
+        defer config.deinit();
+        try config.mergeFromEnvMap(&map);
+
+        try std.testing.expectEqualStrings(c.endpoint, config.endpoint);
+        try std.testing.expect(config.scheme == c.scheme);
+
+        const url = try config.httpUrlForSignal(c.signal, allocator);
+        defer allocator.free(url);
+        try std.testing.expectEqualStrings(c.url, url);
+    }
+
+    // Scheme-only input has no host and must be rejected.
+    {
+        var map = std.process.EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "http://");
+
+        var config = try ConfigOptions.init(allocator);
+        defer config.deinit();
+        try std.testing.expectError(ConfigError.InvalidEndpoint, config.mergeFromEnvMap(&map));
+    }
 }
 
 test "otlp config custom endpoint for singals" {
