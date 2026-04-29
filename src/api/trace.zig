@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const context = @import("context.zig");
 const attribute = @import("../attributes.zig");
 
@@ -83,7 +84,7 @@ fn serializeField(allocator: std.mem.Allocator, field_value: anytype) !attribute
             return .{ .int = field_value.value };
         },
         TraceState => {
-            var trace_state_buf = std.ArrayList(u8){};
+            var trace_state_buf = std.ArrayList(u8).empty;
             defer trace_state_buf.deinit(allocator);
 
             var iterator = field_value.entries.iterator();
@@ -220,23 +221,19 @@ pub fn deserializeSpanContext(ctx: context.Context) ?SpanContext {
     return result;
 }
 
-// Global TracerProvider management
-var global_tracer_provider: ?*TracerProvider = null;
-var global_tracer_provider_mutex: std.Thread.Mutex = .{};
+// Global TracerProvider management — stored atomically since it is a
+// single-pointer write-once-then-read pattern, no mutex needed.
+var global_tracer_provider: std.atomic.Value(?*TracerProvider) = .init(null);
 
 /// Set the global TracerProvider
 pub fn setGlobalTracerProvider(provider: *TracerProvider) void {
-    global_tracer_provider_mutex.lock();
-    defer global_tracer_provider_mutex.unlock();
-    global_tracer_provider = provider;
+    global_tracer_provider.store(provider, .release);
 }
 
 /// Get the global TracerProvider. Returns null if none has been set.
 /// Applications should use a proper TracerProvider implementation.
 pub fn getGlobalTracerProvider() ?*TracerProvider {
-    global_tracer_provider_mutex.lock();
-    defer global_tracer_provider_mutex.unlock();
-    return global_tracer_provider;
+    return global_tracer_provider.load(.acquire);
 }
 
 // Context keys for span propagation

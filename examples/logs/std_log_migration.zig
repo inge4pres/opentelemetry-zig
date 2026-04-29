@@ -7,9 +7,12 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
     std.debug.print("OpenTelemetry std.log Bridge - Migration Example\n", .{});
     std.debug.print("=================================================\n\n", .{});
@@ -18,12 +21,12 @@ pub fn main() !void {
     std.debug.print("- Logs ALSO appear on stderr (for compatibility)\n\n", .{});
 
     // Create a stdout exporter
-    const stdout_file = std.fs.File.stdout();
-    var stdout_exporter = sdk.logs.StdoutExporter.init(stdout_file.deprecatedWriter());
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_exporter = sdk.logs.StdoutExporter.init(std.Io.File.stdout().writer(io, &stdout_buffer));
     const exporter = stdout_exporter.asLogRecordExporter();
 
     // Create a batching processor (more realistic for production)
-    var batch_processor = try sdk.logs.BatchingLogRecordProcessor.init(allocator, exporter, .{
+    var batch_processor = try sdk.logs.BatchingLogRecordProcessor.init(allocator, io, exporter, .{
         .max_queue_size = 100,
         .scheduled_delay_millis = 1000,
         .max_export_batch_size = 10,
@@ -44,7 +47,7 @@ pub fn main() !void {
     });
     defer if (resource) |r| allocator.free(r);
 
-    var provider = try sdk.logs.LoggerProvider.init(allocator, resource);
+    var provider = try sdk.logs.LoggerProvider.init(allocator, io, resource);
     defer provider.deinit();
 
     // Add the processor

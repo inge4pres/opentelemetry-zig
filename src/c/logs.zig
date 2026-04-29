@@ -69,6 +69,12 @@ pub const OtelLogRecordProcessor = opaque {};
 /// Opaque handle to a LogRecordExporter.
 pub const OtelLogRecordExporter = opaque {};
 
+const LoggerProviderHandle = struct {
+    provider: *LoggerProvider,
+    threaded: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+};
+
 // ============================================================================
 // Severity Levels
 // ============================================================================
@@ -173,8 +179,29 @@ fn convertAttributes(
 /// Returns: Pointer to the LoggerProvider, or null on error.
 pub fn loggerProviderCreate() callconv(.c) ?*OtelLoggerProvider {
     const allocator = getCAllocator();
-    const provider = LoggerProvider.init(allocator, null) catch return null;
-    return @ptrCast(provider);
+
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+
+    const provider = LoggerProvider.init(allocator, threaded_ptr.io(), null) catch {
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+
+    const handle = allocator.create(LoggerProviderHandle) catch {
+        provider.deinit();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+    handle.* = .{
+        .provider = provider,
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
 }
 
 /// Shutdown the LoggerProvider and release all resources.
@@ -182,9 +209,12 @@ pub fn loggerProviderCreate() callconv(.c) ?*OtelLoggerProvider {
 /// After calling this function, the provider handle becomes invalid.
 pub fn loggerProviderShutdown(provider: ?*OtelLoggerProvider) callconv(.c) void {
     if (provider) |p| {
-        const lp: *LoggerProvider = @ptrCast(@alignCast(p));
-        lp.shutdown() catch {};
-        lp.deinit();
+        const handle: *LoggerProviderHandle = @ptrCast(@alignCast(p));
+        handle.provider.shutdown() catch {};
+        handle.provider.deinit();
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle);
     }
 }
 
@@ -204,8 +234,8 @@ pub fn loggerProviderGetLogger(
     schema_url: ?[*:0]const u8,
 ) callconv(.c) ?*OtelLogger {
     const p = provider orelse return null;
-    const lp: *LoggerProvider = @ptrCast(@alignCast(p));
-
+    const handle: *LoggerProviderHandle = @ptrCast(@alignCast(p));
+    const lp = handle.provider;
     const scope = InstrumentationScope{
         .name = std.mem.span(name),
         .version = if (version) |v| std.mem.span(v) else null,
@@ -226,10 +256,11 @@ pub fn loggerProviderAddLogRecordProcessor(
     const p = provider orelse return .error_invalid_argument;
     const proc = processor orelse return .error_invalid_argument;
 
-    const lp: *LoggerProvider = @ptrCast(@alignCast(p));
-    const lrp: *LogRecordProcessor = @ptrCast(@alignCast(proc));
+    const handle: *LoggerProviderHandle = @ptrCast(@alignCast(p));
+    const lp = handle.provider;
+    const proc_handle: *LogRecordProcessorHandle = @ptrCast(@alignCast(proc));
 
-    lp.addLogRecordProcessor(lrp.*) catch |err| {
+    lp.addLogRecordProcessor(proc_handle.processor) catch |err| {
         return switch (err) {
             error.OutOfMemory => .error_out_of_memory,
             error.LoggerProviderShutdown => .error_already_shutdown,
@@ -244,8 +275,8 @@ pub fn loggerProviderAddLogRecordProcessor(
 /// Returns: Status code indicating success or failure.
 pub fn loggerProviderForceFlush(provider: ?*OtelLoggerProvider) callconv(.c) OtelStatus {
     const p = provider orelse return .error_invalid_argument;
-    const lp: *LoggerProvider = @ptrCast(@alignCast(p));
-
+    const handle: *LoggerProviderHandle = @ptrCast(@alignCast(p));
+    const lp = handle.provider;
     lp.forceFlush() catch |err| {
         return switch (err) {
             error.LoggerProviderShutdown => .error_already_shutdown,
@@ -325,15 +356,30 @@ pub fn loggerIsEnabled(
 
 /// Internal wrapper for stdout exporter that holds the exporter together.
 const StdoutLogExporterWrapper = struct {
-    exporter: ?StdoutExporter = null,
+    exporter: StdoutExporter,
+    buffer: [4096]u8,
+    threaded: std.Io.Threaded,
     log_record_exporter: ?LogRecordExporter = null,
 
     fn init(self: *StdoutLogExporterWrapper) void {
         // Initialize the exporter with stdout
-        self.exporter = StdoutExporter.init(std.fs.File.stdout().deprecatedWriter());
+        self.exporter = StdoutExporter.init(std.Io.File.stdout().writer(self.threaded.io(), &self.buffer));
         // Now create the log record exporter interface
-        self.log_record_exporter = self.exporter.?.asLogRecordExporter();
+        self.log_record_exporter = self.exporter.asLogRecordExporter();
     }
+};
+
+const LogRecordExporterHandle = struct {
+    exporter: LogRecordExporter,
+    wrapper: *StdoutLogExporterWrapper,
+    allocator: std.mem.Allocator,
+};
+
+const LogRecordProcessorHandle = struct {
+    processor: LogRecordProcessor,
+    storage: *SimpleLogRecordProcessor,
+    threaded: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
 };
 
 /// Create a stdout LogRecordExporter for debugging.
@@ -344,13 +390,39 @@ pub fn logRecordExporterStdoutCreate() callconv(.c) ?*OtelLogRecordExporter {
 
     // Allocate the wrapper on the heap so everything persists
     const wrapper = allocator.create(StdoutLogExporterWrapper) catch return null;
-    wrapper.* = .{}; // Initialize with defaults
+    wrapper.* = .{
+        .buffer = undefined,
+        .threaded = std.Io.Threaded.init(allocator, .{}),
+        .exporter = undefined,
+        .log_record_exporter = null,
+    };
     wrapper.init(); // Then initialize the exporter
 
-    if (wrapper.log_record_exporter) |*lre| {
-        return @ptrCast(lre);
+    const handle = allocator.create(LogRecordExporterHandle) catch {
+        wrapper.threaded.deinit();
+        allocator.destroy(wrapper);
+        return null;
+    };
+    handle.* = .{
+        .exporter = wrapper.log_record_exporter.?,
+        .wrapper = wrapper,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
+}
+
+/// Destroy the LogRecordExporter and release all resources.
+///
+/// After calling this function, the exporter handle becomes invalid.
+pub fn logRecordExporterDestroy(exporter: ?*OtelLogRecordExporter) callconv(.c) void {
+    if (exporter) |e| {
+        const handle: *LogRecordExporterHandle = @ptrCast(@alignCast(e));
+        handle.exporter.shutdown() catch {};
+        handle.wrapper.threaded.deinit();
+        handle.allocator.destroy(handle.wrapper);
+        handle.allocator.destroy(handle);
     }
-    return null;
 }
 
 // ============================================================================
@@ -367,18 +439,44 @@ pub fn simpleLogRecordProcessorCreate(exporter: ?*OtelLogRecordExporter) callcon
     const e = exporter orelse return null;
     const allocator = getCAllocator();
 
-    const exp: *LogRecordExporter = @ptrCast(@alignCast(e));
+    const exp_handle: *LogRecordExporterHandle = @ptrCast(@alignCast(e));
 
-    const storage = allocator.create(SimpleLogRecordProcessor) catch return null;
-    storage.* = SimpleLogRecordProcessor.init(allocator, exp.*);
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
 
-    const processor_ptr = allocator.create(LogRecordProcessor) catch {
-        allocator.destroy(storage);
+    const storage = allocator.create(SimpleLogRecordProcessor) catch {
+        allocator.destroy(threaded_ptr);
         return null;
     };
-    processor_ptr.* = storage.asLogRecordProcessor();
+    storage.* = SimpleLogRecordProcessor.init(allocator, threaded_ptr.io(), exp_handle.exporter);
 
-    return @ptrCast(processor_ptr);
+    const handle = allocator.create(LogRecordProcessorHandle) catch {
+        allocator.destroy(storage);
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+    handle.* = .{
+        .processor = storage.asLogRecordProcessor(),
+        .storage = storage,
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
+}
+
+/// Destroy the LogRecordProcessor and release all resources.
+///
+/// After calling this function, the processor handle becomes invalid.
+pub fn logRecordProcessorDestroy(processor: ?*OtelLogRecordProcessor) callconv(.c) void {
+    if (processor) |p| {
+        const handle: *LogRecordProcessorHandle = @ptrCast(@alignCast(p));
+        handle.processor.shutdown() catch {};
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle.storage);
+        handle.allocator.destroy(handle);
+    }
 }
 
 // ============================================================================
@@ -399,9 +497,11 @@ comptime {
 
     // LogRecordExporter exports
     @export(&logRecordExporterStdoutCreate, .{ .name = "otel_log_record_exporter_stdout_create" });
+    @export(&logRecordExporterDestroy, .{ .name = "otel_log_record_exporter_destroy" });
 
     // LogRecordProcessor exports
     @export(&simpleLogRecordProcessorCreate, .{ .name = "otel_simple_log_record_processor_create" });
+    @export(&logRecordProcessorDestroy, .{ .name = "otel_log_record_processor_destroy" });
 }
 
 // ============================================================================
@@ -444,9 +544,11 @@ test "logs C API - full pipeline with processor" {
     // Create exporter and processor
     const exporter = logRecordExporterStdoutCreate();
     try std.testing.expect(exporter != null);
+    defer logRecordExporterDestroy(exporter);
 
     const processor = simpleLogRecordProcessorCreate(exporter);
     try std.testing.expect(processor != null);
+    defer logRecordProcessorDestroy(processor);
 
     // Add processor to provider
     const add_status = loggerProviderAddLogRecordProcessor(provider, processor);

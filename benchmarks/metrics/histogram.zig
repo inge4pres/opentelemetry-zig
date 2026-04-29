@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -9,7 +10,7 @@ threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
 
 fn getThreadRng() *std.Random.DefaultPrng {
     if (thread_rng == null) {
-        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
+        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
     }
     return &thread_rng.?;
 }
@@ -21,8 +22,8 @@ const bench_config = benchmark.Config{
     .track_allocations = true,
 };
 
-fn setupSDK(allocator: std.mem.Allocator) !*MeterProvider {
-    const mp = try MeterProvider.init(allocator);
+fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*MeterProvider {
+    const mp = try MeterProvider.init(allocator, io);
     errdefer mp.shutdown();
     return mp;
 }
@@ -34,7 +35,10 @@ const ATTR_VALUES = [_][]const u8{
 };
 
 test "Histogram_Record" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
@@ -64,7 +68,7 @@ test "Histogram_Record" {
     const static_bench = struct {
         histogram: *metrics.Histogram(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
@@ -85,14 +89,15 @@ test "Histogram_Record" {
 
     try bench.addParam("Histogram_Record", &static_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 test "Histogram_Record_With_Non_Static_Values" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
@@ -122,7 +127,7 @@ test "Histogram_Record_With_Non_Static_Values" {
     const dynamic_bench = struct {
         histogram: *metrics.Histogram(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx2 = rng.random().intRangeAtMost(u8, 0, 9);
@@ -154,15 +159,16 @@ test "Histogram_Record_With_Non_Static_Values" {
 
     try bench.addParam("Histogram_Record_With_Non_Static_Values", &dynamic_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 // Additional histogram benchmarks with different bucket configurations
 test "Histogram_Record_With_Many_Buckets" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     // Create histogram with 50 buckets similar to Rust benchmarks
@@ -198,7 +204,7 @@ test "Histogram_Record_With_Many_Buckets" {
     const many_buckets_bench = struct {
         histogram: *metrics.Histogram(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
@@ -215,14 +221,15 @@ test "Histogram_Record_With_Many_Buckets" {
 
     try bench.addParam("Histogram_Record_With_50_Buckets", &many_buckets_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 test "Histogram_Concurrent" {
-    const mp = try setupSDK(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try setupSDK(std.testing.allocator, io);
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
@@ -252,16 +259,14 @@ test "Histogram_Concurrent" {
     const concurrent_bench = ConcurrentHistogramBench{ .histogram = histogram };
     try bench.addParam("Histogram_Concurrent", &concurrent_bench, .{ .track_allocations = true });
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 const ConcurrentHistogramBench = struct {
     histogram: *metrics.Histogram(f64),
 
-    pub fn run(self: @This(), _: std.mem.Allocator) void {
+    pub fn run(self: *@This(), _: std.mem.Allocator) void {
         const t1 = std.Thread.spawn(.{}, recordFast, .{self.histogram}) catch @panic("spawn failed");
         const t2 = std.Thread.spawn(.{}, recordMedium, .{self.histogram}) catch @panic("spawn failed");
         const t3 = std.Thread.spawn(.{}, recordSlow, .{self.histogram}) catch @panic("spawn failed");
@@ -300,7 +305,10 @@ const ConcurrentHistogramBench = struct {
 };
 
 test "Histogram_Record_Varied_Values" {
-    const mp = try setupSDK(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try setupSDK(std.testing.allocator, io);
     defer mp.shutdown();
 
     // Add a view with custom explicit buckets for the histogram
@@ -330,7 +338,7 @@ test "Histogram_Record_Varied_Values" {
     const varied_bench = struct {
         histogram: *metrics.Histogram(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const test_attr: []const u8 = "varied";
             // Test with different values that hit different buckets
             const values = [_]f64{ 0.05, 0.3, 0.8, 3.2, 7.5, 25.0, 75.0, 250.0, 750.0 };
@@ -342,8 +350,6 @@ test "Histogram_Record_Varied_Values" {
 
     try bench.addParam("Histogram_Record_Varied_Values", &varied_bench, .{ .track_allocations = true });
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }

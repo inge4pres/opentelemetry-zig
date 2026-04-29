@@ -16,7 +16,7 @@
 //!
 //! pub fn main() !void {
 //!     // Setup your logger provider
-//!     var provider = try sdk.logs.LoggerProvider.init(allocator, null);
+//!     var provider = try sdk.logs.LoggerProvider.init(allocator, io, null);
 //!     defer provider.deinit();
 //!
 //!     // Configure the bridge
@@ -32,6 +32,7 @@
 //! ```
 
 const std = @import("std");
+
 const LoggerProvider = @import("../../api/logs/logger_provider.zig").LoggerProvider;
 const Logger = @import("../../api/logs/logger_provider.zig").Logger;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
@@ -71,7 +72,8 @@ pub const Config = struct {
 
 /// Thread-safe configuration state
 const State = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
+    io: ?std.Io = null,
     config: ?Config = null,
     logger: ?*Logger = null,
     // Cache for per-scope loggers when using per_zig_scope strategy
@@ -83,8 +85,8 @@ const State = struct {
     }
 
     fn deinit(self: *State) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        if (self.io) |io_inst| self.mutex.lockUncancelable(io_inst);
+        defer if (self.io) |io_inst| self.mutex.unlock(io_inst);
 
         if (self.allocator) |allocator| {
             // Clean up scope loggers cache
@@ -107,8 +109,9 @@ var global_state = State{};
 /// This must be called before any std.log calls that should be routed to OpenTelemetry.
 pub fn configure(cfg: Config) !void {
     const state = State.get();
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.io = cfg.provider.io;
+    state.mutex.lockUncancelable(cfg.provider.io);
+    defer state.mutex.unlock(state.io.?);
 
     // Clean up previous configuration if any
     if (state.allocator) |allocator| {
@@ -166,28 +169,30 @@ pub fn logFn(
 ) void {
     const state = State.get();
 
+    const io = state.io orelse return std.log.defaultLog(level, scope, format, args);
+
     // Get config and logger in a single lock to minimize critical section
-    state.mutex.lock();
+    state.mutex.lockUncancelable(io);
     const cfg = state.config;
     const logger: ?*Logger = blk: {
         if (cfg) |config| {
             // Fast path for single_scope strategy - logger is pre-fetched
             if (config.scope_strategy == .single_scope) {
                 const l = state.logger;
-                state.mutex.unlock();
+                state.mutex.unlock(io);
                 break :blk l;
             }
 
             // For per_zig_scope, check cache or create new logger
             const scope_name = comptime @tagName(scope);
             if (state.scope_loggers.get(scope_name)) |cached_logger| {
-                state.mutex.unlock();
+                state.mutex.unlock(io);
                 break :blk cached_logger;
             }
 
             // Need to create a new logger for this scope
             const allocator = state.allocator orelse {
-                state.mutex.unlock();
+                state.mutex.unlock(io);
                 break :blk null;
             };
 
@@ -197,26 +202,26 @@ pub fn logFn(
             };
 
             const new_logger = config.provider.getLogger(new_scope) catch {
-                state.mutex.unlock();
+                state.mutex.unlock(io);
                 break :blk null;
             };
 
             // Cache it (we need to dupe the scope name since it's comptime)
             const scope_name_dupe = allocator.dupe(u8, scope_name) catch {
-                state.mutex.unlock();
+                state.mutex.unlock(io);
                 break :blk new_logger;
             };
 
             state.scope_loggers.put(allocator, scope_name_dupe, new_logger) catch {
                 allocator.free(scope_name_dupe);
-                state.mutex.unlock();
+                state.mutex.unlock(io);
                 break :blk new_logger;
             };
 
-            state.mutex.unlock();
+            state.mutex.unlock(io);
             break :blk new_logger;
         } else {
-            state.mutex.unlock();
+            state.mutex.unlock(io);
             break :blk null;
         }
     };
@@ -293,8 +298,9 @@ pub fn logFn(
 
 test "std_log_bridge basic configuration" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     try configure(.{
@@ -304,8 +310,8 @@ test "std_log_bridge basic configuration" {
     defer shutdown();
 
     const state = State.get();
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(state.io.?);
+    defer state.mutex.unlock(state.io.?);
 
     try std.testing.expect(state.config != null);
     try std.testing.expect(state.logger != null);
@@ -329,27 +335,33 @@ const sdk = @import("../../sdk.zig");
 const InMemoryExporter = @import("../../sdk/logs/exporters/generic.zig").InMemoryExporter;
 
 test "std_log_bridge logFn prints text for body" {
-    const provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io2 = std.testing.io;
+    const provider = try LoggerProvider.init(std.testing.allocator, io2, null);
     defer provider.deinit();
 
     var buf = try std.ArrayList(u8).initCapacity(std.testing.allocator, 1024);
+    {
+        var in_mem: InMemoryExporter = .init(.fromArrayList(std.testing.allocator, &buf));
+        errdefer in_mem.writer.deinit();
+        const exporter = in_mem.asLogRecordExporter();
+
+        var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(std.testing.allocator, io2, exporter);
+        const processor = simple_processor.asLogRecordProcessor();
+        try provider.addLogRecordProcessor(processor);
+
+        const cfg = Config{
+            .provider = provider,
+            .also_log_to_stderr = false,
+        };
+
+        try configure(cfg);
+        defer shutdown();
+
+        logFn(std.log.Level.debug, .test_scope, "test text", .{});
+
+        buf = in_mem.writer.toArrayList();
+    }
     defer buf.deinit(std.testing.allocator);
-
-    var in_mem: InMemoryExporter = .init(buf.writer(std.testing.allocator));
-    const exporter = in_mem.asLogRecordExporter();
-
-    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(std.testing.allocator, exporter);
-    const processor = simple_processor.asLogRecordProcessor();
-    try provider.addLogRecordProcessor(processor);
-
-    const cfg = Config{
-        .provider = provider,
-        .also_log_to_stderr = false,
-    };
-
-    try configure(cfg);
-
-    logFn(std.log.Level.debug, .test_scope, "test text", .{});
 
     const result = try buf.toOwnedSlice(std.testing.allocator);
     defer std.testing.allocator.free(result);
@@ -358,8 +370,9 @@ test "std_log_bridge logFn prints text for body" {
 
 test "std_log_bridge shutdown cleans up state" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     try configure(.{
@@ -370,8 +383,8 @@ test "std_log_bridge shutdown cleans up state" {
     shutdown();
 
     const state = State.get();
-    state.mutex.lock();
-    defer state.mutex.unlock();
+    state.mutex.lockUncancelable(state.io.?);
+    defer state.mutex.unlock(state.io.?);
 
     try std.testing.expect(state.config == null);
     try std.testing.expect(state.logger == null);

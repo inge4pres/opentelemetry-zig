@@ -36,6 +36,7 @@ const MetricReader = @import("../sdk/metrics/reader.zig").MetricReader;
 const MetricExporter = @import("../sdk/metrics/exporter.zig").MetricExporter;
 const InMemoryExporter = @import("../sdk/metrics/exporters/in_memory.zig").InMemoryExporter;
 const StdoutExporter = @import("../sdk/metrics/exporters/stdout.zig").StdoutExporter;
+const InstrumentationScope = @import("../scope.zig").InstrumentationScope;
 
 // ============================================================================
 // Error Codes
@@ -81,6 +82,31 @@ pub const OtelMetricReader = opaque {};
 
 /// Opaque handle to a MetricExporter.
 pub const OtelMetricExporter = opaque {};
+
+const MeterProviderHandle = struct {
+    provider: *MeterProvider,
+    threaded: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+};
+
+const MetricExporterInner = union(enum) {
+    stdout: *StdoutExporter,
+    in_memory: *InMemoryExporter,
+};
+
+const MetricExporterHandle = struct {
+    exporter: *MetricExporter,
+    inner: MetricExporterInner,
+    threaded: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+};
+
+const MetricReaderHandle = struct {
+    reader: *MetricReader,
+    exporter: ?*MetricExporterHandle,
+    threaded: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+};
 
 // ============================================================================
 // Attribute Types
@@ -153,8 +179,28 @@ fn convertAttributes(
 ///
 /// Returns: Pointer to the MeterProvider, or null on error.
 pub fn meterProviderCreate() callconv(.c) ?*OtelMeterProvider {
-    const provider = MeterProvider.default() catch return null;
-    return @ptrCast(provider);
+    const allocator = getCAllocator();
+
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+
+    const provider = MeterProvider.init(allocator, threaded_ptr.io()) catch {
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+
+    const handle = allocator.create(MeterProviderHandle) catch {
+        provider.shutdown();
+        return null;
+    };
+    handle.* = .{
+        .provider = provider,
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
 }
 
 /// Create a new MeterProvider with a custom allocator (for advanced use).
@@ -162,8 +208,27 @@ pub fn meterProviderCreate() callconv(.c) ?*OtelMeterProvider {
 /// Returns: Pointer to the MeterProvider, or null on error.
 pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
     const allocator = getCAllocator();
-    const provider = MeterProvider.init(allocator) catch return null;
-    return @ptrCast(provider);
+
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+
+    const provider = MeterProvider.init(allocator, threaded_ptr.io()) catch {
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+
+    const handle = allocator.create(MeterProviderHandle) catch {
+        provider.shutdown();
+        return null;
+    };
+    handle.* = .{
+        .provider = provider,
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
 }
 
 /// Shutdown the MeterProvider and release all resources.
@@ -171,8 +236,11 @@ pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
 /// After calling this function, the provider handle becomes invalid.
 pub fn meterProviderShutdown(provider: ?*OtelMeterProvider) callconv(.c) void {
     if (provider) |p| {
-        const mp: *MeterProvider = @ptrCast(@alignCast(p));
-        mp.shutdown();
+        const handle: *MeterProviderHandle = @ptrCast(@alignCast(p));
+        handle.provider.shutdown();
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle);
     }
 }
 
@@ -192,9 +260,9 @@ pub fn meterProviderGetMeter(
     schema_url: ?[*:0]const u8,
 ) callconv(.c) ?*OtelMeter {
     const p = provider orelse return null;
-    const mp: *MeterProvider = @ptrCast(@alignCast(p));
-
-    const scope = @import("../scope.zig").InstrumentationScope{
+    const handle: *MeterProviderHandle = @ptrCast(@alignCast(p));
+    const mp = handle.provider;
+    const scope = InstrumentationScope{
         .name = std.mem.span(name),
         .version = if (version) |v| std.mem.span(v) else null,
         .schema_url = if (schema_url) |s| std.mem.span(s) else null,
@@ -214,8 +282,10 @@ pub fn meterProviderAddReader(
     const p = provider orelse return .error_invalid_argument;
     const r = reader orelse return .error_invalid_argument;
 
-    const mp: *MeterProvider = @ptrCast(@alignCast(p));
-    const mr: *MetricReader = @ptrCast(@alignCast(r));
+    const handle: *MeterProviderHandle = @ptrCast(@alignCast(p));
+    const mp = handle.provider;
+    const reader_handle: *MetricReaderHandle = @ptrCast(@alignCast(r));
+    const mr = reader_handle.reader;
 
     mp.addReader(mr) catch |err| {
         return switch (err) {
@@ -469,8 +539,31 @@ pub fn gaugeRecordF64(
 /// Returns: Pointer to the MetricExporter, or null on error.
 pub fn metricExporterStdoutCreate() callconv(.c) ?*OtelMetricExporter {
     const allocator = getCAllocator();
-    const result = MetricExporter.Stdout(allocator, null, null) catch return null;
-    return @ptrCast(result.exporter);
+
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+
+    const result = MetricExporter.Stdout(allocator, threaded_ptr.io(), null, null) catch {
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+
+    const handle = allocator.create(MetricExporterHandle) catch {
+        result.stdout.deinit();
+        result.exporter.shutdown();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+    handle.* = .{
+        .exporter = result.exporter,
+        .inner = .{ .stdout = result.stdout },
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
 }
 
 /// Create a new in-memory MetricExporter.
@@ -478,8 +571,48 @@ pub fn metricExporterStdoutCreate() callconv(.c) ?*OtelMetricExporter {
 /// Returns: Pointer to the MetricExporter, or null on error.
 pub fn metricExporterInMemoryCreate() callconv(.c) ?*OtelMetricExporter {
     const allocator = getCAllocator();
-    const result = MetricExporter.InMemory(allocator, null, null) catch return null;
-    return @ptrCast(result.exporter);
+
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+
+    const result = MetricExporter.InMemory(allocator, threaded_ptr.io(), null, null) catch {
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+
+    const handle = allocator.create(MetricExporterHandle) catch {
+        result.in_memory.deinit();
+        result.exporter.shutdown();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+    handle.* = .{
+        .exporter = result.exporter,
+        .inner = .{ .in_memory = result.in_memory },
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
+}
+
+/// Destroy the MetricExporter and release all resources.
+///
+/// After calling this function, the exporter handle becomes invalid.
+pub fn metricExporterDestroy(exporter: ?*OtelMetricExporter) callconv(.c) void {
+    if (exporter) |e| {
+        const handle: *MetricExporterHandle = @ptrCast(@alignCast(e));
+        handle.exporter.shutdown();
+        switch (handle.inner) {
+            .stdout => |s| s.deinit(),
+            .in_memory => |m| m.deinit(),
+        }
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle);
+    }
 }
 
 // ============================================================================
@@ -495,10 +628,33 @@ pub fn metricExporterInMemoryCreate() callconv(.c) ?*OtelMetricExporter {
 pub fn metricReaderCreate(exporter: ?*OtelMetricExporter) callconv(.c) ?*OtelMetricReader {
     const e = exporter orelse return null;
     const allocator = getCAllocator();
-    const me: *MetricExporter = @ptrCast(@alignCast(e));
+    const exp_handle: *MetricExporterHandle = @ptrCast(@alignCast(e));
+    const me = exp_handle.exporter;
 
-    const reader = MetricReader.init(allocator, me) catch return null;
-    return @ptrCast(reader);
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+
+    const reader = MetricReader.init(allocator, threaded_ptr.io(), me) catch {
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+
+    const handle = allocator.create(MetricReaderHandle) catch {
+        reader.temporal_aggregation.deinit();
+        allocator.destroy(reader);
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+    handle.* = .{
+        .reader = reader,
+        .exporter = exp_handle,
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
 }
 
 /// Trigger a collection cycle on the MetricReader.
@@ -506,7 +662,8 @@ pub fn metricReaderCreate(exporter: ?*OtelMetricExporter) callconv(.c) ?*OtelMet
 /// Returns: Status code indicating success or failure.
 pub fn metricReaderCollect(reader: ?*OtelMetricReader) callconv(.c) OtelStatus {
     const r = reader orelse return .error_invalid_argument;
-    const mr: *MetricReader = @ptrCast(@alignCast(r));
+    const handle: *MetricReaderHandle = @ptrCast(@alignCast(r));
+    const mr = handle.reader;
 
     mr.collect() catch |err| {
         return switch (err) {
@@ -525,8 +682,20 @@ pub fn metricReaderCollect(reader: ?*OtelMetricReader) callconv(.c) OtelStatus {
 /// After calling this function, the reader handle becomes invalid.
 pub fn metricReaderShutdown(reader: ?*OtelMetricReader) callconv(.c) void {
     if (reader) |r| {
-        const mr: *MetricReader = @ptrCast(@alignCast(r));
-        mr.shutdown();
+        const handle: *MetricReaderHandle = @ptrCast(@alignCast(r));
+        handle.reader.shutdown();
+        if (handle.exporter) |exp_handle| {
+            switch (exp_handle.inner) {
+                .stdout => |s| s.deinit(),
+                .in_memory => |m| m.deinit(),
+            }
+            exp_handle.threaded.deinit();
+            handle.allocator.destroy(exp_handle.threaded);
+            handle.allocator.destroy(exp_handle);
+        }
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle);
     }
 }
 
@@ -561,6 +730,7 @@ comptime {
     // MetricExporter exports
     @export(&metricExporterStdoutCreate, .{ .name = "otel_metric_exporter_stdout_create" });
     @export(&metricExporterInMemoryCreate, .{ .name = "otel_metric_exporter_inmemory_create" });
+    @export(&metricExporterDestroy, .{ .name = "otel_metric_exporter_destroy" });
 
     // MetricReader exports
     @export(&metricReaderCreate, .{ .name = "otel_metric_reader_create" });
@@ -612,6 +782,7 @@ test "metrics C API - full pipeline with reader" {
 
     const reader = metricReaderCreate(exporter);
     try std.testing.expect(reader != null);
+    defer metricReaderShutdown(reader);
 
     const add_status = meterProviderAddReader(provider, reader);
     try std.testing.expectEqual(OtelStatus.ok, add_status);

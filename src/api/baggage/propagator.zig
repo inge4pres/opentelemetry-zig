@@ -19,6 +19,7 @@
 //! const extracted = try propagator.extract(allocator, &headers, HttpGetter);
 //! ```
 const std = @import("std");
+const env = @import("env");
 const Baggage = @import("../baggage.zig").Baggage;
 const BaggageEntry = @import("../baggage.zig").BaggageEntry;
 
@@ -75,14 +76,15 @@ pub const baggage_env_var = "BAGGAGE";
 
 /// URL-encode a string according to RFC 3986.
 fn urlEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     for (input) |c| {
         if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
             try result.append(allocator, c);
         } else {
-            try result.writer(allocator).print("%{X:0>2}", .{c});
+            try result.append(allocator, '%');
+            try result.print(allocator, "{X:0>2}", .{c});
         }
     }
 
@@ -91,7 +93,7 @@ fn urlEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
 
 /// URL-decode a string.
 fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
@@ -139,7 +141,7 @@ pub fn inject(
         return; // Nothing to inject
     }
 
-    var header_value: std.ArrayList(u8) = .{};
+    var header_value: std.ArrayList(u8) = .empty;
     errdefer header_value.deinit(allocator);
 
     var first = true;
@@ -157,13 +159,13 @@ pub fn inject(
         const encoded_value = try urlEncode(allocator, entry.value_ptr.value);
         defer allocator.free(encoded_value);
 
-        try header_value.writer(allocator).print("{s}={s}", .{ encoded_key, encoded_value });
+        try header_value.print(allocator, "{s}={s}", .{ encoded_key, encoded_value });
 
         // Add metadata if present
         if (entry.value_ptr.metadata) |metadata| {
             const encoded_metadata = try urlEncode(allocator, metadata);
             defer allocator.free(encoded_metadata);
-            try header_value.writer(allocator).print(";{s}", .{encoded_metadata});
+            try header_value.print(allocator, ";{s}", .{encoded_metadata});
         }
     }
 
@@ -276,30 +278,30 @@ pub const HttpSetter = TextMapSetter(std.StringHashMap([]const u8)){
 // Environment Variable Carriers
 
 /// Environment map getter
-pub fn EnvironmentGetter(env: *const std.process.EnvMap, key: []const u8) ?[]const u8 {
-    return env.get(key);
+pub fn EnvironmentGetter(env_map: *const env.EnvMap, key: []const u8) ?[]const u8 {
+    return env_map.get(key);
 }
 
 /// Get all environment variable keys
-pub fn EnvironmentKeys(env: *const std.process.EnvMap) []const []const u8 {
-    _ = env;
+pub fn EnvironmentKeys(env_map: *const env.EnvMap) []const []const u8 {
+    _ = env_map;
     // Return empty slice - keys() method not needed for basic propagation
     return &[_][]const u8{};
 }
 
 /// Environment map setter
-pub fn EnvironmentSetter(env: *std.process.EnvMap, key: []const u8, value: []const u8) !void {
-    try env.put(key, value);
+pub fn EnvironmentSetter(env_map: *env.EnvMap, key: []const u8, value: []const u8) !void {
+    try env_map.put(key, value);
 }
 
 /// Create a TextMapGetter for environment variables
-pub const EnvGetter = TextMapGetter(std.process.EnvMap){
+pub const EnvGetter = TextMapGetter(env.EnvMap){
     .getFn = EnvironmentGetter,
     .keysFn = EnvironmentKeys,
 };
 
 /// Create a TextMapSetter for environment variables
-pub const EnvSetter = TextMapSetter(std.process.EnvMap){
+pub const EnvSetter = TextMapSetter(env.EnvMap){
     .setFn = EnvironmentSetter,
 };
 
@@ -314,10 +316,10 @@ pub const EnvSetter = TextMapSetter(std.process.EnvMap){
 /// ## Errors
 /// - `OutOfMemory`: If allocation fails during extraction
 pub fn extractFromEnvironment(allocator: std.mem.Allocator) !?Baggage {
-    var env = try std.process.getEnvMap(allocator);
-    defer env.deinit();
+    var env_map = try env.createEnvMap(allocator);
+    defer env_map.deinit();
 
-    return try extract(allocator, &env, EnvGetter);
+    return try extract(allocator, &env_map, EnvGetter);
 }
 
 /// Inject baggage into an environment map.
@@ -334,9 +336,9 @@ pub fn extractFromEnvironment(allocator: std.mem.Allocator) !?Baggage {
 pub fn injectIntoEnvironment(
     allocator: std.mem.Allocator,
     baggage: Baggage,
-    env: *std.process.EnvMap,
+    env_map: *env.EnvMap,
 ) !void {
-    try inject(allocator, baggage, env, EnvSetter);
+    try inject(allocator, baggage, env_map, EnvSetter);
 }
 
 // Tests

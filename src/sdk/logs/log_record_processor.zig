@@ -1,10 +1,56 @@
 const std = @import("std");
+const clock = @import("clock");
 const logs = @import("../../api/logs/logger_provider.zig");
 const context = @import("../../api/context.zig");
 const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attribute = @import("../../attributes.zig").Attribute;
 const EnabledParameters = @import("../../api/logs/enabled_parameters.zig").EnabledParameters;
+
+const LogRecordQueue = struct {
+    buffer: []logs.ReadableLogRecord = &.{},
+    head: usize = 0,
+    len: usize = 0,
+
+    fn init(allocator: std.mem.Allocator, capacity: usize) !LogRecordQueue {
+        return .{ .buffer = try allocator.alloc(logs.ReadableLogRecord, capacity) };
+    }
+
+    fn deinit(self: *LogRecordQueue, allocator: std.mem.Allocator) void {
+        allocator.free(self.buffer);
+        self.* = .{};
+    }
+
+    fn deinitItems(self: *LogRecordQueue, allocator: std.mem.Allocator) void {
+        for (0..self.len) |i| {
+            const index = (self.head + i) % self.buffer.len;
+            self.buffer[index].deinit(allocator);
+        }
+    }
+
+    fn push(self: *LogRecordQueue, log_record: logs.ReadableLogRecord) bool {
+        if (self.len >= self.buffer.len) return false;
+        const index = (self.head + self.len) % self.buffer.len;
+        self.buffer[index] = log_record;
+        self.len += 1;
+        return true;
+    }
+
+    fn popBatch(self: *LogRecordQueue, dest: []logs.ReadableLogRecord) []logs.ReadableLogRecord {
+        const count = @min(dest.len, self.len);
+        for (0..count) |i| {
+            const index = (self.head + i) % self.buffer.len;
+            dest[i] = self.buffer[index];
+        }
+        self.len -= count;
+        if (self.len == 0) {
+            self.head = 0;
+        } else {
+            self.head = (self.head + count) % self.buffer.len;
+        }
+        return dest[0..count];
+    }
+};
 
 /// LogRecordProcessor is an interface which allows hooks for LogRecord emitting.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#logrecordprocessor
@@ -60,15 +106,17 @@ pub const LogRecordProcessor = struct {
 pub const SimpleLogRecordProcessor = struct {
     allocator: std.mem.Allocator,
     exporter: LogRecordExporter,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
+    io: std.Io,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, exporter: LogRecordExporter) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, exporter: LogRecordExporter) Self {
         return Self{
             .allocator = allocator,
             .exporter = exporter,
-            .mutex = std.Thread.Mutex{},
+            .mutex = std.Io.Mutex.init,
+            .io = io,
         };
     }
 
@@ -87,8 +135,8 @@ pub const SimpleLogRecordProcessor = struct {
     fn onEmit(ctx: *anyopaque, log_record: *logs.ReadWriteLogRecord, _: context.Context) void {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Convert to readable and export immediately
         const readable = log_record.toReadable(self.allocator) catch |err| {
@@ -105,8 +153,8 @@ pub const SimpleLogRecordProcessor = struct {
 
     fn shutdown(ctx: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         return self.exporter.shutdown();
     }
 
@@ -135,10 +183,11 @@ pub const BatchingLogRecordProcessor = struct {
     max_export_batch_size: usize,
 
     // State
-    queue: std.ArrayList(logs.ReadableLogRecord),
-    mutex: std.Thread.Mutex,
-    condition: std.Thread.Condition,
-    export_thread: ?std.Thread,
+    queue: LogRecordQueue,
+    mutex: std.Io.Mutex,
+    wake: std.Io.Event,
+    io: std.Io,
+    export_task: ?std.Io.Future(void),
     should_shutdown: std.atomic.Value(bool),
 
     const Self = @This();
@@ -150,36 +199,43 @@ pub const BatchingLogRecordProcessor = struct {
         max_export_batch_size: usize = 512,
     };
 
-    pub fn init(allocator: std.mem.Allocator, exporter: LogRecordExporter, config: Config) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, exporter: LogRecordExporter, config: Config) !*Self {
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
+
+        const max_export_batch_size = if (config.max_queue_size == 0)
+            0
+        else
+            @max(@as(usize, 1), @min(config.max_export_batch_size, config.max_queue_size));
+        var queue = try LogRecordQueue.init(allocator, config.max_queue_size);
+        errdefer queue.deinit(allocator);
+
         self.* = Self{
             .allocator = allocator,
             .exporter = exporter,
             .max_queue_size = config.max_queue_size,
             .scheduled_delay_millis = config.scheduled_delay_millis,
             .export_timeout_millis = config.export_timeout_millis,
-            .max_export_batch_size = config.max_export_batch_size,
-            .queue = .{},
-            .mutex = std.Thread.Mutex{},
-            .condition = std.Thread.Condition{},
-            .export_thread = null,
+            .max_export_batch_size = max_export_batch_size,
+            .queue = queue,
+            .mutex = std.Io.Mutex.init,
+            .wake = .unset,
+            .io = io,
+            .export_task = null,
             .should_shutdown = std.atomic.Value(bool).init(false),
         };
 
-        // Start the export thread
-        self.export_thread = try std.Thread.spawn(.{}, exportLoop, .{self});
+        // Start the background export task using io.concurrent
+        self.export_task = try io.concurrent(exportLoop, .{self});
 
         return self;
     }
 
     pub fn deinit(self: *Self) void {
         // Shutdown should have been called before deinit
-        std.debug.assert(self.export_thread == null);
+        std.debug.assert(self.export_task == null);
 
-        // Clean up any remaining log records
-        for (self.queue.items) |log_record| {
-            log_record.deinit(self.allocator);
-        }
+        self.queue.deinitItems(self.allocator);
         self.queue.deinit(self.allocator);
         self.allocator.destroy(self);
     }
@@ -199,11 +255,11 @@ pub const BatchingLogRecordProcessor = struct {
     fn onEmit(ctx: *anyopaque, log_record: *logs.ReadWriteLogRecord, _: context.Context) void {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // If queue is full, drop the log record
-        if (self.queue.items.len >= self.max_queue_size) {
+        if (self.queue.len >= self.max_queue_size) {
             std.log.warn("BatchingLogRecordProcessor queue full, dropping log record", .{});
             return;
         }
@@ -214,15 +270,15 @@ pub const BatchingLogRecordProcessor = struct {
             return;
         };
 
-        self.queue.append(self.allocator, readable) catch {
+        if (!self.queue.push(readable)) {
             std.log.err("BatchingLogRecordProcessor failed to add log record to queue", .{});
             readable.deinit(self.allocator);
             return;
-        };
+        }
 
         // Check if we should trigger an export
-        if (self.queue.items.len >= self.max_export_batch_size) {
-            self.condition.signal();
+        if (self.queue.len >= self.max_export_batch_size) {
+            self.wake.set(self.io);
         }
     }
 
@@ -232,87 +288,87 @@ pub const BatchingLogRecordProcessor = struct {
         // Signal shutdown
         self.should_shutdown.store(true, .release);
 
-        // Wake up the export thread
-        self.mutex.lock();
-        self.condition.signal();
-        self.mutex.unlock();
-
-        // Wait for the export thread to finish
-        if (self.export_thread) |thread| {
-            thread.join();
-            self.export_thread = null;
+        // Cancel the background task (unblocks its wait and waits for it to finish)
+        if (self.export_task) |*task| {
+            task.cancel(self.io);
+            self.export_task = null;
         }
     }
 
     fn forceFlush(ctx: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Export all pending log records
-        if (self.queue.items.len > 0) {
-            self.exportBatch();
+        while (self.queue.len > 0) {
+            if (!self.exportBatch()) break;
         }
     }
 
     fn exportLoop(self: *Self) void {
-        while (!self.should_shutdown.load(.acquire)) {
-            self.mutex.lock();
+        while (true) {
+            self.mutex.lockUncancelable(self.io);
+            if (self.should_shutdown.load(.acquire)) {
+                while (self.queue.len > 0) {
+                    if (!self.exportBatch()) break;
+                }
+                self.mutex.unlock(self.io);
+                break;
+            }
+            // Only arm the wait if we don't already have a full batch ready.
+            // Resetting unconditionally races with onEmit: if onEmit fires
+            // wake.set() between the previous iteration's unlock and the
+            // reset below, the signal is lost and we block for the full
+            // scheduled_delay_millis even though a batch is queued.
+            // When max_export_batch_size == 0 (e.g. max_queue_size == 0 via
+            // OTEL_BLRP_MAX_QUEUE_SIZE=0) the naive `len < batch` comparison
+            // is false for an empty queue and would spin; always wait in
+            // that degenerate case.
+            const should_wait = self.max_export_batch_size == 0 or
+                self.queue.len < self.max_export_batch_size;
+            if (should_wait) self.wake.reset();
+            self.mutex.unlock(self.io);
 
-            // Wait for either shutdown signal, timeout, or queue to reach batch size
-            if (self.queue.items.len < self.max_export_batch_size) {
-                self.condition.timedWait(&self.mutex, self.scheduled_delay_millis * std.time.ns_per_ms) catch {};
+            if (should_wait) {
+                _ = self.wake.waitTimeout(self.io, clock.timeoutAfterMs(self.scheduled_delay_millis)) catch {};
             }
 
-            // Export if we have log records or if shutting down
-            if (self.queue.items.len > 0) {
-                self.exportBatch();
+            self.mutex.lockUncancelable(self.io);
+            if (self.queue.len > 0) {
+                _ = self.exportBatch();
             }
-
-            self.mutex.unlock();
+            self.mutex.unlock(self.io);
         }
-
-        // Final export on shutdown
-        self.mutex.lock();
-        if (self.queue.items.len > 0) {
-            self.exportBatch();
-        }
-        self.mutex.unlock();
     }
 
     /// Must be called while holding the mutex
-    fn exportBatch(self: *Self) void {
-        if (self.queue.items.len == 0) return;
+    fn exportBatch(self: *Self) bool {
+        if (self.queue.len == 0) return false;
 
-        const batch_size = @min(self.queue.items.len, self.max_export_batch_size);
-        const logs_to_export = self.queue.items[0..batch_size];
+        const batch_size = @min(self.queue.len, self.max_export_batch_size);
+        if (batch_size == 0) return false;
 
-        // Make a copy of the log records to export
         const export_logs = self.allocator.alloc(logs.ReadableLogRecord, batch_size) catch {
             std.log.err("BatchingLogRecordProcessor failed to allocate memory for export batch", .{});
-            return;
+            return false;
         };
         defer self.allocator.free(export_logs);
 
-        @memcpy(export_logs, logs_to_export);
-
-        // Remove exported log records from queue
-        std.mem.copyForwards(logs.ReadableLogRecord, self.queue.items, self.queue.items[batch_size..]);
-        self.queue.shrinkRetainingCapacity(self.queue.items.len - batch_size);
+        const logs_to_export = self.queue.popBatch(export_logs);
 
         // Export the batch (unlock mutex during export)
-        self.mutex.unlock();
-        defer self.mutex.lock();
-
-        self.exporter.exportLogs(export_logs) catch |err| {
-            std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
+        self.mutex.unlock(self.io);
+        defer self.mutex.lockUncancelable(self.io);
+        defer for (export_logs) |log_record| {
+            log_record.deinit(self.allocator);
         };
 
-        // Deinit the exported records after export is complete
-        for (export_logs) |log_record| {
-            log_record.deinit(self.allocator);
-        }
+        self.exporter.exportLogs(logs_to_export) catch |err| {
+            std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
+        };
+        return true;
     }
 
     fn enabled(ctx: *anyopaque, params: EnabledParameters) bool {
@@ -331,6 +387,7 @@ pub const BatchingLogRecordProcessor = struct {
 
 test "SimpleLogRecordProcessor basic functionality" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Mock exporter
     const MockExporter = struct {
@@ -340,7 +397,7 @@ test "SimpleLogRecordProcessor basic functionality" {
         pub fn init(alloc: std.mem.Allocator) @This() {
             return @This(){
                 .allocator = alloc,
-                .exported_logs = .{},
+                .exported_logs = .empty,
             };
         }
 
@@ -401,7 +458,7 @@ test "SimpleLogRecordProcessor basic functionality" {
     defer mock_exporter.deinit();
 
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
     // Create a test log record
@@ -425,6 +482,7 @@ test "SimpleLogRecordProcessor basic functionality" {
 
 test "SimpleLogRecordProcessor with attributes" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Mock exporter (simplified for this test)
     const MockExporter = struct {
@@ -450,7 +508,7 @@ test "SimpleLogRecordProcessor with attributes" {
 
     var mock_exporter = MockExporter{};
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
     // Create a test log record with attributes
@@ -474,6 +532,7 @@ test "SimpleLogRecordProcessor with attributes" {
 
 test "BatchingLogRecordProcessor basic functionality" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Mock exporter (simplified)
     const MockExporter = struct {
@@ -506,7 +565,7 @@ test "BatchingLogRecordProcessor basic functionality" {
     var mock_exporter = MockExporter.init();
     const exporter = mock_exporter.asLogRecordExporter();
 
-    var processor = try BatchingLogRecordProcessor.init(allocator, exporter, .{
+    var processor = try BatchingLogRecordProcessor.init(allocator, io, exporter, .{
         .max_export_batch_size = 2, // Small batch size for testing
         .scheduled_delay_millis = 100, // Short delay for testing
     });
@@ -535,7 +594,7 @@ test "BatchingLogRecordProcessor basic functionality" {
     }
 
     // Wait a bit for the background thread to process
-    std.Thread.sleep(200 * std.time.ns_per_ms);
+    clock.sleep(200 * std.time.ns_per_ms);
 
     // Force flush to export remaining log records
     try log_processor.forceFlush();
@@ -549,7 +608,7 @@ test "integration: multiple processors in pipeline" {
     const allocator = std.testing.allocator;
 
     // Track which processors were called and in what order
-    var call_order: std.ArrayList(u8) = .{};
+    var call_order: std.ArrayList(u8) = .empty;
     defer call_order.deinit(allocator);
 
     // First processor - adds an attribute

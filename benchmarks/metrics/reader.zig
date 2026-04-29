@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const benchmark = @import("benchmark");
 
 const metrics = @import("opentelemetry-sdk").metrics;
@@ -32,7 +33,7 @@ const ReaderBench = struct {
         return ReaderBench{ .reader = reader };
     }
 
-    pub fn run(self: @This(), _: std.mem.Allocator) void {
+    pub fn run(self: *@This(), _: std.mem.Allocator) void {
         self.reader.collect() catch |err| {
             std.debug.print("error during collect: {}", .{err});
             @panic("MetricReader collect failed");
@@ -41,15 +42,18 @@ const ReaderBench = struct {
 };
 
 test "MetricReader_collect" {
-    var mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
-    var me = try MetricExporter.InMemory(std.testing.allocator, null, null);
+    var me = try MetricExporter.InMemory(std.testing.allocator, io, null, null);
     defer me.in_memory.deinit();
 
     const n10k = 10000;
 
-    var reader = try MetricReader.init(std.testing.allocator, me.exporter);
+    var reader = try MetricReader.init(std.testing.allocator, io, me.exporter);
     defer reader.shutdown();
     try mp.addReader(reader);
 
@@ -67,10 +71,8 @@ test "MetricReader_collect" {
 
     try bench.addParam("MetricReader_collect_100k_datapoints", &under_test, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 
     const data = try me.in_memory.fetch(std.testing.allocator);
     defer std.testing.allocator.free(data);

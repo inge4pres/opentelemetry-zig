@@ -7,11 +7,11 @@
 //! Currently, only HTTP transport is implemented, because gRPC is not yet supported in Zig's ecosystem.
 
 const std = @import("std");
+const clock = @import("clock");
+const env = @import("env");
 const http = std.http;
 const Uri = std.Uri;
-const zlib = @cImport({
-    @cInclude("zlib.h");
-});
+const flate = std.compress.flate;
 
 const log = std.log.scoped(.otlp);
 
@@ -247,8 +247,8 @@ pub const ConfigOptions = struct {
     /// Retrieves the configuration from the environment variables.
     /// The environment variables are prefixed with "OTEL_EXPORTER_OTLP_",
     /// and they take precedence over the values set in the config.
-    /// Pass the "environ" argument with std.process.getEnvMap().
-    pub fn mergeFromEnvMap(self: *ConfigOptions, environ: *const std.process.EnvMap) !void {
+    /// Pass the "environ" argument with env.createEnvMap().
+    pub fn mergeFromEnvMap(self: *ConfigOptions, environ: *const env.EnvMap) !void {
         // customize endpoint and URLs
         // Strings from the EnvMap are borrowed — dupe them so they outlive the EnvMap.
         if (entryFromEnvMap(environ, "ENDPOINT")) |endpoint| {
@@ -288,7 +288,9 @@ pub const ConfigOptions = struct {
             self.scheme = std.meta.stringToEnum(Scheme, lower) orelse return ConfigError.InvalidScheme;
             value = raw[uri.scheme.len + "://".len ..];
         }
-        value = std.mem.trimRight(u8, value, "/");
+        while (value.len > 0 and value[value.len - 1] == '/') {
+            value = value[0 .. value.len - 1];
+        }
         if (value.len == 0) return ConfigError.InvalidEndpoint;
         const owned = try self.allocator.dupe(u8, value);
         if (self.endpoint_owned) self.allocator.free(self.endpoint);
@@ -296,7 +298,7 @@ pub const ConfigOptions = struct {
         self.endpoint_owned = true;
     }
 
-    fn entryFromEnvMap(environ: *const std.process.EnvMap, varSuffix: []const u8) ?[]const u8 {
+    fn entryFromEnvMap(environ: *const env.EnvMap, varSuffix: []const u8) ?[]const u8 {
         var env_var_name: [128]u8 = [_]u8{0} ** 128;
         for (env_var_prefix, 0..) |c, i| {
             env_var_name[i] = c;
@@ -316,7 +318,7 @@ pub const ConfigOptions = struct {
             return allocator.dupe(u8, path);
         }
         // When custom URLs are not specified, use the default logic to build the URL.
-        var url = std.ArrayList(u8){};
+        var url = std.ArrayList(u8).empty;
         try url.appendSlice(allocator, @tagName(self.scheme));
         try url.appendSlice(allocator, "://");
         try url.appendSlice(allocator, self.endpoint);
@@ -328,7 +330,7 @@ pub const ConfigOptions = struct {
 
 test "otlp config from env" {
     const allocator = std.testing.allocator;
-    var map = std.process.EnvMap.init(allocator);
+    var map = env.EnvMap.init(allocator);
     defer map.deinit();
     // Set the environment variable to test.
     const new_endpoint: []const u8 = "something:1234";
@@ -397,7 +399,7 @@ test "otlp config from env with URL scheme in endpoint" {
     };
 
     for (cases) |c| {
-        var map = std.process.EnvMap.init(allocator);
+        var map = env.EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", c.env);
 
@@ -415,7 +417,7 @@ test "otlp config from env with URL scheme in endpoint" {
 
     // Scheme-only input has no host and must be rejected.
     {
-        var map = std.process.EnvMap.init(allocator);
+        var map = env.EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "http://");
 
@@ -437,7 +439,7 @@ test "otlp config custom endpoint for singals" {
     try std.testing.expectEqualStrings("http://localhost:4317/v1/traces", traces);
     // Assert that some signals' HTTP path can be overridden from env.
 
-    var map = std.process.EnvMap.init(allocator);
+    var map = env.EnvMap.init(allocator);
     defer map.deinit();
     try map.put("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://another.com:1234/traces");
     try map.put("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics-new:1234");
@@ -491,56 +493,20 @@ pub const ExpBackoffconfig = struct {
     max_delay_ms: u64 = 60000,
 };
 
-/// Compress data using gzip format via zlib C library.
+/// Compress data using gzip format via std.compress.flate.
 /// Returns allocated slice owned by the caller.
-/// compression_level should be between 0-9, or zlib.Z_DEFAULT_COMPRESSION.
-fn compressGzip(allocator: std.mem.Allocator, input: []const u8, compression_level: c_int) ![]u8 {
-    // Initialize zlib stream
-    var stream: zlib.z_stream = undefined;
-    stream.zalloc = null;
-    stream.zfree = null;
-    stream.@"opaque" = null;
+fn compressGzip(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out_alloc = try std.Io.Writer.Allocating.initCapacity(allocator, 4096);
+    errdefer out_alloc.deinit();
 
-    // Use deflateInit2 to specify gzip format
-    // windowBits = 15 + 16 for gzip format (15 is the default, +16 adds gzip wrapper)
-    const init_result = zlib.deflateInit2_(
-        &stream,
-        compression_level,
-        zlib.Z_DEFLATED,
-        15 + 16, // gzip format
-        8, // default memory level
-        zlib.Z_DEFAULT_STRATEGY,
-        zlib.ZLIB_VERSION,
-        @sizeOf(zlib.z_stream),
-    );
-    if (init_result != zlib.Z_OK) {
-        return error.CompressionInitFailed;
-    }
-    defer _ = zlib.deflateEnd(&stream);
+    const window = try allocator.alloc(u8, flate.max_window_len);
+    defer allocator.free(window);
 
-    // Allocate output buffer
-    // Worst case: slightly larger than input due to headers
-    const max_compressed_size = zlib.deflateBound(&stream, @intCast(input.len));
-    const output = try allocator.alloc(u8, @intCast(max_compressed_size));
-    errdefer allocator.free(output);
+    var compress = try flate.Compress.init(&out_alloc.writer, window, .gzip, .level_9);
+    try compress.writer.writeAll(input);
+    try compress.finish();
 
-    // Set up input and output
-    stream.avail_in = @intCast(input.len);
-    stream.next_in = @constCast(input.ptr);
-    stream.avail_out = @intCast(max_compressed_size);
-    stream.next_out = output.ptr;
-
-    // Compress
-    const deflate_result = zlib.deflate(&stream, zlib.Z_FINISH);
-    if (deflate_result != zlib.Z_STREAM_END) {
-        allocator.free(output);
-        return error.CompressionFailed;
-    }
-
-    // Resize to actual compressed size
-    const compressed_size: usize = @intCast(stream.total_out);
-    const result = try allocator.realloc(output, compressed_size);
-    return result;
+    return try out_alloc.toOwnedSlice();
 }
 
 /// Handles the data transfer for HTTP-based OTLP.
@@ -552,7 +518,7 @@ const HTTPClient = struct {
     // Default HTTP Client
     client: http.Client,
 
-    pub fn init(allocator: std.mem.Allocator, config: *ConfigOptions) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: *ConfigOptions) !*Self {
         try config.validate();
 
         const s = try allocator.create(Self);
@@ -560,7 +526,7 @@ const HTTPClient = struct {
         s.* = Self{
             .allocator = allocator,
             .config = config,
-            .client = http.Client{ .allocator = allocator },
+            .client = http.Client{ .allocator = allocator, .io = io },
         };
 
         return s;
@@ -572,7 +538,7 @@ const HTTPClient = struct {
     }
 
     fn extraHeaders(allocator: std.mem.Allocator, config: *ConfigOptions) ![]http.Header {
-        var extra_headers = std.ArrayList(http.Header){};
+        var extra_headers = std.ArrayList(http.Header).empty;
         if (config.headers) |h| {
             const parsed_headers = try parseHeaders(allocator, h);
             defer allocator.free(parsed_headers);
@@ -611,9 +577,8 @@ const HTTPClient = struct {
             switch (self.config.compression) {
                 .none => break :req try self.allocator.dupe(u8, input_data),
                 .gzip => {
-                    // Compress the data using gzip via zlib C library.
-                    // Maximum compression level (9), favor minimum network transfer over CPU usage.
-                    break :req try compressGzip(self.allocator, input_data, zlib.Z_BEST_COMPRESSION);
+                    // Compress with max level (9), favor minimum network transfer over CPU usage.
+                    break :req try compressGzip(self.allocator, input_data);
                 },
             }
         };
@@ -657,6 +622,7 @@ const HTTPClient = struct {
                 const cloned_req = try cloneFetchOptions(retry_allocator, fetch_request);
                 const t = try std.Thread.spawn(.{}, retryRequest, .{
                     retry_allocator,
+                    self.client.io,
                     self.config.retryConfig,
                     cloned_req,
                 });
@@ -673,14 +639,14 @@ const HTTPClient = struct {
         }
     }
 
-    fn retryRequest(allocator: std.mem.Allocator, retry_config: ExpBackoffconfig, req_opts: http.Client.FetchOptions) void {
+    fn retryRequest(allocator: std.mem.Allocator, io: std.Io, retry_config: ExpBackoffconfig, req_opts: http.Client.FetchOptions) void {
         defer freeFetchOptions(allocator, req_opts);
 
         var retry_count: u32 = 0;
         while (retry_count < retry_config.max_retries) {
             defer retry_count += 1;
 
-            var client = http.Client{ .allocator = allocator };
+            var client = http.Client{ .allocator = allocator, .io = io };
             const response = client.fetch(req_opts) catch |err| {
                 client.deinit();
                 log.err("transport (retry): error connecting to server: {}", .{err});
@@ -693,7 +659,10 @@ const HTTPClient = struct {
                     return;
                 },
                 .too_many_requests, .bad_gateway, .service_unavailable, .gateway_timeout => {
-                    std.Thread.sleep(std.time.ns_per_ms * calculateDelayMillisec(
+                    // This retry runs in a dedicated OS thread (see retryRequest spawn above).
+                    // For Io.Evented users, the spawned thread still blocks the OS thread,
+                    // which is less efficient than an evented delay but correct.
+                    clock.sleep(std.time.ns_per_ms * calculateDelayMillisec(
                         retry_config.base_delay_ms,
                         retry_config.max_delay_ms,
                         retry_count,
@@ -734,7 +703,7 @@ fn calculateDelayMillisec(base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u
         max_delay_ms,
         base_delay_ms * std.math.pow(u64, 2, attempt),
     );
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(clock.timestamp()));
     const jitter = prng.random().intRangeAtMost(u64, 0, @intCast(@divTrunc(delay, 10)));
     return delay + jitter;
 }
@@ -856,10 +825,11 @@ test "otlp exp backoff delay calculation" {
 // and there is no memory leak.
 test "otlp HTTPClient send fails for missing server" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     var config = try ConfigOptions.init(allocator);
     defer config.deinit();
 
-    const client = try HTTPClient.init(allocator, config);
+    const client = try HTTPClient.init(allocator, io, config);
     defer client.deinit();
 
     const url = try config.httpUrlForSignal(.metrics, allocator);
@@ -867,19 +837,20 @@ test "otlp HTTPClient send fails for missing server" {
 
     var payload = [_]u8{0} ** 1024;
     const result = client.send(url, &payload);
-    try std.testing.expectError(std.posix.ConnectError.ConnectionRefused, result);
+    try std.testing.expectError(error.ConnectionRefused, result);
 }
 
 /// Export the data to the OTLP endpoint using the options configured with ConfigOptions.
 pub fn Export(
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: *ConfigOptions,
     otlp_payload: Signal.Data,
 ) !void {
     // FIXME better polymorphism here.
     // Determine the type of client to be used, currently only HTTP is supported.
     const client = switch (config.protocol) {
-        .http_json, .http_protobuf => try HTTPClient.init(allocator, config),
+        .http_json, .http_protobuf => try HTTPClient.init(allocator, io, config),
         .grpc => return ExportError.UnimplementedTransportProtocol,
     };
     // the `deinit()` method MUST be implemented by all clients.
@@ -907,8 +878,9 @@ pub fn Export(
 
 pub fn ExportFile(
     allocator: std.mem.Allocator,
+    io: std.Io,
     otlp_payload: Signal.Data,
-    file: *std.fs.File,
+    file: *std.Io.File,
 ) !void {
     // We always want the JSON format for file export.
     // Single-line output for each entry is concatenated with newline before flushing.
@@ -918,121 +890,17 @@ pub fn ExportFile(
     };
     defer allocator.free(payload);
 
-    // Position the file cursor at the end before writing
-    try file.seekFromEnd(0);
+    // The caller is expected to hold an open-time advisory lock (e.g. via
+    // std.Io.Dir.CreateFileOptions{ .lock = .exclusive }) when concurrent
+    // access is possible.  We do NOT lock here because POSIX flock is not
+    // ref-counted: an unlock in this function would permanently release the
+    // fd-level lock that the caller intended to hold for the file's lifetime.
+    const stat = try file.stat(io);
+    const offset = stat.size;
 
-    // Write payload and newline directly to file
-    try file.writeAll(payload);
-    try file.writeAll("\n");
-
-    try file.sync();
-}
-
-// NOTE: The following code **not used** in the current implementation, but it is here to show how it could be done.
-
-// This is an attempt to implement a priority queue for the retryable requests.
-// The retryable requests are stored in a priority queue, sorted by the next attempt time.
-// A single thread, or a thread pool, can be used to process the requests.
-fn ExpBackoffQueue(comptime Retry: type) type {
-    return struct {
-        const Self = @This();
-
-        const DelayedRetry = struct {
-            value: Retry,
-            next_attempt_time_ms: u64,
-            attempts_counter: u32,
-        };
-
-        allocator: std.mem.Allocator,
-        queue: std.PriorityQueue(DelayedRetry, void, compareRetriable),
-        mutex: std.Thread.Mutex,
-        condition: *std.Thread.Condition,
-        config: ExpBackoffconfig,
-
-        fn init(allocator: std.mem.Allocator, config: ExpBackoffconfig, signal: *std.Thread.Condition) !*Self {
-            const s = try allocator.create(Self);
-            s.* = Self{
-                .allocator = allocator,
-                .queue = std.PriorityQueue(DelayedRetry, void, compareRetriable).init(allocator, {}),
-                .mutex = std.Thread.Mutex{},
-                .condition = signal,
-                .config = config,
-            };
-            return s;
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.mutex.lock();
-            while (self.queue.removeOrNull()) |_| {}
-            self.queue.deinit();
-            self.mutex.unlock();
-
-            self.allocator.destroy(self);
-        }
-
-        fn compareRetriable(_: void, a: DelayedRetry, b: DelayedRetry) std.math.Order {
-            return std.math.order(a.next_attempt_time_ms, b.next_attempt_time_ms);
-        }
-
-        fn enqueue(self: *Self, value: Retry, attempt: u32) !void {
-            const next_attempt_ms = @as(u64, @intCast(std.time.milliTimestamp())) +
-                calculateDelayMillisec(self.config.base_delay_ms, self.config.max_delay_ms, attempt);
-
-            const req = DelayedRetry{
-                .value = value,
-                .attempts_counter = attempt,
-                .next_attempt_time_ms = next_attempt_ms,
-            };
-
-            self.mutex.lock();
-            try self.queue.add(req);
-            self.mutex.unlock();
-
-            self.condition.signal();
-        }
-
-        fn poll(self: *Self) ?Retry {
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
-            if (self.queue.removeOrNull()) |item| {
-                const now_ms = std.time.milliTimestamp();
-                if (item.next_attempt_time_ms < now_ms) {
-                    self.condition.timedWait(
-                        &self.mutex,
-                        (@as(u64, @intCast(now_ms)) - item.next_attempt_time_ms) * std.time.ns_per_ms,
-                    ) catch {
-                        return item.value;
-                    };
-                }
-                return item.value;
-            }
-            return null;
-        }
-    };
-}
-
-test "otlp ExpBackOffqueue for request FetchOptions" {
-    var cond = std.Thread.Condition{};
-
-    const cfg = ExpBackoffconfig{
-        .max_retries = 10,
-        .base_delay_ms = 1,
-        .max_delay_ms = 1,
-    };
-    const queue = ExpBackoffQueue(*http.Client.FetchOptions);
-
-    const q = try queue.init(std.testing.allocator, cfg, &cond);
-    defer q.deinit();
-
-    var req = http.Client.FetchOptions{
-        .location = .{ .url = "http://localhost:4317/v1/metrics" },
-        .method = .POST,
-    };
-    try std.testing.expect(q.poll() == null);
-
-    try q.enqueue(&req, 0);
-    try std.testing.expectEqual(req, q.poll().?.*);
+    try file.writePositionalAll(io, payload, offset);
+    try file.writePositionalAll(io, "\n", offset + payload.len);
+    try file.sync(io);
 }
 
 // Integration tests

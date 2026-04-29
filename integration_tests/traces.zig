@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace_sdk = sdk.trace;
 const trace_api = sdk.api.trace;
@@ -7,52 +8,48 @@ const common = @import("common.zig");
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    var ctx = try common.setupTestContext(allocator, "traces");
-    defer common.cleanupTestContext(&ctx);
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-    // Run traces test
+    var ctx = try common.setupTestContext(allocator, io, "traces");
+    defer common.cleanupTestContext(&ctx, io);
+
     std.debug.print("Running traces integration test...\n", .{});
-    try testTraces(allocator, ctx.tmp_dir);
+    try testTraces(allocator, io, ctx.tmp_dir);
     std.debug.print("✓ Traces test passed\n\n", .{});
 
-    // Run compression test
     std.debug.print("Running traces compression test...\n", .{});
-    try testTracesWithCompression(allocator, ctx.tmp_dir);
+    try testTracesWithCompression(allocator, io, ctx.tmp_dir);
     std.debug.print("✓ Traces compression test passed\n\n", .{});
 }
 
-fn testTraces(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
-    // Configure the OTLP exporter to use the collector
+fn testTraces(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
     var config = try sdk.otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    // Configure to use HTTP on port 4318 (the collector's HTTP port)
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
 
-    // Create ID generator for traces
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
     const id_generator = trace_sdk.IDGenerator{
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
 
-    // Create tracer provider
-    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, id_generator);
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
     errdefer tracer_provider.shutdown();
 
-    // Create OTLP exporter and processor
-    var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, config);
+    var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
     errdefer otlp_exporter.deinit();
 
-    // Use simple processor for integration tests to ensure immediate export
     var simple_processor = trace_sdk.SimpleProcessor.init(
         allocator,
+        io,
         otlp_exporter.asSpanExporter(),
     );
 
     const span_processor = simple_processor.asSpanProcessor();
     try tracer_provider.addSpanProcessor(span_processor);
 
-    // Create and record some test spans
     const tracer = try tracer_provider.getTracer(.{
         .name = "integration-test",
         .version = "1.0.0",
@@ -75,27 +72,23 @@ fn testTraces(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
         });
         defer span.deinit();
 
-        // Simulate some work
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        clock.sleep(10 * std.time.ns_per_ms);
 
         span.setStatus(trace_api.Status.ok());
         tracer.endSpan(&span);
     }
 
-    // Give the collector time to process and write the traces
     std.debug.print("  Waiting for collector to process and write traces...\n", .{});
-    std.Thread.sleep(2 * std.time.ns_per_s);
+    clock.sleep(2 * std.time.ns_per_s);
 
-    // Validate that the collector received the traces by reading the JSON file
     std.debug.print("  Successfully sent {d} trace spans\n", .{num_spans});
     std.debug.print("  Waiting for traces JSON file...\n", .{});
 
-    try common.waitForFile(tmp_dir, "traces.json", 20);
+    try common.waitForFile(io, tmp_dir, "traces.json", 20);
 
-    const json_content = try common.readJsonFile(allocator, tmp_dir, "traces.json");
+    const json_content = try common.readJsonFile(allocator, io, tmp_dir, "traces.json");
     defer allocator.free(json_content);
 
-    // Verify the JSON contains expected trace data
     const has_test_span = std.mem.indexOf(u8, json_content, "test-span") != null;
     const has_resource_spans = std.mem.indexOf(u8, json_content, "resourceSpans") != null or
         std.mem.indexOf(u8, json_content, "resource_spans") != null;
@@ -111,44 +104,37 @@ fn testTraces(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
 
     std.debug.print("  ✓ Traces JSON validated - found {d} test spans\n", .{num_spans});
 
-    // Cleanup
     tracer_provider.shutdown();
     otlp_exporter.deinit();
 }
 
-fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) !void {
-    // Configure the OTLP exporter with gzip compression
+fn testTracesWithCompression(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
     var config = try sdk.otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    // Enable gzip compression
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
     config.compression = .gzip;
 
-    // Create ID generator for traces
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
     const id_generator = trace_sdk.IDGenerator{
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
 
-    // Create tracer provider
-    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, id_generator);
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
     errdefer tracer_provider.shutdown();
 
-    // Create OTLP exporter with compression enabled
-    var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, config);
+    var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
     errdefer otlp_exporter.deinit();
 
-    // Use simple processor for integration tests
     var simple_processor = trace_sdk.SimpleProcessor.init(
         allocator,
+        io,
         otlp_exporter.asSpanExporter(),
     );
 
     const span_processor = simple_processor.asSpanProcessor();
     try tracer_provider.addSpanProcessor(span_processor);
 
-    // Create and record test spans with compression indicator
     const tracer = try tracer_provider.getTracer(.{
         .name = "integration-test-compression",
         .version = "1.0.0",
@@ -172,25 +158,21 @@ fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) 
         });
         defer span.deinit();
 
-        // Simulate some work
-        std.Thread.sleep(10 * std.time.ns_per_ms);
+        clock.sleep(10 * std.time.ns_per_ms);
 
         span.setStatus(trace_api.Status.ok());
         tracer.endSpan(&span);
     }
 
-    // Give the collector time to process
     std.debug.print("  Waiting for collector to process compressed traces...\n", .{});
-    std.Thread.sleep(2 * std.time.ns_per_s);
+    clock.sleep(2 * std.time.ns_per_s);
 
-    // Validate that the collector received the compressed traces
     std.debug.print("  Successfully sent {d} compressed trace spans\n", .{num_spans});
     std.debug.print("  Waiting for traces JSON file with compressed data...\n", .{});
 
-    const json_content = common.waitForFileContent(allocator, tmp_dir, "traces.json", "test-span-compressed", 20) catch |err| {
+    const json_content = common.waitForFileContent(allocator, io, tmp_dir, "traces.json", "test-span-compressed", 20) catch |err| {
         if (err == error.ExpectedContentNotFound) {
-            // Read the file to show what we got instead
-            const stale_content = common.readJsonFile(allocator, tmp_dir, "traces.json") catch {
+            const stale_content = common.readJsonFile(allocator, io, tmp_dir, "traces.json") catch {
                 std.debug.print("  ERROR: Could not read traces.json\n", .{});
                 tracer_provider.shutdown();
                 otlp_exporter.deinit();
@@ -209,7 +191,6 @@ fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) 
     };
     defer allocator.free(json_content);
 
-    // Verify the JSON contains expected compressed trace data
     const has_compressed_span = std.mem.indexOf(u8, json_content, "test-span-compressed") != null;
     const has_resource_spans = std.mem.indexOf(u8, json_content, "resourceSpans") != null or
         std.mem.indexOf(u8, json_content, "resource_spans") != null;
@@ -228,7 +209,6 @@ fn testTracesWithCompression(allocator: std.mem.Allocator, tmp_dir: std.fs.Dir) 
         std.debug.print("  ✓ Compression attribute 'gzip' found in traces\n", .{});
     }
 
-    // Cleanup
     tracer_provider.shutdown();
     otlp_exporter.deinit();
 }

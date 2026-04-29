@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attribute = @import("../../attributes.zig").Attribute;
 const Context = @import("../../api.zig").context.Context;
@@ -156,12 +157,13 @@ fn enabledWorker(logger: *Logger, count: usize, counter: *std.atomic.Value(usize
 
 fn addProcessorWorker(provider: *LoggerProvider, processor: LogRecordProcessor) void {
     // Sleep briefly to let other threads start
-    std.Thread.sleep(1 * std.time.ns_per_ms);
+    clock.sleep(1 * std.time.ns_per_ms);
     provider.addLogRecordProcessor(processor) catch {};
 }
 
 test "concurrent logger acquisition - same scope" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     const scope = InstrumentationScope{ .name = "test-scope" };
@@ -187,7 +189,8 @@ test "concurrent logger acquisition - same scope" {
 }
 
 test "concurrent logger acquisition - different scopes" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     const num_threads = 10;
@@ -225,7 +228,8 @@ test "concurrent logger acquisition - different scopes" {
 }
 
 test "concurrent log emission" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(std.testing.allocator, true);
@@ -253,7 +257,8 @@ test "concurrent log emission" {
 }
 
 test "concurrent processor operations" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor1 = MockProcessor.init(std.testing.allocator, true);
@@ -298,7 +303,8 @@ test "concurrent processor operations" {
 }
 
 test "concurrent shutdown" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(std.testing.allocator, true);
@@ -325,7 +331,8 @@ test "concurrent shutdown" {
 }
 
 test "concurrent shutdown with emission" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(std.testing.allocator, true);
@@ -343,7 +350,7 @@ test "concurrent shutdown with emission" {
     }
 
     // While emitting, shutdown the provider
-    std.Thread.sleep(5 * std.time.ns_per_ms); // Let some logs be emitted first
+    clock.sleep(5 * std.time.ns_per_ms); // Let some logs be emitted first
     const shutdown_thread = try std.Thread.spawn(.{}, shutdownWorker, .{provider});
 
     // Wait for all threads
@@ -358,7 +365,8 @@ test "concurrent shutdown with emission" {
 }
 
 test "concurrent forceFlush" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(std.testing.allocator, true);
@@ -389,7 +397,8 @@ test "concurrent forceFlush" {
 }
 
 test "concurrent enabled checks" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(std.testing.allocator, true);
@@ -450,9 +459,12 @@ test "batching processor concurrency" {
         }
     };
 
+    const io = std.testing.io;
+
     var mock_exporter = MockExporter.init();
     var batching_processor = try BatchingLogRecordProcessor.init(
         std.testing.allocator,
+        io,
         mock_exporter.asLogRecordExporter(),
         .{
             .max_queue_size = 1000,
@@ -467,7 +479,7 @@ test "batching processor concurrency" {
         batching_processor.deinit();
     }
 
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     try provider.addLogRecordProcessor(batching_processor.asLogRecordProcessor());
@@ -492,7 +504,7 @@ test "batching processor concurrency" {
     try provider.forceFlush();
 
     // Wait a bit for export to complete
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    clock.sleep(100 * std.time.ns_per_ms);
 
     // Verify all logs were exported
     const expected_count = num_threads * logs_per_thread;
@@ -500,7 +512,8 @@ test "batching processor concurrency" {
 }
 
 test "mixed operations stress test" {
-    var provider = try LoggerProvider.init(std.testing.allocator, null);
+    const io = std.testing.io;
+    var provider = try LoggerProvider.init(std.testing.allocator, io, null);
     defer provider.deinit();
 
     var mock_processor1 = MockProcessor.init(std.testing.allocator, true);
@@ -540,7 +553,7 @@ test "mixed operations stress test" {
     }
 
     // Add another processor mid-flight
-    std.Thread.sleep(5 * std.time.ns_per_ms);
+    clock.sleep(5 * std.time.ns_per_ms);
     const add_thread = try std.Thread.spawn(.{}, addProcessorWorker, .{ provider, mock_processor2.asLogRecordProcessor() });
 
     // Wait for all threads

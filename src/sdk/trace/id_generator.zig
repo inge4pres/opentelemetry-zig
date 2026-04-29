@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 
 const trace = @import("../../api/trace.zig");
 
@@ -114,7 +115,7 @@ pub const TimeBasedIDGenerator = struct {
     const Self = @This();
 
     pub fn newIDs(self: Self) TraceSpanID {
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = clock.nanoTimestamp();
         const trace_id: i128 = timestamp ^ self.magic;
         const span_id: i64 = @truncate(timestamp & trace_id);
         return TraceSpanID{
@@ -124,7 +125,7 @@ pub const TimeBasedIDGenerator = struct {
     }
 
     pub fn newSpanID(self: Self, trace_id: trace.TraceID) trace.SpanID {
-        const lower: i64 = @truncate(std.time.nanoTimestamp() ^ self.magic);
+        const lower: i64 = @truncate(clock.nanoTimestamp() ^ self.magic);
 
         // Mix with trace_id to reduce collision
         var lower_array = std.mem.toBytes(lower);

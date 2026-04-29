@@ -4,8 +4,15 @@ const metrics_sdk = sdk.metrics;
 const MeterProvider = metrics_sdk.MeterProvider;
 
 pub fn main() !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer if (gpa.deinit() == .leak) @panic("leaks detected");
+    const allocator = gpa.allocator();
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Use the builtin meter provider
-    const mp = try MeterProvider.default();
+    const mp = try MeterProvider.init(allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/sample",
@@ -16,11 +23,11 @@ pub fn main() !void {
     var fba = std.heap.FixedBufferAllocator.init(buf);
 
     // Declare an in-memory exporter
-    const me = try metrics_sdk.MetricExporter.InMemory(fba.allocator(), null, null);
+    const me = try metrics_sdk.MetricExporter.InMemory(fba.allocator(), io, null, null);
     defer me.in_memory.deinit();
 
     // Create an exporter and a a metric reader to aggregate the metrics
-    const mr = try metrics_sdk.MetricReader.init(fba.allocator(), me.exporter);
+    const mr = try metrics_sdk.MetricReader.init(fba.allocator(), io, me.exporter);
     defer mr.shutdown();
 
     // Register the metric reader to the meter provider

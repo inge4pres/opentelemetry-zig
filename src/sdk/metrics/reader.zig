@@ -48,6 +48,7 @@ pub const MetricReadError = error{
 /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#metricreader
 pub const MetricReader = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     // Exporter is the destination of the metrics data.
     // It takes ownership of the collected metrics.
     exporter: *MetricExporter = undefined,
@@ -66,14 +67,15 @@ pub const MetricReader = struct {
 
     // Signal that shutdown has been called.
     hasShutDown: bool = false,
-    mx: std.Thread.Mutex = std.Thread.Mutex{},
+    mx: std.Io.Mutex = std.Io.Mutex.init,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, metric_exporter: *MetricExporter) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, metric_exporter: *MetricExporter) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
+            .io = io,
             .exporter = metric_exporter,
             .temporality = metric_exporter.temporality orelse view.DefaultTemporality,
             .aggregation = metric_exporter.aggregation orelse view.DefaultAggregation,
@@ -91,8 +93,8 @@ pub const MetricReader = struct {
         if (!self.mx.tryLock()) {
             return MetricReadError.ConcurrentCollectNotAllowed;
         }
-        defer self.mx.unlock();
-        var toBeExported = std.ArrayList(Measurements){};
+        defer self.mx.unlock(self.io);
+        var toBeExported = std.ArrayList(Measurements).empty;
         defer toBeExported.deinit(self.allocator);
 
         if (self.meterProvider) |mp| {
@@ -140,9 +142,10 @@ pub const MetricReader = struct {
 };
 
 test "metric reader shutdown prevents collect() to execute" {
+    const io = std.testing.io;
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
-    const metric_exporter = try MetricExporter.new(std.testing.allocator, &noop);
-    var metric_reader = try MetricReader.init(std.testing.allocator, metric_exporter);
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
+    var metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter);
     const e = metric_reader.collect();
     try std.testing.expectEqual(MetricReadError.CollectFailedOnMissingMeterProvider, e);
     metric_reader.shutdown();
@@ -150,16 +153,17 @@ test "metric reader shutdown prevents collect() to execute" {
 
 test "metric reader collects data from meter provider" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator);
+    var mp = try MeterProvider.init(allocator, io);
     defer mp.shutdown();
 
-    var inMem = try InMemoryExporter.init(allocator);
+    var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
 
-    const metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
 
-    var reader = try MetricReader.init(allocator, metric_exporter);
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
     defer reader.shutdown();
 
     try mp.addReader(reader);
@@ -198,18 +202,19 @@ fn dropAll(_: Kind) view.Aggregation {
 
 test "metric reader custom temporality and aggregation" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator);
+    var mp = try MeterProvider.init(allocator, io);
     defer mp.shutdown();
 
-    var inMem = try InMemoryExporter.init(allocator);
+    var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
 
-    var metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
+    var metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
     metric_exporter.temporality = deltaTemporality;
     metric_exporter.aggregation = dropAll;
 
-    var reader = try MetricReader.init(allocator, metric_exporter);
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
     defer reader.shutdown();
 
     std.debug.assert(reader.temporality(.Counter) == .Delta);
@@ -237,16 +242,17 @@ test "metric reader custom temporality and aggregation" {
 
 test "metric reader correctness exporting cumulative temporality" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator);
+    const mp = try MeterProvider.init(allocator, io);
     defer mp.shutdown();
 
-    var inMem = try InMemoryExporter.init(allocator);
+    var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
 
-    const metric_exporter = try MetricExporter.new(allocator, &inMem.exporter);
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
 
-    var reader = try MetricReader.init(allocator, metric_exporter);
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
     defer reader.shutdown();
     try mp.addReader(reader);
 

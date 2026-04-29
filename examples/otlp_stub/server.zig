@@ -1,6 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const net = std.net;
 const otlp = @import("opentelemetry-sdk").otlp;
 const protobuf = @import("protobuf");
 const pb = @import("opentelemetry-proto");
@@ -8,45 +7,48 @@ const pb = @import("opentelemetry-proto");
 pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
     return struct {
         allocator: Allocator,
+        io: std.Io,
         port: u16,
         on_export: *const fn (req: *RequestType) void,
-        listener: ?net.Server = null,
+        listener: ?std.Io.net.Server = null,
 
         const Self = @This();
 
         pub fn init(
             allocator: Allocator,
+            io: std.Io,
             port: u16,
             on_export: *const fn (req: *RequestType) void,
         ) !*Self {
-            var address = try net.Address.resolveIp("127.0.0.1", port);
+            const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
             const self = try allocator.create(@This());
             self.* = .{
                 .allocator = allocator,
+                .io = io,
                 .port = port,
                 .on_export = on_export,
-                .listener = try address.listen(.{ .reuse_address = true }),
+                .listener = try address.listen(io, .{ .reuse_address = true }),
             };
 
             return self;
         }
 
         pub fn deinit(self: *Self) void {
-            if (self.listener) |*l| l.deinit();
+            if (self.listener) |*l| l.deinit(self.io);
             self.allocator.destroy(self);
         }
 
         // Processes only 1 export request
         pub fn start(self: *@This()) !void {
-            var conn = try self.listener.?.accept();
-            defer conn.stream.close();
+            var stream = try self.listener.?.accept(self.io);
+            defer stream.close(self.io);
             // Read HTTP request (very basic, just enough for OTLP exporter)
             var read_buffer: [4096]u8 = undefined;
             var write_buffer: [4096]u8 = undefined;
-            var conn_reader = conn.stream.reader(&read_buffer);
-            var conn_writer = conn.stream.writer(&write_buffer);
+            var conn_reader = stream.reader(self.io, &read_buffer);
+            var conn_writer = stream.writer(self.io, &write_buffer);
 
-            var server = std.http.Server.init(conn_reader.interface(), &conn_writer.interface);
+            var server = std.http.Server.init(&conn_reader.interface, &conn_writer.interface);
             var request = try server.receiveHead();
 
             var body_buffer: [8192]u8 = undefined;

@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -12,20 +13,23 @@ const bench_config = benchmark.Config{
 };
 
 test "ObservableCounter_Create" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
     try bench.add("ObservableCounter_Create", ObservableCounterBench.run, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 const ObservableCounterBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
-        const provider = metrics.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+        var bench_threaded: std.Io.Threaded = .init(allocator, .{});
+        defer bench_threaded.deinit();
+        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
         defer provider.shutdown();
 
         const meter = provider.getMeter(.{
@@ -42,20 +46,23 @@ const ObservableCounterBench = struct {
 };
 
 test "ObservableUpDownCounter_Create" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
     try bench.add("ObservableUpDownCounter_Create", ObservableUpDownBench.run, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 const ObservableUpDownBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
-        const provider = metrics.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+        var bench_threaded: std.Io.Threaded = .init(allocator, .{});
+        defer bench_threaded.deinit();
+        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
         defer provider.shutdown();
 
         const meter = provider.getMeter(.{
@@ -71,20 +78,23 @@ const ObservableUpDownBench = struct {
 };
 
 test "ObservableGauge_Create" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
     var bench = benchmark.Benchmark.init(std.testing.allocator, bench_config);
     defer bench.deinit();
 
     try bench.add("ObservableGauge_Create", ObservableGaugeBench.run, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 const ObservableGaugeBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
-        const provider = metrics.MeterProvider.init(allocator) catch @panic("failed to create meter provider");
+        var bench_threaded: std.Io.Threaded = .init(allocator, .{});
+        defer bench_threaded.deinit();
+        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
         defer provider.shutdown();
 
         const meter = provider.getMeter(.{

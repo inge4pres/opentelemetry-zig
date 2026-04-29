@@ -191,7 +191,7 @@ pub fn aggregateExponentialBucketHistogram(
             else => unreachable,
         };
 
-        try result.value_ptr.addValue(f64_val, max_size, record_min_max, T);
+        try result.value_ptr.addValue(allocator, f64_val, max_size, record_min_max, T);
     }
 
     // Convert aggregated state to final data points
@@ -219,10 +219,11 @@ const ExponentialHistogramState = struct {
     max: ?f64,
     zero_count: u64,
 
-    positive_buckets: std.AutoArrayHashMap(i32, u64),
-    negative_buckets: std.AutoArrayHashMap(i32, u64),
+    positive_buckets: std.AutoArrayHashMapUnmanaged(i32, u64),
+    negative_buckets: std.AutoArrayHashMapUnmanaged(i32, u64),
 
     fn init(allocator: std.mem.Allocator, scale: i32) ExponentialHistogramState {
+        _ = allocator;
         return ExponentialHistogramState{
             .scale = scale,
             .sum = null,
@@ -230,19 +231,19 @@ const ExponentialHistogramState = struct {
             .min = null,
             .max = null,
             .zero_count = 0,
-            .positive_buckets = std.AutoArrayHashMap(i32, u64).init(allocator),
-            .negative_buckets = std.AutoArrayHashMap(i32, u64).init(allocator),
+            .positive_buckets = .empty,
+            .negative_buckets = .empty,
         };
     }
 
     fn deinit(self: *ExponentialHistogramState, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        self.positive_buckets.deinit();
-        self.negative_buckets.deinit();
+        self.positive_buckets.deinit(allocator);
+        self.negative_buckets.deinit(allocator);
     }
 
     fn addValue(
         self: *ExponentialHistogramState,
+        allocator: std.mem.Allocator,
         value: f64,
         max_size: u32,
         record_min_max: bool,
@@ -273,14 +274,14 @@ const ExponentialHistogramState = struct {
         const bucket_index = getBucketIndex(value, self.scale);
 
         if (value > 0) {
-            const result = try self.positive_buckets.getOrPut(bucket_index);
+            const result = try self.positive_buckets.getOrPut(allocator, bucket_index);
             if (result.found_existing) {
                 result.value_ptr.* += 1;
             } else {
                 result.value_ptr.* = 1;
             }
         } else {
-            const result = try self.negative_buckets.getOrPut(bucket_index);
+            const result = try self.negative_buckets.getOrPut(allocator, bucket_index);
             if (result.found_existing) {
                 result.value_ptr.* += 1;
             } else {
@@ -315,7 +316,7 @@ const BucketArrayResult = struct {
     counts: []u64,
 };
 
-fn bucketsToArrays(allocator: std.mem.Allocator, buckets: *std.AutoArrayHashMap(i32, u64)) !BucketArrayResult {
+fn bucketsToArrays(allocator: std.mem.Allocator, buckets: *std.AutoArrayHashMapUnmanaged(i32, u64)) !BucketArrayResult {
     if (buckets.count() == 0) {
         return BucketArrayResult{
             .offset = 0,

@@ -1,4 +1,5 @@
 const std = @import("std");
+const env = @import("env");
 const trace = @import("../../../api/trace.zig");
 const SpanExporter = @import("../span_exporter.zig").SpanExporter;
 const otlp = @import("../../../otlp.zig");
@@ -16,18 +17,20 @@ const InstrumentationScope = @import("../../../scope.zig").InstrumentationScope;
 /// OTLPExporter exports trace data using the OpenTelemetry Protocol (OTLP)
 pub const OTLPExporter = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: *otlp.ConfigOptions,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, config: *otlp.ConfigOptions) !*Self {
-        var env = try std.process.getEnvMap(allocator);
-        defer env.deinit();
-        try config.mergeFromEnvMap(&env);
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: *otlp.ConfigOptions) !*Self {
+        var env_map = try env.createEnvMap(allocator);
+        defer env_map.deinit();
+        try config.mergeFromEnvMap(&env_map);
 
         const self = try allocator.create(Self);
         self.* = Self{
             .allocator = allocator,
+            .io = io,
             .config = config,
         };
         return self;
@@ -60,7 +63,7 @@ pub const OTLPExporter = struct {
         const otlp_data = otlp.Signal.Data{ .traces = request };
 
         // Export using the OTLP transport
-        return otlp.Export(self.allocator, self.config, otlp_data);
+        return otlp.Export(self.allocator, self.io, self.config, otlp_data);
     }
 
     fn shutdown(_: *anyopaque) anyerror!void {
@@ -69,7 +72,7 @@ pub const OTLPExporter = struct {
     }
 
     fn spansToOTLPRequest(self: *Self, spans: []trace.Span) !pbcollector_trace.ExportTraceServiceRequest {
-        var resource_spans = std.ArrayList(pbtrace.ResourceSpans){};
+        var resource_spans = std.ArrayList(pbtrace.ResourceSpans).empty;
 
         // Group spans by instrumentation scope
         var scope_groups = std.HashMap(
@@ -91,19 +94,19 @@ pub const OTLPExporter = struct {
             const scope_key = span.scope;
             const result = try scope_groups.getOrPut(scope_key);
             if (!result.found_existing) {
-                result.value_ptr.* = std.ArrayList(trace.Span){};
+                result.value_ptr.* = std.ArrayList(trace.Span).empty;
             }
             try result.value_ptr.append(self.allocator, span);
         }
 
-        var scope_spans_list = std.ArrayList(pbtrace.ScopeSpans){};
+        var scope_spans_list = std.ArrayList(pbtrace.ScopeSpans).empty;
 
         // Convert each scope group to OTLP format
         var scope_iterator = scope_groups.iterator();
         while (scope_iterator.next()) |entry| {
             const scope_spans = entry.value_ptr.*;
 
-            var otlp_spans = std.ArrayList(pbtrace.Span){};
+            var otlp_spans = std.ArrayList(pbtrace.Span).empty;
 
             // Convert each span to OTLP format
             for (scope_spans.items) |span| {
@@ -122,7 +125,7 @@ pub const OTLPExporter = struct {
                     .attributes = null,
                 };
 
-            var scope_attributes = std.ArrayList(pbcommon.KeyValue){};
+            var scope_attributes = std.ArrayList(pbcommon.KeyValue).empty;
             if (scope_info.attributes) |attrs| {
                 for (attrs) |attr| {
                     const key_value = try attributeToOTLP(attr.key, attr.value);
@@ -145,9 +148,9 @@ pub const OTLPExporter = struct {
 
         const resource_span = pbtrace.ResourceSpans{
             .resource = pbresource.Resource{
-                .attributes = std.ArrayList(pbcommon.KeyValue){},
+                .attributes = std.ArrayList(pbcommon.KeyValue).empty,
                 .dropped_attributes_count = 0,
-                .entity_refs = std.ArrayList(pbcommon.EntityRef){},
+                .entity_refs = std.ArrayList(pbcommon.EntityRef).empty,
             },
             .scope_spans = scope_spans_list,
             .schema_url = (""),
@@ -215,16 +218,16 @@ pub const OTLPExporter = struct {
         }
 
         // Convert attributes
-        var attributes = std.ArrayList(pbcommon.KeyValue){};
+        var attributes = std.ArrayList(pbcommon.KeyValue).empty;
         for (span.attributes.keys(), span.attributes.values()) |key, value| {
             const key_value = try attributeToOTLP(key, value);
             try attributes.append(allocator, key_value);
         }
 
         // Convert events
-        var events = std.ArrayList(pbtrace.Span.Event){};
+        var events = std.ArrayList(pbtrace.Span.Event).empty;
         for (span.events.items) |event| {
-            var event_attributes = std.ArrayList(pbcommon.KeyValue){};
+            var event_attributes = std.ArrayList(pbcommon.KeyValue).empty;
             for (event.attributes.keys(), event.attributes.values()) |key, value| {
                 const key_value = try attributeToOTLP(key, value);
                 try event_attributes.append(allocator, key_value);
@@ -240,9 +243,9 @@ pub const OTLPExporter = struct {
         }
 
         // Convert links
-        var links = std.ArrayList(pbtrace.Span.Link){};
+        var links = std.ArrayList(pbtrace.Span.Link).empty;
         for (span.links.items) |link| {
-            var link_attributes = std.ArrayList(pbcommon.KeyValue){};
+            var link_attributes = std.ArrayList(pbcommon.KeyValue).empty;
             for (link.attributes.keys(), link.attributes.values()) |key, value| {
                 const key_value = try attributeToOTLP(key, value);
                 try link_attributes.append(allocator, key_value);
@@ -303,11 +306,12 @@ pub const OTLPExporter = struct {
 
 test "OTLPExporter with InstrumentationScope" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     // Create test spans with different scopes
@@ -373,11 +377,12 @@ test "OTLPExporter with InstrumentationScope" {
 
 test "OTLPExporter basic functionality" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     const span_exporter = exporter.asSpanExporter();
@@ -398,5 +403,5 @@ test "OTLPExporter basic functionality" {
     // Test conversion to OTLP (this will fail to send to server, but that's ok for the test)
     const result = span_exporter.exportSpans(spans[0..]);
     // We expect a connection error since there's no OTLP server running
-    try std.testing.expectError(std.posix.ConnectError.ConnectionRefused, result);
+    try std.testing.expectError(error.ConnectionRefused, result);
 }

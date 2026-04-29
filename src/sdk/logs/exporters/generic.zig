@@ -44,11 +44,21 @@ fn GenericWriterExporter(
             };
         }
 
+        fn writerInterface(self: *Self) *std.Io.Writer {
+            if (@hasField(Writer, "interface")) {
+                return &self.writer.interface;
+            }
+            if (@hasField(Writer, "writer")) {
+                return &self.writer.writer;
+            }
+            return &self.writer;
+        }
+
         pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
             const self: *Self = @ptrCast(@alignCast(ctx));
 
             // Convert log records to serializable format
-            var serializable_logs: std.ArrayList(SerializableLogRecord) = .{};
+            var serializable_logs: std.ArrayList(SerializableLogRecord) = .empty;
             defer serializable_logs.deinit(std.heap.page_allocator);
 
             for (log_records) |log_record| {
@@ -56,7 +66,9 @@ fn GenericWriterExporter(
             }
 
             // Serialize to JSON - format directly to this writer
-            try std.fmt.format(self.writer, "{f}", .{std.json.fmt(serializable_logs.items, .{})});
+            const writer = self.writerInterface();
+            try writer.print("{f}", .{std.json.fmt(serializable_logs.items, .{})});
+            try writer.flush();
         }
 
         pub fn shutdown(_: *anyopaque) anyerror!void {}
@@ -75,32 +87,37 @@ fn GenericWriterExporter(
 
 /// StdoutExporter outputs log records into OS stdout.
 /// ref: https://opentelemetry.io/docs/specs/otel/logs/sdk_exporters/stdout/
-pub const StdoutExporter = GenericWriterExporter(std.io.GenericWriter(std.fs.File, std.fs.File.WriteError, std.fs.File.write));
+pub const StdoutExporter = GenericWriterExporter(std.Io.File.Writer);
 
 /// InMemoryExporter exports log records to in-memory buffer.
 /// It is designed for testing GenericWriterExporter.
-pub const InMemoryExporter = GenericWriterExporter(std.ArrayList(u8).Writer);
+pub const InMemoryExporter = GenericWriterExporter(std.Io.Writer.Allocating);
 
 test "GenericWriterExporter" {
-    var out_buf: std.ArrayList(u8) = .{};
+    var out_buf: std.ArrayList(u8) = .empty;
+    {
+        var inmemory_exporter = InMemoryExporter.init(.fromArrayList(std.testing.allocator, &out_buf));
+        errdefer inmemory_exporter.writer.deinit();
+        var exporter = inmemory_exporter.asLogRecordExporter();
+
+        // Create a test log record
+        const scope = InstrumentationScope{ .name = "test-logger", .version = "1.0.0" };
+        var log_record = logs.ReadWriteLogRecord.init(scope);
+        defer log_record.deinit(std.testing.allocator);
+
+        log_record.body = "test log message";
+        log_record.severity_number = 9;
+        log_record.severity_text = "INFO";
+
+        const readable = try log_record.toReadable(std.testing.allocator);
+        defer readable.deinit(std.testing.allocator);
+
+        var log_records = [_]logs.ReadableLogRecord{readable};
+        try exporter.exportLogs(log_records[0..log_records.len]);
+
+        out_buf = inmemory_exporter.writer.toArrayList();
+    }
     defer out_buf.deinit(std.testing.allocator);
-    var inmemory_exporter = InMemoryExporter.init(out_buf.writer(std.testing.allocator));
-    var exporter = inmemory_exporter.asLogRecordExporter();
-
-    // Create a test log record
-    const scope = InstrumentationScope{ .name = "test-logger", .version = "1.0.0" };
-    var log_record = logs.ReadWriteLogRecord.init(scope);
-    defer log_record.deinit(std.testing.allocator);
-
-    log_record.body = "test log message";
-    log_record.severity_number = 9;
-    log_record.severity_text = "INFO";
-
-    const readable = try log_record.toReadable(std.testing.allocator);
-    defer readable.deinit(std.testing.allocator);
-
-    var log_records = [_]logs.ReadableLogRecord{readable};
-    try exporter.exportLogs(log_records[0..log_records.len]);
 
     // Since JSON output can be complex, just check that something was written
     try std.testing.expect(out_buf.items.len > 0);

@@ -34,6 +34,7 @@
 //! ```
 
 const std = @import("std");
+const clock = @import("clock");
 const TracerProvider = @import("../sdk/trace/provider.zig").TracerProvider;
 const Tracer = @import("../sdk/trace/provider.zig").Tracer;
 const TracerImpl = @import("../api/trace/tracer.zig").TracerImpl;
@@ -52,8 +53,7 @@ const AttributeValue = @import("../attributes.zig").AttributeValue;
 const SpanProcessor = @import("../sdk/trace/span_processor.zig").SpanProcessor;
 const SimpleProcessor = @import("../sdk/trace/span_processor.zig").SimpleProcessor;
 const SpanExporter = @import("../sdk/trace/span_exporter.zig").SpanExporter;
-const StdOutExporter = @import("../sdk/trace/exporters/generic.zig").StdoutExporter;
-const DeprecatedStdoutExporter = @import("../sdk/trace/exporters/generic.zig").DeprecatedStdoutExporter;
+const StdoutExporter = @import("../sdk/trace/exporters/generic.zig").StdoutExporter;
 const IDGenerator = @import("../sdk/trace/id_generator.zig").IDGenerator;
 const RandomIDGenerator = @import("../sdk/trace/id_generator.zig").RandomIDGenerator;
 const InstrumentationScope = @import("../scope.zig").InstrumentationScope;
@@ -92,6 +92,13 @@ pub const OtelSpanProcessor = opaque {};
 
 /// Opaque handle to a SpanExporter.
 pub const OtelSpanExporter = opaque {};
+
+const TracerProviderHandle = struct {
+    provider: *TracerProvider,
+    threaded: *std.Io.Threaded,
+    prng: *std.Random.DefaultPrng,
+    allocator: std.mem.Allocator,
+};
 
 // ============================================================================
 // Span Kind Enum
@@ -214,9 +221,12 @@ fn convertAttributes(
 }
 
 /// Internal storage for a span and its associated data.
+/// Holds a reference to the provider so we can detect shutdown and avoid
+/// use-after-free when the provider is destroyed before the span is ended.
 const SpanWrapper = struct {
     span: Span,
     tracer: *TracerImpl,
+    provider: *TracerProvider,
     allocator: std.mem.Allocator,
 
     fn deinit(self: *SpanWrapper) void {
@@ -235,19 +245,36 @@ const SpanWrapper = struct {
 pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
     const allocator = getCAllocator();
 
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
+    const io = threaded_ptr.io();
+
     // Allocate the PRNG on the heap so it persists
     const prng_ptr = allocator.create(std.Random.DefaultPrng) catch return null;
-    prng_ptr.* = std.Random.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
+    prng_ptr.* = std.Random.DefaultPrng.init(@intCast(clock.nanoTimestamp()));
 
     // Create a random ID generator with the heap-allocated PRNG
     const random_generator = RandomIDGenerator.init(prng_ptr.random());
     const id_generator = IDGenerator{ .Random = random_generator };
 
-    const provider = TracerProvider.init(allocator, id_generator) catch {
+    const provider = TracerProvider.init(allocator, io, id_generator) catch {
         allocator.destroy(prng_ptr);
         return null;
     };
-    return @ptrCast(provider);
+
+    const handle = allocator.create(TracerProviderHandle) catch {
+        provider.shutdown();
+        allocator.destroy(prng_ptr);
+        return null;
+    };
+    handle.* = .{
+        .provider = provider,
+        .threaded = threaded_ptr,
+        .prng = prng_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
 }
 
 /// Shutdown the TracerProvider and release all resources.
@@ -255,8 +282,12 @@ pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
 /// After calling this function, the provider handle becomes invalid.
 pub fn tracerProviderShutdown(provider: ?*OtelTracerProvider) callconv(.c) void {
     if (provider) |p| {
-        const tp: *TracerProvider = @ptrCast(@alignCast(p));
-        tp.shutdown();
+        const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
+        handle.provider.shutdown();
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle.prng);
+        handle.allocator.destroy(handle);
     }
 }
 
@@ -276,8 +307,8 @@ pub fn tracerProviderGetTracer(
     schema_url: ?[*:0]const u8,
 ) callconv(.c) ?*OtelTracer {
     const p = provider orelse return null;
-    const tp: *TracerProvider = @ptrCast(@alignCast(p));
-
+    const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
+    const tp = handle.provider;
     const scope = InstrumentationScope{
         .name = std.mem.span(name),
         .version = if (version) |v| std.mem.span(v) else null,
@@ -298,10 +329,11 @@ pub fn tracerProviderAddSpanProcessor(
     const p = provider orelse return .error_invalid_argument;
     const proc = processor orelse return .error_invalid_argument;
 
-    const tp: *TracerProvider = @ptrCast(@alignCast(p));
-    const sp: *SpanProcessor = @ptrCast(@alignCast(proc));
+    const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
+    const tp = handle.provider;
+    const proc_handle: *SpanProcessorHandle = @ptrCast(@alignCast(proc));
 
-    tp.addSpanProcessor(sp.*) catch |err| {
+    tp.addSpanProcessor(proc_handle.processor) catch |err| {
         return switch (err) {
             error.OutOfMemory => .error_out_of_memory,
             error.TracerProviderShutdown => .error_already_shutdown,
@@ -316,8 +348,8 @@ pub fn tracerProviderAddSpanProcessor(
 /// Returns: Status code indicating success or failure.
 pub fn tracerProviderForceFlush(provider: ?*OtelTracerProvider) callconv(.c) OtelStatus {
     const p = provider orelse return .error_invalid_argument;
-    const tp: *TracerProvider = @ptrCast(@alignCast(p));
-
+    const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
+    const tp = handle.provider;
     tp.forceFlush() catch |err| {
         return switch (err) {
             error.TracerProviderShutdown => .error_already_shutdown,
@@ -368,6 +400,9 @@ pub fn tracerStartSpan(
 
     defer if (start_opts.attributes) |attrs| allocator.free(attrs);
 
+    // Recover the SDK Tracer and its provider to store a safe back-reference.
+    const sdk_tracer: *Tracer = @fieldParentPtr("tracer", tr);
+
     // Create span wrapper
     const wrapper = allocator.create(SpanWrapper) catch return null;
 
@@ -377,6 +412,7 @@ pub fn tracerStartSpan(
             return null;
         },
         .tracer = tr,
+        .provider = sdk_tracer.provider,
         .allocator = allocator,
     };
 
@@ -399,10 +435,21 @@ pub fn tracerIsEnabled(tracer: ?*OtelTracer) callconv(.c) bool {
 /// End a span.
 ///
 /// After calling this function, the span handle becomes invalid.
+/// NOTE: All spans should be ended before the provider is shut down. If the
+/// provider has already been shut down, the span is ended locally but
+/// processors are not notified.
 pub fn spanEnd(span: ?*OtelSpan) callconv(.c) void {
     if (span) |s| {
         const wrapper: *SpanWrapper = @ptrCast(@alignCast(s));
-        wrapper.tracer.endSpan(&wrapper.span);
+        if (!wrapper.provider.is_shutdown.load(.acquire)) {
+            wrapper.tracer.endSpan(&wrapper.span);
+        } else {
+            // Provider already shut down — end the span locally without
+            // notifying processors to avoid use-after-free.
+            if (wrapper.span.is_recording) {
+                wrapper.span.end(null);
+            }
+        }
         wrapper.deinit();
     }
 }
@@ -629,24 +676,65 @@ pub fn spanGetSpanIdHex(
 // SpanExporter API
 // ============================================================================
 
+/// Internal wrapper for stdout exporter that holds the exporter together.
+const StdoutExporterWrapper = struct {
+    exporter: StdoutExporter,
+    buffer: [4096]u8,
+    threaded: std.Io.Threaded,
+};
+
+const SpanExporterHandle = struct {
+    exporter: SpanExporter,
+    wrapper: *StdoutExporterWrapper,
+    allocator: std.mem.Allocator,
+};
+
+const SpanProcessorHandle = struct {
+    processor: SpanProcessor,
+    storage: *SimpleProcessor,
+    threaded: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+};
+
 /// Create a stdout SpanExporter for debugging.
 ///
 /// Returns: Pointer to the SpanExporter, or null on error.
 pub fn spanExporterStdoutCreate() callconv(.c) ?*OtelSpanExporter {
     const allocator = getCAllocator();
 
-    // Allocate the exporter on the heap
-    const exporter_ptr = allocator.create(DeprecatedStdoutExporter) catch return null;
-    exporter_ptr.* = DeprecatedStdoutExporter.init(std.fs.File.stdout().deprecatedWriter());
+    const wrapper = allocator.create(StdoutExporterWrapper) catch return null;
+    wrapper.* = .{
+        .buffer = undefined,
+        .threaded = std.Io.Threaded.init(allocator, .{}),
+        .exporter = undefined,
+    };
+    wrapper.exporter = StdoutExporter.init(std.Io.File.stdout().writer(wrapper.threaded.io(), &wrapper.buffer));
 
-    // Allocate the SpanExporter interface on the heap
-    const span_exporter_ptr = allocator.create(SpanExporter) catch {
-        allocator.destroy(exporter_ptr);
+    const handle = allocator.create(SpanExporterHandle) catch {
+        wrapper.threaded.deinit();
+        allocator.destroy(wrapper);
         return null;
     };
-    span_exporter_ptr.* = exporter_ptr.asSpanExporter();
+    handle.* = .{
+        .exporter = wrapper.exporter.asSpanExporter(),
+        .wrapper = wrapper,
+        .allocator = allocator,
+    };
 
-    return @ptrCast(span_exporter_ptr);
+    return @ptrCast(handle);
+}
+
+/// Destroy the SpanExporter and release all resources.
+///
+/// After calling this function, the exporter handle becomes invalid.
+pub fn spanExporterDestroy(exporter: ?*OtelSpanExporter) callconv(.c) void {
+    if (exporter) |e| {
+        const handle: *SpanExporterHandle = @ptrCast(@alignCast(e));
+        handle.exporter.shutdown() catch {};
+        handle.wrapper.threaded.deinit();
+        handle.allocator.destroy(handle.wrapper);
+        handle.allocator.destroy(handle);
+    }
 }
 
 // ============================================================================
@@ -663,18 +751,44 @@ pub fn simpleSpanProcessorCreate(exporter: ?*OtelSpanExporter) callconv(.c) ?*Ot
     const e = exporter orelse return null;
     const allocator = getCAllocator();
 
-    const exp: *SpanExporter = @ptrCast(@alignCast(e));
+    const exp_handle: *SpanExporterHandle = @ptrCast(@alignCast(e));
 
-    const storage = allocator.create(SimpleProcessor) catch return null;
-    storage.* = SimpleProcessor.init(allocator, exp.*);
+    const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
+    threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
 
-    const processor_ptr = allocator.create(SpanProcessor) catch {
-        allocator.destroy(storage);
+    const storage = allocator.create(SimpleProcessor) catch {
+        allocator.destroy(threaded_ptr);
         return null;
     };
-    processor_ptr.* = storage.asSpanProcessor();
+    storage.* = SimpleProcessor.init(allocator, threaded_ptr.io(), exp_handle.exporter);
 
-    return @ptrCast(processor_ptr);
+    const handle = allocator.create(SpanProcessorHandle) catch {
+        allocator.destroy(storage);
+        allocator.destroy(threaded_ptr);
+        return null;
+    };
+    handle.* = .{
+        .processor = storage.asSpanProcessor(),
+        .storage = storage,
+        .threaded = threaded_ptr,
+        .allocator = allocator,
+    };
+
+    return @ptrCast(handle);
+}
+
+/// Destroy the SpanProcessor and release all resources.
+///
+/// After calling this function, the processor handle becomes invalid.
+pub fn spanProcessorDestroy(processor: ?*OtelSpanProcessor) callconv(.c) void {
+    if (processor) |p| {
+        const handle: *SpanProcessorHandle = @ptrCast(@alignCast(p));
+        handle.processor.shutdown() catch {};
+        handle.threaded.deinit();
+        handle.allocator.destroy(handle.threaded);
+        handle.allocator.destroy(handle.storage);
+        handle.allocator.destroy(handle);
+    }
 }
 
 // ============================================================================
@@ -711,9 +825,11 @@ comptime {
 
     // SpanExporter exports
     @export(&spanExporterStdoutCreate, .{ .name = "otel_span_exporter_stdout_create" });
+    @export(&spanExporterDestroy, .{ .name = "otel_span_exporter_destroy" });
 
     // SpanProcessor exports
     @export(&simpleSpanProcessorCreate, .{ .name = "otel_simple_span_processor_create" });
+    @export(&spanProcessorDestroy, .{ .name = "otel_span_processor_destroy" });
 }
 
 // ============================================================================

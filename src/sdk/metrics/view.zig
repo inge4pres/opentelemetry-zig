@@ -66,7 +66,7 @@ pub const AttributeFilter = struct {
         if (attributes == null) return null;
 
         const attrs = attributes.?;
-        var filtered = std.ArrayList(Attribute){};
+        var filtered = std.ArrayList(Attribute).empty;
         defer filtered.deinit(allocator);
 
         for (attrs) |attr| {

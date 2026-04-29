@@ -1,4 +1,12 @@
 const std = @import("std");
+const clock = @import("clock");
+
+// NOTE: API-surface mutex operations use lockUncancelable so that user-facing
+// methods do not introduce cancellation points. This is safe with Io.Threaded
+// (the default) but means user cancellations will be ignored if the SDK is
+// used with Io.Evented. Switching to lock() would require propagating
+// error{Canceled} through all public APIs.
+
 const LogRecordExporter = @import("../../sdk/logs/log_record_exporter.zig").LogRecordExporter;
 const SimpleLogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").SimpleLogRecordProcessor;
 const BatchingLogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").BatchingLogRecordProcessor;
@@ -34,13 +42,13 @@ pub const ReadWriteLogRecord = struct {
     pub fn init(scope: InstrumentationScope) Self {
         return Self{
             .timestamp = null,
-            .observed_timestamp = @intCast(std.time.nanoTimestamp()),
+            .observed_timestamp = @intCast(clock.nanoTimestamp()),
             .trace_id = null,
             .span_id = null,
             .severity_number = null,
             .severity_text = null,
             .body = null,
-            .attributes = std.ArrayListUnmanaged(Attribute){},
+            .attributes = .empty,
             .resource = null,
             .scope = scope,
         };
@@ -116,6 +124,7 @@ pub const ReadableLogRecord = struct {
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#loggerprovider
 pub const LoggerProvider = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     loggers: std.HashMapUnmanaged(
         InstrumentationScope,
         *Logger,
@@ -126,12 +135,12 @@ pub const LoggerProvider = struct {
     resource: ?[]const Attribute,
     is_shutdown: std.atomic.Value(bool),
     sdk_disabled: bool,
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     config: ?*const Configuration,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, resource: ?[]const Attribute) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, resource: ?[]const Attribute) !*Self {
         const cfg = Configuration.get();
         const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
 
@@ -149,17 +158,18 @@ pub const LoggerProvider = struct {
         const provider = try allocator.create(Self);
         provider.* = Self{
             .allocator = allocator,
+            .io = io,
             .loggers = std.HashMapUnmanaged(
                 InstrumentationScope,
                 *Logger,
                 InstrumentationScope.HashContext,
                 std.hash_map.default_max_load_percentage,
             ){},
-            .processors = std.ArrayListUnmanaged(LogRecordProcessor){},
+            .processors = .empty,
             .resource = merged_resource,
             .is_shutdown = std.atomic.Value(bool).init(false),
             .sdk_disabled = sdk_disabled,
-            .mutex = std.Thread.Mutex{},
+            .mutex = std.Io.Mutex.init,
             .config = cfg,
         };
 
@@ -186,8 +196,8 @@ pub const LoggerProvider = struct {
     }
 
     pub fn addLogRecordProcessor(self: *Self, processor: LogRecordProcessor) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.is_shutdown.load(.acquire)) {
             return error.LoggerProviderShutdown;
@@ -197,8 +207,8 @@ pub const LoggerProvider = struct {
     }
 
     pub fn getLogger(self: *Self, scope: InstrumentationScope) !*Logger {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.is_shutdown.load(.acquire)) {
             return error.LoggerProviderShutdown;
@@ -218,8 +228,8 @@ pub const LoggerProvider = struct {
             return; // Already shutdown
         }
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Shutdown all processors
         for (self.processors.items) |processor| {
@@ -230,8 +240,8 @@ pub const LoggerProvider = struct {
     }
 
     pub fn forceFlush(self: *Self) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         if (self.is_shutdown.load(.acquire)) {
             return error.LoggerProviderShutdown;
@@ -249,7 +259,7 @@ pub const LoggerProvider = struct {
         exporter: LogRecordExporter,
     ) !*BatchingLogRecordProcessor {
         const lc = self.config.?.logs_config;
-        return try BatchingLogRecordProcessor.init(self.allocator, exporter, .{
+        return try BatchingLogRecordProcessor.init(self.allocator, self.io, exporter, .{
             .max_queue_size = @intCast(lc.blrp_max_queue_size),
             .scheduled_delay_millis = lc.blrp_schedule_delay_ms,
             .export_timeout_millis = lc.blrp_export_timeout_ms,
@@ -312,8 +322,8 @@ pub const Logger = struct {
 
         // Call processors in order
         const ctx = Context.init();
-        self.provider.mutex.lock();
-        defer self.provider.mutex.unlock();
+        self.provider.mutex.lockUncancelable(self.provider.io);
+        defer self.provider.mutex.unlock(self.provider.io);
 
         for (self.provider.processors.items) |processor| {
             processor.onEmit(&log_record, ctx);
@@ -351,8 +361,8 @@ pub const Logger = struct {
         };
 
         // Check with processors - if ANY processor would process it, return true
-        self.provider.mutex.lock();
-        defer self.provider.mutex.unlock();
+        self.provider.mutex.lockUncancelable(self.provider.io);
+        defer self.provider.mutex.unlock(self.provider.io);
 
         for (self.provider.processors.items) |processor| {
             if (processor.enabled(full_params)) {
@@ -368,8 +378,9 @@ pub const Logger = struct {
 
 test "LoggerProvider basic functionality" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -380,8 +391,9 @@ test "LoggerProvider basic functionality" {
 
 test "LoggerProvider same logger for same scope" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -393,6 +405,7 @@ test "LoggerProvider same logger for same scope" {
 
 test "LoggerProvider with processor" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Mock exporter
     const MockExporter = struct {
@@ -418,10 +431,10 @@ test "LoggerProvider with processor" {
 
     var mock_exporter = MockExporter{};
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     try provider.addLogRecordProcessor(log_processor);
@@ -438,6 +451,7 @@ test "LoggerProvider with processor" {
 
 test "LoggerProvider with custom resource" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const service_name: []const u8 = "my-service";
     const service_version: []const u8 = "1.0.0";
@@ -449,7 +463,7 @@ test "LoggerProvider with custom resource" {
     });
     defer if (resource_attrs) |attrs| allocator.free(attrs);
 
-    var provider = try LoggerProvider.init(allocator, resource_attrs);
+    var provider = try LoggerProvider.init(allocator, io, resource_attrs);
     defer provider.deinit();
 
     try std.testing.expect(provider.resource != null);
@@ -460,6 +474,7 @@ test "LoggerProvider with custom resource" {
 
 test "Logger log records inherit resource from provider" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const service_name: []const u8 = "test-service";
     const host_name: []const u8 = "test-host";
@@ -495,10 +510,10 @@ test "Logger log records inherit resource from provider" {
 
     var mock_exporter = MockExporter{};
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
-    var provider = try LoggerProvider.init(allocator, resource_attrs);
+    var provider = try LoggerProvider.init(allocator, io, resource_attrs);
     defer provider.deinit();
 
     try provider.addLogRecordProcessor(log_processor);
@@ -518,6 +533,7 @@ test "Logger log records inherit resource from provider" {
 
 test "Logger.enabled() returns true with active processors" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Mock exporter
     const MockExporter = struct {
@@ -537,10 +553,10 @@ test "Logger.enabled() returns true with active processors" {
 
     var mock_exporter = MockExporter{};
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     try provider.addLogRecordProcessor(log_processor);
@@ -558,8 +574,9 @@ test "Logger.enabled() returns true with active processors" {
 
 test "Logger.enabled() returns false when no processors" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -574,6 +591,7 @@ test "Logger.enabled() returns false when no processors" {
 
 test "Logger.enabled() returns false after shutdown" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Mock exporter
     const MockExporter = struct {
@@ -593,10 +611,10 @@ test "Logger.enabled() returns false after shutdown" {
 
     var mock_exporter = MockExporter{};
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, exporter);
+    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     try provider.addLogRecordProcessor(log_processor);
@@ -618,6 +636,7 @@ test "Logger.enabled() returns false after shutdown" {
 
 test "Logger.enabled() with multiple processors (OR logic)" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Create a custom processor that always returns false
     const AlwaysDisabledProcessor = struct {
@@ -663,7 +682,7 @@ test "Logger.enabled() with multiple processors (OR logic)" {
         }
     };
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     var disabled_proc = AlwaysDisabledProcessor{};
@@ -688,6 +707,7 @@ test "Logger.enabled() with multiple processors (OR logic)" {
 
 test "Logger.enabled() with severity parameter" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     // Create a severity-filtering processor
     const SeverityFilterProcessor = struct {
@@ -717,7 +737,7 @@ test "Logger.enabled() with severity parameter" {
         }
     };
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     var filter_proc = SeverityFilterProcessor{ .min_severity = 9 }; // INFO level
@@ -742,12 +762,13 @@ test "Logger.enabled() with severity parameter" {
 
 test "LoggerProvider with config from environment" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const cfg = try Configuration.initFromEnv(allocator);
     defer cfg.deinit();
     Configuration.set(cfg);
 
-    var provider = try LoggerProvider.init(allocator, null);
+    var provider = try LoggerProvider.init(allocator, io, null);
     defer provider.deinit();
 
     // Verify that we can create a batch processor using config

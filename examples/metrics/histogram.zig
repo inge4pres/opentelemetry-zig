@@ -19,17 +19,21 @@ pub fn main() !void {
     const buf = try std.heap.page_allocator.alloc(u8, METRICS_BUFFER_SIZE);
     var fba = std.heap.FixedBufferAllocator.init(buf);
 
+    var threaded: std.Io.Threaded = .init(fba.allocator(), .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // Create meter provider
-    const mp = try MeterProvider.default();
+    const mp = try MeterProvider.init(fba.allocator(), io);
     defer mp.shutdown();
 
     // Example 1: Histogram with Explicit Bucket Aggregation
-    try explicitBucketHistogramExample(fba.allocator(), mp);
+    try explicitBucketHistogramExample(fba.allocator(), io, mp);
 
-    try exponentialBucketHistogramExample(fba.allocator(), mp);
+    try exponentialBucketHistogramExample(fba.allocator(), io, mp);
 }
 
-fn explicitBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterProvider) !void {
+fn explicitBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: *MeterProvider) !void {
     // Create a view for histogram instruments with explicit bucket aggregation
     const histogram_view = view.View{
         .instrument_selector = .{ .kind = .Histogram },
@@ -49,10 +53,10 @@ fn explicitBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterProvid
     });
 
     // Create an in-memory exporter (no aggregation selector needed - views handle this)
-    const me = try metrics_sdk.MetricExporter.InMemory(allocator, null, null);
+    const me = try metrics_sdk.MetricExporter.InMemory(allocator, io, null, null);
     defer me.in_memory.deinit();
 
-    const mr = try metrics_sdk.MetricReader.init(allocator, me.exporter);
+    const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
     defer mr.shutdown();
 
     // Register the metric reader to the meter provider
@@ -120,7 +124,7 @@ fn explicitBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterProvid
     }
 }
 
-fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterProvider) !void {
+fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: *MeterProvider) !void {
     const meter = try mp.getMeter(.{
         .name = "exponential-histogram-example",
         .version = "1.0.0",
@@ -137,10 +141,10 @@ fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, mp: *MeterPro
     try mp.addView(exponential_view);
 
     // Create an in-memory exporter (no aggregation selector needed - views handle this)
-    const me = try metrics_sdk.MetricExporter.InMemory(allocator, null, null);
+    const me = try metrics_sdk.MetricExporter.InMemory(allocator, io, null, null);
     defer me.in_memory.deinit();
 
-    const mr = try metrics_sdk.MetricReader.init(allocator, me.exporter);
+    const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
     defer mr.shutdown();
 
     // Register the metric reader to the meter provider

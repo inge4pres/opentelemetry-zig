@@ -2,9 +2,12 @@ const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
     std.debug.print("OpenTelemetry OTLP Logs Exporter Example\n", .{});
     std.debug.print("=========================================\n\n", .{});
@@ -22,13 +25,13 @@ pub fn main() !void {
     std.debug.print("OTLP Protocol: {s}\n\n", .{@tagName(otlp_config.protocol)});
 
     // Create OTLP exporter
-    var otlp_exporter = try sdk.logs.OTLPExporter.init(allocator, otlp_config);
+    var otlp_exporter = try sdk.logs.OTLPExporter.init(allocator, io, otlp_config);
     defer otlp_exporter.deinit();
     const exporter = otlp_exporter.asLogRecordExporter();
 
     // Create a simple processor (exports immediately)
     // For production, consider using BatchingLogRecordProcessor instead
-    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(allocator, exporter);
+    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(allocator, io, exporter);
     const processor = simple_processor.asLogRecordProcessor();
 
     // Create resource attributes to identify this service
@@ -43,7 +46,7 @@ pub fn main() !void {
     defer if (resource_attrs) |attrs| allocator.free(attrs);
 
     // Create a logger provider with resource
-    var provider = try sdk.logs.LoggerProvider.init(allocator, resource_attrs);
+    var provider = try sdk.logs.LoggerProvider.init(allocator, io, resource_attrs);
     defer provider.deinit();
 
     // Add the processor

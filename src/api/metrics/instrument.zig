@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 
 const log = std.log.scoped(.instrument);
 
@@ -87,9 +88,9 @@ pub const Instrument = struct {
         return i;
     }
 
-    pub fn counter(self: *Self, comptime T: type) !*Counter(T) {
+    pub fn counter(self: *Self, io: std.Io, comptime T: type) !*Counter(T) {
         const c = try self.allocator.create(Counter(T));
-        c.* = Counter(T).init(self.allocator);
+        c.* = Counter(T).init(self.allocator, io);
         errdefer self.allocator.destroy(c);
         self.data = switch (T) {
             u16 => .{ .Counter_u16 = c },
@@ -103,9 +104,9 @@ pub const Instrument = struct {
         return c;
     }
 
-    pub fn upDownCounter(self: *Self, comptime T: type) !*Counter(T) {
+    pub fn upDownCounter(self: *Self, io: std.Io, comptime T: type) !*Counter(T) {
         const c = try self.allocator.create(Counter(T));
-        c.* = Counter(T).init(self.allocator);
+        c.* = Counter(T).init(self.allocator, io);
         errdefer self.allocator.destroy(c);
         self.data = switch (T) {
             i16 => .{ .UpDownCounter_i16 = c },
@@ -119,9 +120,9 @@ pub const Instrument = struct {
         return c;
     }
 
-    pub fn histogram(self: *Self, comptime T: type) !*Histogram(T) {
+    pub fn histogram(self: *Self, io: std.Io, comptime T: type) !*Histogram(T) {
         const h = try self.allocator.create(Histogram(T));
-        h.* = Histogram(T).init(self.allocator);
+        h.* = Histogram(T).init(self.allocator, io);
         errdefer self.allocator.destroy(h);
         self.data = switch (T) {
             u16 => .{ .Histogram_u16 = h },
@@ -140,9 +141,9 @@ pub const Instrument = struct {
         return h;
     }
 
-    pub fn gauge(self: *Self, comptime T: type) !*Gauge(T) {
+    pub fn gauge(self: *Self, io: std.Io, comptime T: type) !*Gauge(T) {
         const g = try self.allocator.create(Gauge(T));
-        g.* = Gauge(T).init(self.allocator);
+        g.* = Gauge(T).init(self.allocator, io);
         errdefer self.allocator.destroy(g);
         self.data = switch (T) {
             i16 => .{ .Gauge_i16 = g },
@@ -160,11 +161,12 @@ pub const Instrument = struct {
 
     pub fn asyncCounter(
         self: *Self,
+        io: std.Io,
         context: AsyncInstrument.ObservedContext,
         callbacks: ?[]AsyncInstrument.ObserveMeasures,
     ) !*AsyncInstrument.ObservableInstrument(.ObservableCounter) {
         const i = try self.allocator.create(AsyncInstrument.ObservableInstrument(.ObservableCounter));
-        i.* = AsyncInstrument.ObservableInstrument(.ObservableCounter).init(self.allocator, context);
+        i.* = AsyncInstrument.ObservableInstrument(.ObservableCounter).init(self.allocator, io, context);
 
         if (callbacks) |cb| {
             for (cb) |c| {
@@ -177,11 +179,12 @@ pub const Instrument = struct {
 
     pub fn asyncUpDownCounter(
         self: *Self,
+        io: std.Io,
         context: AsyncInstrument.ObservedContext,
         callbacks: ?[]AsyncInstrument.ObserveMeasures,
     ) !*AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter) {
         const i = try self.allocator.create(AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter));
-        i.* = AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter).init(self.allocator, context);
+        i.* = AsyncInstrument.ObservableInstrument(.ObservableUpDownCounter).init(self.allocator, io, context);
 
         if (callbacks) |cb| {
             for (cb) |c| {
@@ -194,11 +197,12 @@ pub const Instrument = struct {
 
     pub fn asyncGauge(
         self: *Self,
+        io: std.Io,
         context: AsyncInstrument.ObservedContext,
         callbacks: ?[]AsyncInstrument.ObserveMeasures,
     ) !*AsyncInstrument.ObservableInstrument(.ObservableGauge) {
         const i = try self.allocator.create(AsyncInstrument.ObservableInstrument(.ObservableGauge));
-        i.* = AsyncInstrument.ObservableInstrument(.ObservableGauge).init(self.allocator, context);
+        i.* = AsyncInstrument.ObservableInstrument(.ObservableGauge).init(self.allocator, io, context);
 
         if (callbacks) |cb| {
             for (cb) |c| {
@@ -245,18 +249,20 @@ pub fn Counter(comptime T: type) type {
     return struct {
         const Self = @This();
         allocator: std.mem.Allocator,
-        lock: std.Thread.Mutex,
+        io: std.Io,
+        lock: std.Io.Mutex,
 
         /// Record data points for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
         /// The list is cleared after each collection cycle.
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        fn init(allocator: std.mem.Allocator) Self {
+        fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .data_points = .empty,
                 .allocator = allocator,
-                .lock = std.Thread.Mutex{},
+                .io = io,
+                .lock = std.Io.Mutex.init,
             };
         }
 
@@ -269,8 +275,8 @@ pub fn Counter(comptime T: type) type {
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             const dp = try DataPoint(T).new(self.allocator, delta, attributes);
             try self.data_points.append(self.allocator, dp);
@@ -279,8 +285,8 @@ pub fn Counter(comptime T: type) type {
         /// Add the given delta to the counter with a pre-built attribute slice.
         /// This is primarily used for C interop where attributes are passed as a slice.
         pub fn addWithSlice(self: *Self, delta: T, attributes: ?[]Attribute) !void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             const dp = DataPoint(T){
                 .value = delta,
@@ -293,8 +299,8 @@ pub fn Counter(comptime T: type) type {
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
             // We have to clear up the data points after we return a copy of them.
             // this resets the state of the instrument, allowing to record more datapoints
             // until the next collection cycle.
@@ -328,16 +334,18 @@ pub fn Histogram(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        lock: std.Thread.Mutex,
+        io: std.Io,
+        lock: std.Io.Mutex,
 
         /// Keeps track of the raw recorded values for each set of attributes.
         /// The measurements are cleared after each collection cycle.
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        fn init(allocator: std.mem.Allocator) Self {
+        fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .allocator = allocator,
-                .lock = std.Thread.Mutex{},
+                .io = io,
+                .lock = std.Io.Mutex.init,
                 .data_points = .empty,
             };
         }
@@ -352,8 +360,8 @@ pub fn Histogram(comptime T: type) type {
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
             try self.data_points.append(self.allocator, dp);
@@ -362,8 +370,8 @@ pub fn Histogram(comptime T: type) type {
         /// Record a value with a pre-built attribute slice.
         /// This is primarily used for C interop where attributes are passed as a slice.
         pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             const dp = DataPoint(T){
                 .value = value,
@@ -376,8 +384,8 @@ pub fn Histogram(comptime T: type) type {
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             // We have to clear up the data points after we return a copy of them.
             // This resets the collected measurements, allowing to record more datapoints
@@ -424,15 +432,17 @@ pub fn Gauge(comptime T: type) type {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        lock: std.Thread.Mutex,
+        io: std.Io,
+        lock: std.Io.Mutex,
 
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        fn init(allocator: std.mem.Allocator) Self {
+        fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .allocator = allocator,
+                .io = io,
                 .data_points = .empty,
-                .lock = std.Thread.Mutex{},
+                .lock = std.Io.Mutex.init,
             };
         }
 
@@ -445,8 +455,8 @@ pub fn Gauge(comptime T: type) type {
 
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             const dp = try DataPoint(T).new(self.allocator, value, attributes);
             try self.data_points.append(self.allocator, dp);
@@ -455,8 +465,8 @@ pub fn Gauge(comptime T: type) type {
         /// Record a value with a pre-built attribute slice.
         /// This is primarily used for C interop where attributes are passed as a slice.
         pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             const dp = DataPoint(T){
                 .value = value,
@@ -469,8 +479,8 @@ pub fn Gauge(comptime T: type) type {
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lock();
-            defer self.lock.unlock();
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
 
             defer {
                 for (self.data_points.items) |*dp| {
@@ -509,7 +519,8 @@ pub fn Gauge(comptime T: type) type {
 const MeterProvider = @import("meter.zig").MeterProvider;
 
 test "counter with unsupported type does not leak" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const err = meter.createCounter(u1, .{ .name = "a-counter" });
@@ -517,7 +528,8 @@ test "counter with unsupported type does not leak" {
 }
 
 test "meter can create counter instrument and record increase without attributes" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
@@ -527,7 +539,8 @@ test "meter can create counter instrument and record increase without attributes
 }
 
 test "meter can create counter instrument and record increase with attributes" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{
@@ -552,7 +565,8 @@ test "meter can create counter instrument and record increase with attributes" {
 }
 
 test "histogram records value without explicit buckets" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
@@ -579,7 +593,8 @@ test "histogram records value without explicit buckets" {
 }
 
 test "histogram records value with explicit buckets" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
@@ -608,7 +623,8 @@ test "histogram records value with explicit buckets" {
 }
 
 test "histogram keeps track of bucket counts by attribute" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
@@ -637,7 +653,8 @@ test "histogram keeps track of bucket counts by attribute" {
 }
 
 test "histogram keeps track of count, sum and min/max by attribute" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
@@ -681,7 +698,8 @@ test "histogram keeps track of count, sum and min/max by attribute" {
 }
 
 test "gauge instrument records value without attributes" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
@@ -693,7 +711,8 @@ test "gauge instrument records value without attributes" {
 }
 
 test "upDownCounter instrument records and stores value" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
@@ -717,7 +736,8 @@ test "upDownCounter instrument records and stores value" {
 }
 
 test "instrument in meter and instrument in data are the same" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const name = "test-instrument";
@@ -747,7 +767,8 @@ test "instrument in meter and instrument in data are the same" {
 }
 
 test "instrument fetches measurements from inner" {
-    const mp = try MeterProvider.default();
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const name = "test-instrument";
@@ -780,7 +801,8 @@ test "instrument fetches measurements from inner" {
 }
 
 test "counter thread-safety between datapoints collection and recording" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const name = "test-instrument";
@@ -809,9 +831,9 @@ fn testCounterAddingOne(counter: *Counter(u64)) !void {
 fn testCounterCollect(counter: *Counter(u64)) !void {
     // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
     for (0..1000) |_| {
-        counter.lock.lock();
-        counter.lock.unlock();
-        std.Thread.sleep(25);
+        counter.lock.lockUncancelable(counter.io);
+        counter.lock.unlock(counter.io);
+        clock.sleep(25);
     }
 
     const fetched = try counter.measurementsData(std.testing.allocator);
@@ -829,7 +851,8 @@ fn testCounterCollect(counter: *Counter(u64)) !void {
 }
 
 test "histogram thread-safety" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const name = "test-instrument";
@@ -855,9 +878,9 @@ fn testHistogramRecordOne(histogram: *Histogram(u64)) !void {
 fn testHistogramCollect(histogram: *Histogram(u64)) !void {
     // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
     for (0..1000) |_| {
-        histogram.lock.lock();
-        histogram.lock.unlock();
-        std.Thread.sleep(25);
+        histogram.lock.lockUncancelable(histogram.io);
+        histogram.lock.unlock(histogram.io);
+        clock.sleep(25);
     }
 
     const fetched = try histogram.measurementsData(std.testing.allocator);
@@ -877,7 +900,8 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const name = "test-instrument";
@@ -903,7 +927,8 @@ test "instrument cleans up internal state when datapoints are fetched" {
 const MetricObserveError = AsyncInstrument.MetricObserveError;
 
 test "async instrument registered in meter" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const background = struct {

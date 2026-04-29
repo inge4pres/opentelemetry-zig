@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 
 const attribute = @import("../../attributes.zig");
 const trace = @import("../trace.zig");
@@ -7,6 +8,7 @@ const context = @import("../context.zig");
 const Code = @import("code.zig").Code;
 
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
+const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 
 /// SpanContext represents the portion of a Span which must be serialized and propagated.
 /// SpanContexts are immutable.
@@ -62,18 +64,20 @@ pub const SpanContext = struct {
 
 /// TraceState carries tracing-system-specific trace identification data
 pub const TraceState = struct {
-    entries: std.StringArrayHashMap([]const u8),
+    entries: StringArrayHashMap([]const u8),
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .entries = std.StringArrayHashMap([]const u8).init(allocator),
+            .entries = .empty,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     /// Get value for a given key
@@ -89,13 +93,13 @@ pub const TraceState = struct {
         if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
 
         var new_state = Self.init(allocator);
-        try new_state.entries.ensureTotalCapacity(self.entries.count() + 1);
+        try new_state.entries.ensureTotalCapacity(allocator, self.entries.count() + 1);
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
-            try new_state.entries.put(entry.key_ptr.*, entry.value_ptr.*);
+            try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
-        try new_state.entries.put(key, value);
+        try new_state.entries.put(allocator, key, value);
         return new_state;
     }
 
@@ -106,14 +110,14 @@ pub const TraceState = struct {
         if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
 
         var new_state = Self.init(allocator);
-        try new_state.entries.ensureTotalCapacity(self.entries.count());
+        try new_state.entries.ensureTotalCapacity(allocator, self.entries.count());
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, key)) {
-                try new_state.entries.put(key, value);
+                try new_state.entries.put(allocator, key, value);
             } else {
-                try new_state.entries.put(entry.key_ptr.*, entry.value_ptr.*);
+                try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
         return new_state;
@@ -149,12 +153,12 @@ pub const TraceState = struct {
     /// Delete a key/value pair. Returns a new TraceState with the deletion.
     pub fn delete(self: Self, allocator: std.mem.Allocator, key: []const u8) !Self {
         var new_state = Self.init(allocator);
-        try new_state.entries.ensureTotalCapacity(self.entries.count());
+        try new_state.entries.ensureTotalCapacity(allocator, self.entries.count());
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
             if (!std.mem.eql(u8, entry.key_ptr.*, key)) {
-                try new_state.entries.put(entry.key_ptr.*, entry.value_ptr.*);
+                try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
             }
         }
         return new_state;
@@ -168,7 +172,7 @@ pub const Span = struct {
     kind: SpanKind,
     start_time_unix_nano: u64,
     end_time_unix_nano: u64,
-    attributes: std.StringArrayHashMap(attribute.AttributeValue),
+    attributes: StringArrayHashMap(attribute.AttributeValue),
     events: std.ArrayList(Event),
     links: std.ArrayList(Link),
     status: ?Status,
@@ -182,35 +186,39 @@ pub const Span = struct {
     pub const Event = struct {
         name: []const u8,
         timestamp: u64,
-        attributes: std.StringArrayHashMap(attribute.AttributeValue),
+        attributes: StringArrayHashMap(attribute.AttributeValue),
+        allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, name: []const u8, timestamp: u64) Event {
             return Event{
                 .name = name,
                 .timestamp = timestamp,
-                .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(allocator),
+                .attributes = .empty,
+                .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *Event) void {
-            self.attributes.deinit();
+            self.attributes.deinit(self.allocator);
         }
     };
 
     /// Link represents a link to another Span
     pub const Link = struct {
         span_context: SpanContext,
-        attributes: std.StringArrayHashMap(attribute.AttributeValue),
+        attributes: StringArrayHashMap(attribute.AttributeValue),
+        allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, span_context: SpanContext) Link {
             return Link{
                 .span_context = span_context,
-                .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(allocator),
+                .attributes = .empty,
+                .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *Link) void {
-            self.attributes.deinit();
+            self.attributes.deinit(self.allocator);
         }
     };
 
@@ -219,11 +227,11 @@ pub const Span = struct {
             .span_context = span_context,
             .name = name,
             .kind = kind,
-            .start_time_unix_nano = @as(u64, @intCast(std.time.nanoTimestamp())),
+            .start_time_unix_nano = @as(u64, @intCast(clock.nanoTimestamp())),
             .end_time_unix_nano = 0,
-            .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(allocator),
-            .events = std.ArrayList(Event){},
-            .links = std.ArrayList(Link){},
+            .attributes = .empty,
+            .events = std.ArrayList(Event).empty,
+            .links = std.ArrayList(Link).empty,
             .status = null,
             .is_recording = true,
             .allocator = allocator,
@@ -242,9 +250,9 @@ pub const Span = struct {
             .kind = .Internal,
             .start_time_unix_nano = 0,
             .end_time_unix_nano = 0,
-            .attributes = std.StringArrayHashMap(attribute.AttributeValue).init(dummy_allocator.allocator()),
-            .events = std.ArrayList(Event){},
-            .links = std.ArrayList(Link){},
+            .attributes = .empty,
+            .events = std.ArrayList(Event).empty,
+            .links = std.ArrayList(Link).empty,
             .status = null,
             .is_recording = false, // Non-recording spans are never recording
             .allocator = dummy_allocator.allocator(),
@@ -263,7 +271,7 @@ pub const Span = struct {
             return;
         }
 
-        self.attributes.deinit();
+        self.attributes.deinit(self.allocator);
         for (self.events.items) |*event| {
             event.deinit();
         }
@@ -287,14 +295,14 @@ pub const Span = struct {
     /// Set a single attribute on the Span
     pub fn setAttribute(self: *Self, key: []const u8, value: attribute.AttributeValue) !void {
         if (!self.is_recording) return;
-        try self.attributes.put(key, value);
+        try self.attributes.put(self.allocator, key, value);
     }
 
     /// Set multiple attributes on the Span
     pub fn setAttributes(self: *Self, attributes: []const attribute.Attribute) !void {
         if (!self.is_recording) return;
         for (attributes) |attr| {
-            try self.attributes.put(attr.key, attr.value);
+            try self.attributes.put(self.allocator, attr.key, attr.value);
         }
     }
 
@@ -302,12 +310,12 @@ pub const Span = struct {
     pub fn addEvent(self: *Self, name: []const u8, timestamp: ?u64, attributes: ?[]const attribute.Attribute) !void {
         if (!self.is_recording) return;
 
-        const event_timestamp = timestamp orelse @as(u64, @intCast(std.time.nanoTimestamp()));
+        const event_timestamp = timestamp orelse @as(u64, @intCast(clock.nanoTimestamp()));
         var event = Event.init(self.allocator, name, event_timestamp);
 
         if (attributes) |attrs| {
             for (attrs) |attr| {
-                try event.attributes.put(attr.key, attr.value);
+                try event.attributes.put(self.allocator, attr.key, attr.value);
             }
         }
 
@@ -331,7 +339,7 @@ pub const Span = struct {
 
         if (attributes) |attrs| {
             for (attrs) |attr| {
-                try link.attributes.put(attr.key, attr.value);
+                try link.attributes.put(self.allocator, attr.key, attr.value);
             }
         }
 
@@ -362,18 +370,18 @@ pub const Span = struct {
     pub fn recordException(self: *Self, exception_type: []const u8, message: []const u8, stacktrace: ?[]const u8, attributes: ?[]const attribute.Attribute) !void {
         if (!self.is_recording) return;
 
-        const timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
+        const timestamp = @as(u64, @intCast(clock.nanoTimestamp()));
         var event = Event.init(self.allocator, "exception", timestamp);
 
-        try event.attributes.put("exception.type", .{ .string = exception_type });
-        try event.attributes.put("exception.message", .{ .string = message });
+        try event.attributes.put(self.allocator, "exception.type", .{ .string = exception_type });
+        try event.attributes.put(self.allocator, "exception.message", .{ .string = message });
         if (stacktrace) |st| {
-            try event.attributes.put("exception.stacktrace", .{ .string = st });
+            try event.attributes.put(self.allocator, "exception.stacktrace", .{ .string = st });
         }
 
         if (attributes) |attrs| {
             for (attrs) |attr| {
-                try event.attributes.put(attr.key, attr.value);
+                try event.attributes.put(self.allocator, attr.key, attr.value);
             }
         }
 
@@ -384,7 +392,7 @@ pub const Span = struct {
     pub fn end(self: *Self, timestamp: ?u64) void {
         if (!self.is_recording) return;
 
-        self.end_time_unix_nano = timestamp orelse @as(u64, @intCast(std.time.nanoTimestamp()));
+        self.end_time_unix_nano = timestamp orelse @as(u64, @intCast(clock.nanoTimestamp()));
         self.is_recording = false;
     }
 };
@@ -480,11 +488,11 @@ test "TraceState operations" {
     const allocator = std.testing.allocator;
 
     var trace_state = TraceState.init(allocator);
-    defer trace_state.entries.deinit();
+    defer trace_state.entries.deinit(allocator);
 
     // Test valid key/value insertion
     var new_state = try trace_state.insert(allocator, "key1", "value1");
-    defer new_state.entries.deinit();
+    defer new_state.entries.deinit(allocator);
 
     try std.testing.expectEqualStrings("value1", new_state.get("key1").?);
 }
@@ -517,7 +525,7 @@ test "TraceState validation" {
     const allocator = std.testing.allocator;
 
     var trace_state = TraceState.init(allocator);
-    defer trace_state.entries.deinit();
+    defer trace_state.entries.deinit(allocator);
 
     // Test invalid key (empty)
     try std.testing.expectError(error.InvalidTraceStateKey, trace_state.insert(allocator, "", "value"));

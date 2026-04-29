@@ -19,14 +19,16 @@ pub const StdoutExporter = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    io: std.Io,
     exporter: ExporterImpl,
 
-    file: std.fs.File = std.fs.File.stdout(),
+    file: std.Io.File = std.Io.File.stdout(),
 
-    pub fn init(allocator: std.mem.Allocator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
+            .io = io,
             .exporter = ExporterImpl{
                 .exportFn = exportBatch,
             },
@@ -40,7 +42,7 @@ pub const StdoutExporter = struct {
 
     // Helper test function to set the output file
     // since zig build does not allow writing to stdout.
-    pub fn withOutputFile(self: *Self, file: std.fs.File) void {
+    pub fn withOutputFile(self: *Self, file: std.Io.File) void {
         self.file = file;
     }
 
@@ -63,7 +65,7 @@ pub const StdoutExporter = struct {
             defer self.allocator.free(fmt);
 
             // Use writeAll to directly write to file without buffering
-            self.file.writeAll(fmt) catch |err| {
+            self.file.writeStreamingAll(self.io, fmt) catch |err| {
                 log.err("Failed to write to file: {}", .{err});
                 return MetricReadError.ExportFailed;
             };
@@ -73,6 +75,7 @@ pub const StdoutExporter = struct {
 
 test "exporters/stdout" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const val = @as(u64, 42);
 
@@ -106,31 +109,31 @@ test "exporters/stdout" {
     // Create a temporary file to check the output
     const filename = "stdout_exporter_test.txt";
     // Delete file if it exists first
-    std.fs.cwd().deleteFile(filename) catch {};
-    const file = try std.fs.cwd().createFile(filename, .{
+    std.Io.Dir.cwd().deleteFile(io, filename) catch {};
+    const file = try std.Io.Dir.cwd().createFile(io, filename, .{
         .truncate = true,
         .read = true,
         .exclusive = true,
     });
-    defer std.fs.cwd().deleteFile(filename) catch unreachable;
+    defer std.Io.Dir.cwd().deleteFile(io, filename) catch unreachable;
 
-    var stdoutExporter = try StdoutExporter.init(allocator);
+    var stdoutExporter = try StdoutExporter.init(allocator, io);
     defer stdoutExporter.deinit();
     stdoutExporter.withOutputFile(file);
 
-    const exporter = try MetricExporter.new(allocator, &stdoutExporter.exporter);
+    const exporter = try MetricExporter.new(allocator, io, &stdoutExporter.exporter);
     defer exporter.shutdown();
 
     const result = exporter.exportBatch(try underTest.toOwnedSlice(allocator), null);
     try std.testing.expect(result == .Success);
 
     // Close the file to read the content
-    file.close();
+    file.close(io);
 
     const buf = try std.testing.allocator.alloc(u8, 1024);
     defer std.testing.allocator.free(buf);
 
-    const read = try std.fs.cwd().readFile(filename, buf);
+    const read = try std.Io.Dir.cwd().readFile(io, filename, buf);
 
     // Check that we actually wrote something to the file
     try std.testing.expect(read.len > 0);

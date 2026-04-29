@@ -1,4 +1,5 @@
 const std = @import("std");
+const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -9,7 +10,7 @@ threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
 
 fn getThreadRng() *std.Random.DefaultPrng {
     if (thread_rng == null) {
-        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
+        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
     }
     return &thread_rng.?;
 }
@@ -28,7 +29,10 @@ const ATTR_VALUES = [_][]const u8{
 };
 
 test "Gauge_Record" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const meter = try mp.getMeter(.{
@@ -47,7 +51,7 @@ test "Gauge_Record" {
     const gauge_bench = struct {
         gauge: *metrics.Gauge(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
@@ -66,15 +70,16 @@ test "Gauge_Record" {
 
     try bench.addParam("Gauge_Add", &gauge_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 // Additional gauge benchmark with realistic CPU usage values
 test "Gauge_Record_Realistic_Values" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const meter = try mp.getMeter(.{
@@ -93,7 +98,7 @@ test "Gauge_Record_Realistic_Values" {
     const realistic_bench = struct {
         gauge: *metrics.Gauge(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(usize, 0, 9);
             const idx2 = rng.random().intRangeAtMost(usize, 0, 9);
@@ -110,15 +115,16 @@ test "Gauge_Record_Realistic_Values" {
 
     try bench.addParam("Gauge_Record_Realistic_Values", &realistic_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 // Gauge benchmark with non-static values
 test "Gauge_Record_Non_Static_Values" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
 
     const meter = try mp.getMeter(.{
@@ -137,7 +143,7 @@ test "Gauge_Record_Non_Static_Values" {
     const dynamic_bench = struct {
         gauge: *metrics.Gauge(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const rng = getThreadRng();
             const idx1 = rng.random().intRangeAtMost(u8, 0, 9);
             const idx2 = rng.random().intRangeAtMost(u8, 0, 9);
@@ -166,14 +172,15 @@ test "Gauge_Record_Non_Static_Values" {
 
     try bench.addParam("Gauge_Record_Non_Static_Values", &dynamic_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }
 
 test "Gauge_Record_Varied_Values" {
-    const mp = try MeterProvider.init(std.testing.allocator);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
@@ -191,7 +198,7 @@ test "Gauge_Record_Varied_Values" {
     const varied_bench = struct {
         gauge: *metrics.Gauge(f64),
 
-        pub fn run(self: @This(), _: std.mem.Allocator) void {
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const sim_attr: []const u8 = "cpu_usage";
             // Simulate realistic gauge values (e.g., CPU usage)
             const values = [_]f64{ 0.15, 0.35, 0.78, 0.92, 0.65, 0.43, 0.21, 0.88 };
@@ -203,8 +210,6 @@ test "Gauge_Record_Varied_Values" {
 
     try bench.addParam("Gauge_Record_Varied_Values", &varied_bench, .{});
 
-    var buffer: [4096]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    try bench.run(&writer.interface);
-    try writer.interface.flush();
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
 }

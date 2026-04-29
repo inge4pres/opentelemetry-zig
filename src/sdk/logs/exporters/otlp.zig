@@ -1,4 +1,5 @@
 const std = @import("std");
+const env = @import("env");
 const logs = @import("../../../api/logs/logger_provider.zig");
 const LogRecordExporter = @import("../log_record_exporter.zig").LogRecordExporter;
 const otlp = @import("../../../otlp.zig");
@@ -22,6 +23,7 @@ const log = std.log.scoped(.otlp_logs_exporter);
 /// See: https://opentelemetry.io/docs/specs/otel/logs/sdk/#logrecordexporter
 pub const OTLPExporter = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     config: *otlp.ConfigOptions,
 
     const Self = @This();
@@ -29,14 +31,15 @@ pub const OTLPExporter = struct {
     /// Initialize a new OTLP exporter with the given allocator and configuration.
     /// The config should be initialized with otlp.ConfigOptions.init() and supports
     /// environment variable configuration for endpoint, headers, compression, etc.
-    pub fn init(allocator: std.mem.Allocator, config: *otlp.ConfigOptions) !*Self {
-        var env = try std.process.getEnvMap(allocator);
-        defer env.deinit();
-        try config.mergeFromEnvMap(&env);
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: *otlp.ConfigOptions) !*Self {
+        var env_map = try env.createEnvMap(allocator);
+        defer env_map.deinit();
+        try config.mergeFromEnvMap(&env_map);
 
         const self = try allocator.create(Self);
         self.* = Self{
             .allocator = allocator,
+            .io = io,
             .config = config,
         };
         return self;
@@ -73,7 +76,7 @@ pub const OTLPExporter = struct {
         const otlp_data = otlp.Signal.Data{ .logs = request };
 
         // Export using the OTLP transport
-        return otlp.Export(self.allocator, self.config, otlp_data);
+        return otlp.Export(self.allocator, self.io, self.config, otlp_data);
     }
 
     fn shutdown(_: *anyopaque) anyerror!void {
@@ -82,7 +85,7 @@ pub const OTLPExporter = struct {
     }
 
     fn logsToOTLPRequest(self: *Self, log_records: []logs.ReadableLogRecord) !pbcollector_logs.ExportLogsServiceRequest {
-        var resource_logs = std.ArrayList(pblogs.ResourceLogs){};
+        var resource_logs = std.ArrayList(pblogs.ResourceLogs).empty;
 
         // Group log records by instrumentation scope
         var scope_groups = std.HashMap(
@@ -104,19 +107,19 @@ pub const OTLPExporter = struct {
             const scope_key = log_record.scope;
             const result = try scope_groups.getOrPut(scope_key);
             if (!result.found_existing) {
-                result.value_ptr.* = std.ArrayList(logs.ReadableLogRecord){};
+                result.value_ptr.* = std.ArrayList(logs.ReadableLogRecord).empty;
             }
             try result.value_ptr.append(self.allocator, log_record);
         }
 
-        var scope_logs_list = std.ArrayList(pblogs.ScopeLogs){};
+        var scope_logs_list = std.ArrayList(pblogs.ScopeLogs).empty;
 
         // Convert each scope group to OTLP format
         var scope_iterator = scope_groups.iterator();
         while (scope_iterator.next()) |entry| {
             const scope_log_records = entry.value_ptr.*;
 
-            var otlp_log_records = std.ArrayList(pblogs.LogRecord){};
+            var otlp_log_records = std.ArrayList(pblogs.LogRecord).empty;
 
             // Convert each log record to OTLP format
             for (scope_log_records.items) |log_record| {
@@ -135,7 +138,7 @@ pub const OTLPExporter = struct {
                     .attributes = null,
                 };
 
-            var scope_attributes = std.ArrayList(pbcommon.KeyValue){};
+            var scope_attributes = std.ArrayList(pbcommon.KeyValue).empty;
             if (scope_info.attributes) |attrs| {
                 for (attrs) |attr| {
                     const key_value = try attributeToOTLP(attr.key, attr.value);
@@ -157,7 +160,7 @@ pub const OTLPExporter = struct {
         }
 
         // Build resource from first log record (all share same resource from provider)
-        var resource_attributes = std.ArrayList(pbcommon.KeyValue){};
+        var resource_attributes = std.ArrayList(pbcommon.KeyValue).empty;
         if (log_records.len > 0) {
             if (log_records[0].resource) |attrs| {
                 for (attrs) |attr| {
@@ -171,7 +174,7 @@ pub const OTLPExporter = struct {
             .resource = pbresource.Resource{
                 .attributes = resource_attributes,
                 .dropped_attributes_count = 0,
-                .entity_refs = std.ArrayList(pbcommon.EntityRef){},
+                .entity_refs = std.ArrayList(pbcommon.EntityRef).empty,
             },
             .scope_logs = scope_logs_list,
             .schema_url = (""),
@@ -203,6 +206,8 @@ pub const OTLPExporter = struct {
                 for (scope_log.log_records.items) |*log_record| {
                     // Clean up log record attributes
                     log_record.attributes.deinit(self.allocator);
+                    if (log_record.trace_id.len > 0) self.allocator.free(log_record.trace_id);
+                    if (log_record.span_id.len > 0) self.allocator.free(log_record.span_id);
                 }
                 scope_log.log_records.deinit(self.allocator);
             }
@@ -213,26 +218,24 @@ pub const OTLPExporter = struct {
 
     fn logRecordToOTLP(self: *Self, log_record: logs.ReadableLogRecord) !pblogs.LogRecord {
         // Convert attributes
-        var attributes = std.ArrayList(pbcommon.KeyValue){};
+        var attributes = std.ArrayList(pbcommon.KeyValue).empty;
         for (log_record.attributes) |attr| {
             const key_value = try attributeToOTLP(attr.key, attr.value);
             try attributes.append(self.allocator, key_value);
         }
 
-        // Convert trace_id to hex string (16 bytes -> 32 char hex)
+        // Convert trace_id to hex string (16 bytes -> 32 char hex).
+        // Duplicated onto the exporter allocator because bytesToHex returns a
+        // fixed-size array; borrowing its address would escape the stack frame.
         const trace_id_str: []const u8 = if (log_record.trace_id) |tid| blk: {
-            var buf: [32]u8 = undefined;
             const hex = std.fmt.bytesToHex(&tid, .lower);
-            @memcpy(&buf, &hex);
-            break :blk (buf[0..]);
+            break :blk try self.allocator.dupe(u8, &hex);
         } else "";
 
         // Convert span_id to hex string (8 bytes -> 16 char hex)
         const span_id_str: []const u8 = if (log_record.span_id) |sid| blk: {
-            var buf: [16]u8 = undefined;
             const hex = std.fmt.bytesToHex(&sid, .lower);
-            @memcpy(&buf, &hex);
-            break :blk (buf[0..]);
+            break :blk try self.allocator.dupe(u8, &hex);
         } else "";
 
         // Convert body to AnyValue
@@ -289,11 +292,12 @@ pub const OTLPExporter = struct {
 
 test "OTLPExporter basic initialization" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     const log_exporter = exporter.asLogRecordExporter();
@@ -377,11 +381,12 @@ test "Attribute to OTLP conversion" {
 
 test "Log record to OTLP conversion with all fields" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     // Create a complete log record
@@ -408,7 +413,11 @@ test "Log record to OTLP conversion with all fields" {
     };
 
     var otlp_log = try exporter.logRecordToOTLP(log_record);
-    defer otlp_log.attributes.deinit(allocator);
+    defer {
+        otlp_log.attributes.deinit(allocator);
+        if (otlp_log.trace_id.len > 0) allocator.free(otlp_log.trace_id);
+        if (otlp_log.span_id.len > 0) allocator.free(otlp_log.span_id);
+    }
 
     // Verify conversion
     try std.testing.expectEqual(@as(u64, 1234567890000000000), otlp_log.time_unix_nano);
@@ -421,11 +430,12 @@ test "Log record to OTLP conversion with all fields" {
 
 test "Log records grouped by instrumentation scope" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     // Create log records with different scopes
@@ -508,11 +518,12 @@ test "Log records grouped by instrumentation scope" {
 
 test "Resource attributes in OTLP export" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -556,11 +567,12 @@ test "Resource attributes in OTLP export" {
 
 test "Trace context hex conversion" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };
@@ -581,7 +593,11 @@ test "Trace context hex conversion" {
     };
 
     var otlp_log = try exporter.logRecordToOTLP(log_record);
-    defer otlp_log.attributes.deinit(allocator);
+    defer {
+        otlp_log.attributes.deinit(allocator);
+        if (otlp_log.trace_id.len > 0) allocator.free(otlp_log.trace_id);
+        if (otlp_log.span_id.len > 0) allocator.free(otlp_log.span_id);
+    }
 
     // Verify hex conversion (lowercase hex without 0x prefix)
     try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", otlp_log.trace_id);
@@ -590,11 +606,12 @@ test "Trace context hex conversion" {
 
 test "Memory cleanup verification" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     var config = try otlp.ConfigOptions.init(allocator);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, config);
+    var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
     const scope = InstrumentationScope{ .name = "test-logger" };

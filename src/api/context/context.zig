@@ -24,7 +24,7 @@ const AttributeValue = attributes.AttributeValue;
 /// type resolution cascades that can occur with bare global variables.
 /// Each call to `next()` returns a unique ID starting from 0.
 ///
-/// Note: This is NOT thread-safe at runtime. It only works at compile-time
+/// Note: This is NOT thread-safe at platform. It only works at compile-time
 /// where there is no concurrency. This generator is only called from the
 /// `Key()` function which executes at compile-time.
 const ComptimeKeyGenerator = struct {
@@ -67,7 +67,7 @@ pub const ContextKey = struct {
     };
 };
 
-/// Creates a unique context key at runtime.
+/// Creates a unique context key at platform.
 ///
 /// Runtime key creation is useful when key names are determined dynamically
 /// or when keys need to be created in library initialization code.
@@ -228,7 +228,7 @@ const ContextStack = struct {
 
     /// Initializes a new context stack.
     fn init(allocator: std.mem.Allocator) Self {
-        return Self{ .contexts = std.ArrayList(Context){}, .allocator = allocator };
+        return Self{ .contexts = std.ArrayList(Context).empty, .allocator = allocator };
     }
 
     /// Releases all resources and contexts in the stack.
@@ -491,19 +491,23 @@ test "runtime key creation thread safety" {
     // Shared state for collecting results
     const SharedData = struct {
         keys: std.ArrayList(ContextKey),
-        mutex: std.Thread.Mutex = .{},
-        barrier: std.Thread.ResetEvent = .{},
+        io: std.Io,
+        mutex: std.Io.Mutex = .init,
+        barrier: std.Io.Event = .unset,
     };
 
+    const io = std.testing.io;
+
     var shared = SharedData{
-        .keys = std.ArrayList(ContextKey){},
+        .keys = std.ArrayList(ContextKey).empty,
+        .io = io,
     };
     defer shared.keys.deinit(std.testing.allocator);
 
     const keyGenWorker = struct {
         fn run(data: *SharedData, thread_id: u32) void {
             // Wait for all threads to start
-            data.barrier.wait();
+            data.barrier.waitUncancelable(data.io);
 
             // Generate keys rapidly to stress test atomicity
             var local_keys: [keys_per_thread]ContextKey = undefined;
@@ -518,8 +522,8 @@ test "runtime key creation thread safety" {
             }
 
             // Add to shared collection
-            data.mutex.lock();
-            defer data.mutex.unlock();
+            data.mutex.lockUncancelable(data.io);
+            defer data.mutex.unlock(data.io);
             data.keys.appendSlice(std.testing.allocator, &local_keys) catch unreachable;
         }
     }.run;
@@ -535,7 +539,7 @@ test "runtime key creation thread safety" {
     }
 
     // Start all threads simultaneously
-    shared.barrier.set();
+    shared.barrier.set(io);
 
     // Wait for completion
     for (threads) |thread| {

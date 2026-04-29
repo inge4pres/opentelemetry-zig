@@ -465,6 +465,16 @@ otel_metric_exporter_t* otel_metric_exporter_stdout_create(void);
  */
 otel_metric_exporter_t* otel_metric_exporter_inmemory_create(void);
 
+/**
+ * @brief Destroy the MetricExporter and release all resources.
+ *
+ * After calling this function, the exporter handle becomes invalid
+ * and must not be used.
+ *
+ * @param exporter The MetricExporter to destroy. Can be NULL (no-op).
+ */
+void otel_metric_exporter_destroy(otel_metric_exporter_t* exporter);
+
 /* ============================================================================
  * MetricReader API
  * ============================================================================ */
@@ -892,6 +902,16 @@ otel_status_t otel_span_get_span_id_hex(
  */
 otel_span_exporter_t* otel_span_exporter_stdout_create(void);
 
+/**
+ * @brief Destroy the SpanExporter and release all resources.
+ *
+ * After calling this function, the exporter handle becomes invalid
+ * and must not be used.
+ *
+ * @param exporter The SpanExporter to destroy. Can be NULL (no-op).
+ */
+void otel_span_exporter_destroy(otel_span_exporter_t* exporter);
+
 /* ============================================================================
  * SpanProcessor API
  * ============================================================================ */
@@ -908,6 +928,16 @@ otel_span_exporter_t* otel_span_exporter_stdout_create(void);
  */
 otel_span_processor_t* otel_simple_span_processor_create(
     otel_span_exporter_t* exporter);
+
+/**
+ * @brief Destroy the SpanProcessor and release all resources.
+ *
+ * After calling this function, the processor handle becomes invalid
+ * and must not be used.
+ *
+ * @param processor The SpanProcessor to destroy. Can be NULL (no-op).
+ */
+void otel_span_processor_destroy(otel_span_processor_t* processor);
 
 /* ============================================================================
  * LOGS API
@@ -1089,6 +1119,16 @@ bool otel_logger_is_enabled(otel_logger_t* logger, int severity_number);
  */
 otel_log_record_exporter_t* otel_log_record_exporter_stdout_create(void);
 
+/**
+ * @brief Destroy the LogRecordExporter and release all resources.
+ *
+ * After calling this function, the exporter handle becomes invalid
+ * and must not be used.
+ *
+ * @param exporter The LogRecordExporter to destroy. Can be NULL (no-op).
+ */
+void otel_log_record_exporter_destroy(otel_log_record_exporter_t* exporter);
+
 /* ============================================================================
  * LogRecordProcessor API
  * ============================================================================ */
@@ -1105,6 +1145,16 @@ otel_log_record_exporter_t* otel_log_record_exporter_stdout_create(void);
  */
 otel_log_record_processor_t* otel_simple_log_record_processor_create(
     otel_log_record_exporter_t* exporter);
+
+/**
+ * @brief Destroy the LogRecordProcessor and release all resources.
+ *
+ * After calling this function, the processor handle becomes invalid
+ * and must not be used.
+ *
+ * @param processor The LogRecordProcessor to destroy. Can be NULL (no-op).
+ */
+void otel_log_record_processor_destroy(otel_log_record_processor_t* processor);
 
 #ifdef __cplusplus
 }
