@@ -176,7 +176,7 @@ pub const ConfigOptions = struct {
 
     /// The endpoint to send the data to.
     /// Must be in the form of "host:port", withouth scheme.
-    endpoint: []const u8 = "localhost:4317",
+    endpoint: []const u8 = "localhost:4318",
 
     /// Only applicable to HTTP based transports.
     scheme: enum { http, https } = .http,
@@ -436,7 +436,7 @@ test "otlp config custom endpoint for singals" {
     const traces = try cfg.httpUrlForSignal(Signal.traces, allocator);
     defer allocator.free(traces);
 
-    try std.testing.expectEqualStrings("http://localhost:4317/v1/traces", traces);
+    try std.testing.expectEqualStrings("http://localhost:4318/v1/traces", traces);
     // Assert that some signals' HTTP path can be overridden from env.
 
     var map = env.EnvMap.init(allocator);
@@ -458,7 +458,7 @@ test "otlp config custom endpoint for singals" {
     defer allocator.free(standardLogs);
     try std.testing.expectEqualStrings("https://another.com:1234/traces", customTraces);
     try std.testing.expectEqualStrings("http://metrics-new:1234", customMetrics);
-    try std.testing.expectEqualStrings("http://localhost:4317/v1/logs", standardLogs);
+    try std.testing.expectEqualStrings("http://localhost:4318/v1/logs", standardLogs);
 }
 
 test "otlp config validation" {

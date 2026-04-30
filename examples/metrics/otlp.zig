@@ -24,7 +24,7 @@ pub fn main() !void {
             std.debug.assert(req.resource_metrics.items[0].scope_metrics.items[0].metrics.items[0].data.?.sum.data_points.items.len == how_many);
         }
     };
-    var server = try otlp_stub.MetricsStubServer.init(allocator, io, 4317, OnExport.handler);
+    var server = try otlp_stub.MetricsStubServer.init(allocator, io, 4318, OnExport.handler);
     defer server.deinit();
 
     // Start the server in a background thread
