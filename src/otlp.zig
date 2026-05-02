@@ -9,6 +9,7 @@
 const std = @import("std");
 const clock = @import("clock");
 const env = @import("env");
+const build_info = @import("build_info");
 const http = std.http;
 const Uri = std.Uri;
 const flate = std.compress.flate;
@@ -28,8 +29,7 @@ const pbcollector_trace = proto.collector_trace_v1;
 const pbcollector_logs = proto.collector_logs_v1;
 
 // Fixed user-agent string for the OTLP transport.
-// TODO: find a way to make the version dynamic.
-const UserAgent = "zig-o11y_opentelemetry-sdk/0.1.0";
+const UserAgent = "zig-o11y_opentelemetry-sdk/" ++ build_info.version;
 
 /// Errors that can occur during the configuration of the OTLP transport.
 pub const ConfigError = error{
@@ -181,7 +181,7 @@ pub const ConfigOptions = struct {
     /// Only applicable to HTTP based transports.
     scheme: enum { http, https } = .http,
 
-    /// Only applicabl to gRPC based trasnport.
+    /// Only applicable to gRPC based trasnport.
     /// Defines if the gRPC client can use plaintext connection.
     insecure: ?bool = null,
 

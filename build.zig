@@ -1,4 +1,5 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
@@ -52,6 +53,13 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "env", .module = env_mod },
         },
     });
+
+    { // Build info
+        const build_info = b.addOptions();
+        build_info.addOption([]const u8, "version", zon.version);
+        build_info.addOption([]const u8, "name", @tagName(zon.name));
+        sdk_mod.addOptions("build_info", build_info);
+    }
 
     // Static library for the OpenTelemetry SDK C users
     const sdk_c_lib_mod = b.createModule(.{
