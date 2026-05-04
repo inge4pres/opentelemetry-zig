@@ -31,7 +31,9 @@ test "otlp HTTPClient send fails on non-retryable error" {
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
     defer allocator.free(endpoint);
@@ -58,7 +60,9 @@ test "otlp HTTPClient send retries on retryable error" {
     // When trying to spawn it in the `HTTPTestServer.init` function, it will fail, but I am not sure why.
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processRequests, .{ server, max_requests, &req_counter });
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
 
     // Speed up the test
@@ -99,7 +103,9 @@ test "otlp HTTPClient uncompressed protobuf metrics payload" {
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
     defer allocator.free(endpoint);
@@ -121,7 +127,9 @@ test "otlp HTTPClient uncompressed json metrics payload" {
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     config.protocol = .http_json;
 
@@ -148,7 +156,9 @@ test "otlp HTTPClient http_json payload has correctly formatted attribute values
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     config.protocol = .http_json;
 
@@ -173,7 +183,9 @@ test "otlp HTTPClient compressed json metrics payload" {
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     config.protocol = .http_json;
     config.compression = .gzip;
@@ -198,7 +210,9 @@ test "otlp HTTPClient compressed protobuf metrics payload" {
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
     defer allocator.free(endpoint);
@@ -221,7 +235,9 @@ test "otlp HTTPClient send extra headers" {
     const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
     defer thread.join();
 
-    const config = try ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
     const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
     defer allocator.free(endpoint);

@@ -8,11 +8,12 @@
 
 const std = @import("std");
 const clock = @import("clock");
-const env = @import("env");
 const build_info = @import("build_info");
 const http = std.http;
 const Uri = std.Uri;
 const flate = std.compress.flate;
+
+const EnvMap = std.process.Environ.Map;
 
 const log = std.log.scoped(.otlp);
 
@@ -203,31 +204,28 @@ pub const ConfigOptions = struct {
     // Custom signal URLS are used to override the default endpoint + path concat logic for each signals.
     // They should be populated by the user, but they can also be filled in
     // when parsing the config from environment variables.
-    custom_signal_urls: std.AutoHashMap(Signal, []const u8),
+    custom_signal_urls: std.AutoHashMapUnmanaged(Signal, []const u8) = .empty,
 
     retryConfig: ExpBackoffconfig = .{},
 
     // Tracks whether `endpoint` was allocated by us and must be freed on deinit.
     endpoint_owned: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator) !*ConfigOptions {
+    pub fn init(allocator: std.mem.Allocator, env_map: *const EnvMap) !*ConfigOptions {
         const s = try allocator.create(ConfigOptions);
         s.* = ConfigOptions{
             .allocator = allocator,
-            .custom_signal_urls = std.AutoHashMap(Signal, []const u8).init(allocator),
         };
+        errdefer s.deinit();
+        try s.mergeFromEnvMap(env_map);
         return s;
-    }
-
-    pub fn default() !*ConfigOptions {
-        return init(std.heap.page_allocator);
     }
 
     pub fn deinit(self: *ConfigOptions) void {
         if (self.endpoint_owned) self.allocator.free(self.endpoint);
         var it = self.custom_signal_urls.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
-        self.custom_signal_urls.deinit();
+        self.custom_signal_urls.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -247,8 +245,7 @@ pub const ConfigOptions = struct {
     /// Retrieves the configuration from the environment variables.
     /// The environment variables are prefixed with "OTEL_EXPORTER_OTLP_",
     /// and they take precedence over the values set in the config.
-    /// Pass the "environ" argument with env.createEnvMap().
-    pub fn mergeFromEnvMap(self: *ConfigOptions, environ: *const env.EnvMap) !void {
+    fn mergeFromEnvMap(self: *ConfigOptions, environ: *const EnvMap) !void {
         // customize endpoint and URLs
         // Strings from the EnvMap are borrowed — dupe them so they outlive the EnvMap.
         if (entryFromEnvMap(environ, "ENDPOINT")) |endpoint| {
@@ -256,15 +253,15 @@ pub const ConfigOptions = struct {
         }
         if (entryFromEnvMap(environ, "TRACES_ENDPOINT")) |traces| {
             const owned = try self.allocator.dupe(u8, traces);
-            if (try self.custom_signal_urls.fetchPut(Signal.traces, owned)) |old| self.allocator.free(old.value);
+            if (try self.custom_signal_urls.fetchPut(self.allocator, Signal.traces, owned)) |old| self.allocator.free(old.value);
         }
         if (entryFromEnvMap(environ, "METRICS_ENDPOINT")) |metrics| {
             const owned = try self.allocator.dupe(u8, metrics);
-            if (try self.custom_signal_urls.fetchPut(Signal.metrics, owned)) |old| self.allocator.free(old.value);
+            if (try self.custom_signal_urls.fetchPut(self.allocator, Signal.metrics, owned)) |old| self.allocator.free(old.value);
         }
         if (entryFromEnvMap(environ, "LOGS_ENDPOINT")) |logs| {
             const owned = try self.allocator.dupe(u8, logs);
-            if (try self.custom_signal_urls.fetchPut(Signal.logs, owned)) |old| self.allocator.free(old.value);
+            if (try self.custom_signal_urls.fetchPut(self.allocator, Signal.logs, owned)) |old| self.allocator.free(old.value);
         }
         // connection configs
         if (entryFromEnvMap(environ, "COMPRESSION")) |compression| {
@@ -298,7 +295,7 @@ pub const ConfigOptions = struct {
         self.endpoint_owned = true;
     }
 
-    fn entryFromEnvMap(environ: *const env.EnvMap, varSuffix: []const u8) ?[]const u8 {
+    fn entryFromEnvMap(environ: *const EnvMap, varSuffix: []const u8) ?[]const u8 {
         var env_var_name: [128]u8 = [_]u8{0} ** 128;
         for (env_var_prefix, 0..) |c, i| {
             env_var_name[i] = c;
@@ -330,7 +327,7 @@ pub const ConfigOptions = struct {
 
 test "otlp config from env" {
     const allocator = std.testing.allocator;
-    var map = env.EnvMap.init(allocator);
+    var map = EnvMap.init(allocator);
     defer map.deinit();
     // Set the environment variable to test.
     const new_endpoint: []const u8 = "something:1234";
@@ -338,10 +335,9 @@ test "otlp config from env" {
     try map.put("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip");
     try map.put("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
 
-    var config = try ConfigOptions.default();
+    var config = try ConfigOptions.init(allocator, &map);
     defer config.deinit();
 
-    try config.mergeFromEnvMap(&map);
     try std.testing.expectEqualStrings(new_endpoint, config.endpoint);
     try std.testing.expectEqual(Compression.gzip, config.compression);
     try std.testing.expectEqual(Protocol.grpc, config.protocol);
@@ -399,13 +395,12 @@ test "otlp config from env with URL scheme in endpoint" {
     };
 
     for (cases) |c| {
-        var map = env.EnvMap.init(allocator);
+        var map = EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", c.env);
 
-        var config = try ConfigOptions.init(allocator);
+        var config = try ConfigOptions.init(allocator, &map);
         defer config.deinit();
-        try config.mergeFromEnvMap(&map);
 
         try std.testing.expectEqualStrings(c.endpoint, config.endpoint);
         try std.testing.expect(config.scheme == c.scheme);
@@ -417,20 +412,20 @@ test "otlp config from env with URL scheme in endpoint" {
 
     // Scheme-only input has no host and must be rejected.
     {
-        var map = env.EnvMap.init(allocator);
+        var map = EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "http://");
 
-        var config = try ConfigOptions.init(allocator);
-        defer config.deinit();
-        try std.testing.expectError(ConfigError.InvalidEndpoint, config.mergeFromEnvMap(&map));
+        try std.testing.expectError(ConfigError.InvalidEndpoint, ConfigOptions.init(allocator, &map));
     }
 }
 
 test "otlp config custom endpoint for singals" {
     const allocator = std.testing.allocator;
     // Sanity check
-    const cfg = try ConfigOptions.init(allocator);
+    var empty_map = EnvMap.init(allocator);
+    defer empty_map.deinit();
+    const cfg = try ConfigOptions.init(allocator, &empty_map);
     defer cfg.deinit();
 
     const traces = try cfg.httpUrlForSignal(Signal.traces, allocator);
@@ -439,16 +434,14 @@ test "otlp config custom endpoint for singals" {
     try std.testing.expectEqualStrings("http://localhost:4318/v1/traces", traces);
     // Assert that some signals' HTTP path can be overridden from env.
 
-    var map = env.EnvMap.init(allocator);
+    var map = EnvMap.init(allocator);
     defer map.deinit();
     try map.put("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://another.com:1234/traces");
     try map.put("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics-new:1234");
     // logs are left untouched
 
-    var config = try ConfigOptions.init(allocator);
+    var config = try ConfigOptions.init(allocator, &map);
     defer config.deinit();
-
-    try config.mergeFromEnvMap(&map);
 
     const customTraces = try config.httpUrlForSignal(Signal.traces, allocator);
     const customMetrics = try config.httpUrlForSignal(Signal.metrics, allocator);
@@ -463,21 +456,24 @@ test "otlp config custom endpoint for singals" {
 
 test "otlp config validation" {
     const allocator = std.testing.allocator;
+    var empty_map = EnvMap.init(allocator);
+    defer empty_map.deinit();
+
     // Test invalid endpoint
-    var cfg = try ConfigOptions.init(allocator);
+    var cfg = try ConfigOptions.init(allocator, &empty_map);
     cfg.endpoint = "";
     try std.testing.expectError(ConfigError.InvalidEndpoint, cfg.validate());
     cfg.deinit();
 
     // Test conflicting options
-    var cfg2 = try ConfigOptions.init(allocator);
+    var cfg2 = try ConfigOptions.init(allocator, &empty_map);
     cfg2.scheme = .https;
     cfg2.insecure = true;
     try std.testing.expectError(ConfigError.ConflictingOptions, cfg2.validate());
     cfg2.deinit();
 
     // Test valid configuration
-    var cfg3 = try ConfigOptions.init(allocator);
+    var cfg3 = try ConfigOptions.init(allocator, &empty_map);
     cfg3.endpoint = "anything:1234";
     cfg3.scheme = .http;
     cfg3.insecure = null;
@@ -789,7 +785,9 @@ test "otlp config parse headers" {
 
 test "otlp HTTPClient extra headers" {
     const allocator = std.testing.allocator;
-    var config = try ConfigOptions.init(allocator);
+    var empty_map = EnvMap.init(allocator);
+    defer empty_map.deinit();
+    var config = try ConfigOptions.init(allocator, &empty_map);
     defer config.deinit();
 
     config.headers = "key1=value1,key2=value2";
@@ -826,7 +824,9 @@ test "otlp exp backoff delay calculation" {
 test "otlp HTTPClient send fails for missing server" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    var config = try ConfigOptions.init(allocator);
+    var empty_map = EnvMap.init(allocator);
+    defer empty_map.deinit();
+    var config = try ConfigOptions.init(allocator, &empty_map);
     defer config.deinit();
 
     const client = try HTTPClient.init(allocator, io, config);

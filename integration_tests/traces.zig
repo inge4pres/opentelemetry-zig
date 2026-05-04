@@ -5,7 +5,7 @@ const trace_sdk = sdk.trace;
 const trace_api = sdk.api.trace;
 const common = @import("common.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -16,16 +16,21 @@ pub fn main() !void {
     defer common.cleanupTestContext(&ctx, io);
 
     std.debug.print("Running traces integration test...\n", .{});
-    try testTraces(allocator, io, ctx.tmp_dir);
+    try testTraces(allocator, io, init.environ_map, ctx.tmp_dir);
     std.debug.print("✓ Traces test passed\n\n", .{});
 
     std.debug.print("Running traces compression test...\n", .{});
-    try testTracesWithCompression(allocator, io, ctx.tmp_dir);
+    try testTracesWithCompression(allocator, io, init.environ_map, ctx.tmp_dir);
     std.debug.print("✓ Traces compression test passed\n\n", .{});
 }
 
-fn testTraces(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator);
+fn testTraces(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
     defer config.deinit();
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
@@ -108,8 +113,13 @@ fn testTraces(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !vo
     otlp_exporter.deinit();
 }
 
-fn testTracesWithCompression(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator);
+fn testTracesWithCompression(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
     defer config.deinit();
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;

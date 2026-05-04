@@ -19,7 +19,7 @@
 //! const extracted = try propagator.extract(allocator, &headers, HttpGetter);
 //! ```
 const std = @import("std");
-const env = @import("env");
+const EnvMap = std.process.Environ.Map;
 const Baggage = @import("../baggage.zig").Baggage;
 const BaggageEntry = @import("../baggage.zig").BaggageEntry;
 
@@ -278,30 +278,30 @@ pub const HttpSetter = TextMapSetter(std.StringHashMap([]const u8)){
 // Environment Variable Carriers
 
 /// Environment map getter
-pub fn EnvironmentGetter(env_map: *const env.EnvMap, key: []const u8) ?[]const u8 {
+pub fn EnvironmentGetter(env_map: *const EnvMap, key: []const u8) ?[]const u8 {
     return env_map.get(key);
 }
 
 /// Get all environment variable keys
-pub fn EnvironmentKeys(env_map: *const env.EnvMap) []const []const u8 {
+pub fn EnvironmentKeys(env_map: *const EnvMap) []const []const u8 {
     _ = env_map;
     // Return empty slice - keys() method not needed for basic propagation
     return &[_][]const u8{};
 }
 
 /// Environment map setter
-pub fn EnvironmentSetter(env_map: *env.EnvMap, key: []const u8, value: []const u8) !void {
+pub fn EnvironmentSetter(env_map: *EnvMap, key: []const u8, value: []const u8) !void {
     try env_map.put(key, value);
 }
 
 /// Create a TextMapGetter for environment variables
-pub const EnvGetter = TextMapGetter(env.EnvMap){
+pub const EnvGetter = TextMapGetter(EnvMap){
     .getFn = EnvironmentGetter,
     .keysFn = EnvironmentKeys,
 };
 
 /// Create a TextMapSetter for environment variables
-pub const EnvSetter = TextMapSetter(env.EnvMap){
+pub const EnvSetter = TextMapSetter(EnvMap){
     .setFn = EnvironmentSetter,
 };
 
@@ -309,17 +309,15 @@ pub const EnvSetter = TextMapSetter(env.EnvMap){
 ///
 /// ## Parameters
 /// - `allocator`: Memory allocator for the new baggage
+/// - `env_map`: Environment map to read BAGGAGE from
 ///
 /// ## Returns
 /// The extracted Baggage, or null if BAGGAGE env var is not set.
 ///
 /// ## Errors
 /// - `OutOfMemory`: If allocation fails during extraction
-pub fn extractFromEnvironment(allocator: std.mem.Allocator) !?Baggage {
-    var env_map = try env.createEnvMap(allocator);
-    defer env_map.deinit();
-
-    return try extract(allocator, &env_map, EnvGetter);
+pub fn extractFromEnvironment(allocator: std.mem.Allocator, env_map: *const EnvMap) !?Baggage {
+    return try extract(allocator, env_map, EnvGetter);
 }
 
 /// Inject baggage into an environment map.
@@ -336,7 +334,7 @@ pub fn extractFromEnvironment(allocator: std.mem.Allocator) !?Baggage {
 pub fn injectIntoEnvironment(
     allocator: std.mem.Allocator,
     baggage: Baggage,
-    env_map: *env.EnvMap,
+    env_map: *EnvMap,
 ) !void {
     try inject(allocator, baggage, env_map, EnvSetter);
 }

@@ -4,7 +4,7 @@ const sdk = @import("opentelemetry-sdk");
 const logs_sdk = sdk.logs;
 const common = @import("common.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -15,16 +15,21 @@ pub fn main() !void {
     defer common.cleanupTestContext(&ctx, io);
 
     std.debug.print("Running logs integration test...\n", .{});
-    try testLogs(allocator, io, ctx.tmp_dir);
+    try testLogs(allocator, io, init.environ_map, ctx.tmp_dir);
     std.debug.print("✓ Logs test passed\n\n", .{});
 
     std.debug.print("Running logs compression test...\n", .{});
-    try testLogsWithCompression(allocator, io, ctx.tmp_dir);
+    try testLogsWithCompression(allocator, io, init.environ_map, ctx.tmp_dir);
     std.debug.print("✓ Logs compression test passed\n\n", .{});
 }
 
-fn testLogs(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator);
+fn testLogs(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
     defer config.deinit();
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
@@ -92,8 +97,13 @@ fn testLogs(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void
     std.debug.print("  ✓ Logs JSON validated - found test log records\n", .{});
 }
 
-fn testLogsWithCompression(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator);
+fn testLogsWithCompression(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
     defer config.deinit();
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;

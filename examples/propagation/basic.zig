@@ -14,7 +14,7 @@ const std = @import("std");
 
 const sdk = @import("opentelemetry-sdk");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -23,7 +23,7 @@ pub fn main() !void {
 
     // Create a composite propagator from the global configuration
     // This reads OTEL_PROPAGATORS environment variable
-    var propagator = try sdk.propagation.createGlobalPropagator(allocator);
+    var propagator = try sdk.propagation.createGlobalPropagator(allocator, init.environ_map);
     defer propagator.deinit();
 
     std.debug.print("Propagator initialized from configuration\n", .{});

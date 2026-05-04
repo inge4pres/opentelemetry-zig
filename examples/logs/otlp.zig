@@ -1,7 +1,7 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -18,7 +18,7 @@ pub fn main() !void {
     // - OTEL_EXPORTER_OTLP_LOGS_ENDPOINT (logs-specific override)
     // - OTEL_EXPORTER_OTLP_HEADERS (custom headers)
     // - OTEL_EXPORTER_OTLP_COMPRESSION (gzip compression)
-    var otlp_config = try sdk.otlp.ConfigOptions.init(allocator);
+    var otlp_config = try sdk.otlp.ConfigOptions.init(allocator, init.environ_map);
     defer otlp_config.deinit();
 
     std.debug.print("OTLP Endpoint: {s}\n", .{otlp_config.endpoint});

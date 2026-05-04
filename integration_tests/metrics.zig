@@ -4,7 +4,7 @@ const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const common = @import("common.zig");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -15,16 +15,21 @@ pub fn main() !void {
     defer common.cleanupTestContext(&ctx, io);
 
     std.debug.print("Running metrics integration test...\n", .{});
-    try testMetrics(allocator, io, ctx.tmp_dir);
+    try testMetrics(allocator, io, init.environ_map, ctx.tmp_dir);
     std.debug.print("✓ Metrics test passed\n\n", .{});
 
     std.debug.print("Running metrics compression test...\n", .{});
-    try testMetricsWithCompression(allocator, io, ctx.tmp_dir);
+    try testMetricsWithCompression(allocator, io, init.environ_map, ctx.tmp_dir);
     std.debug.print("✓ Metrics compression test passed\n\n", .{});
 }
 
-fn testMetrics(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator);
+fn testMetrics(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
     defer config.deinit();
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
@@ -71,8 +76,13 @@ fn testMetrics(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !v
     std.debug.print("  ✓ Metrics JSON validated - found 'test_counter' metric\n", .{});
 }
 
-fn testMetricsWithCompression(allocator: std.mem.Allocator, io: std.Io, tmp_dir: std.Io.Dir) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator);
+fn testMetricsWithCompression(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
     defer config.deinit();
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;

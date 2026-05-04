@@ -153,11 +153,14 @@ pub const CompositePropagator = struct {
 ///
 /// This is a convenience function that creates a composite propagator using
 /// the global configuration singleton. If no global configuration exists,
-/// it will initialize one from environment variables.
-pub fn createGlobalPropagator(allocator: std.mem.Allocator) !CompositePropagator {
+/// it will initialize one from the supplied environment map.
+pub fn createGlobalPropagator(
+    allocator: std.mem.Allocator,
+    env_map: *const std.process.Environ.Map,
+) !CompositePropagator {
     const config = Configuration.get() orelse blk: {
         // No global config exists, create and set one
-        const new_config = try Configuration.initFromEnv(allocator);
+        const new_config = try Configuration.init(allocator, env_map);
         Configuration.set(new_config);
         break :blk new_config;
     };

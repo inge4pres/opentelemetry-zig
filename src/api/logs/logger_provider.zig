@@ -764,7 +764,10 @@ test "LoggerProvider with config from environment" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const cfg = try Configuration.initFromEnv(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    const cfg = try Configuration.init(allocator, &env_map);
     defer cfg.deinit();
     Configuration.set(cfg);
 

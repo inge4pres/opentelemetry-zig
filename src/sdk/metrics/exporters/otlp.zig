@@ -2,7 +2,6 @@
 
 const std = @import("std");
 const clock = @import("clock");
-const env = @import("env");
 
 const log = std.log.scoped(.otlp_exporter);
 
@@ -48,11 +47,12 @@ pub const OTLPExporter = struct {
     temporality: view.TemporalitySelector,
     config: *otlp.ConfigOptions,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: *otlp.ConfigOptions, temporality: view.TemporalitySelector) !*Self {
-        var env_map = try env.createEnvMap(allocator);
-        defer env_map.deinit();
-        try config.mergeFromEnvMap(&env_map);
-
+    pub fn init(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        temporality: view.TemporalitySelector,
+        config: *otlp.ConfigOptions,
+    ) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
@@ -476,9 +476,11 @@ test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
 test "exporters/otlp init/deinit" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const config = try otlp.ConfigOptions.init(allocator);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try otlp.ConfigOptions.init(allocator, &env_map);
     defer config.deinit();
 
-    var exporter = try OTLPExporter.init(allocator, io, config, view.DefaultTemporality);
+    var exporter = try OTLPExporter.init(allocator, io, view.DefaultTemporality, config);
     defer exporter.deinit();
 }

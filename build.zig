@@ -31,12 +31,6 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .link_libc = true,
     });
-    const env_mod = b.addModule("env", .{
-        .root_source_file = b.path("src/env.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
 
     // Modules section
     const sdk_mod = b.addModule("sdk", .{
@@ -50,7 +44,6 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "protobuf", .module = protobuf_mod },
             .{ .name = "opentelemetry-proto", .module = otel_proto_mod },
             .{ .name = "clock", .module = clock_mod },
-            .{ .name = "env", .module = env_mod },
         },
     });
 
@@ -71,7 +64,6 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "protobuf", .module = protobuf_mod },
             .{ .name = "opentelemetry-proto", .module = otel_proto_mod },
             .{ .name = "clock", .module = clock_mod },
-            .{ .name = "env", .module = env_mod },
         },
     });
     const sdk_lib = b.addLibrary(.{
@@ -126,7 +118,6 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "protobuf", .module = protobuf_mod },
             .{ .name = "opentelemetry-proto", .module = otel_proto_mod },
             .{ .name = "clock", .module = clock_mod },
-            .{ .name = "env", .module = env_mod },
         },
     });
     // TODO add examples for other signals
@@ -140,7 +131,6 @@ pub fn build(b: *std.Build) !void {
             otel_stub_mod,
             otel_proto_mod,
             clock_mod,
-            env_mod,
             examples_filter,
         ) catch |err| {
             std.debug.print("Error building metrics examples: {}\n", .{err});
@@ -204,7 +194,7 @@ pub fn build(b: *std.Build) !void {
 
     const benchmarked_signals: []const []const u8 = &.{ "logs", "metrics", "trace" };
     for (benchmarked_signals) |signal| {
-        const signal_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", signal })), sdk_mod, benchmark_mod, clock_mod, env_mod, benchmark_debug) catch |err| {
+        const signal_benchmarks = buildBenchmarks(b, b.path(b.pathJoin(&.{ "benchmarks", signal })), sdk_mod, benchmark_mod, clock_mod, benchmark_debug) catch |err| {
             std.debug.print("Error building {s} benchmarks: {}\n", .{ signal, err });
             return err;
         };
@@ -232,7 +222,7 @@ pub fn build(b: *std.Build) !void {
 
     // Integration tests step
     const integration_step = b.step("integration", "Run integration tests (requires Docker)");
-    const integration_tests = buildIntegrationTests(b, b.path("integration_tests"), sdk_mod, clock_mod, env_mod) catch |build_err| {
+    const integration_tests = buildIntegrationTests(b, b.path("integration_tests"), sdk_mod, clock_mod) catch |build_err| {
         std.debug.print("Error building integration tests: {}\n", .{build_err});
         return build_err;
     };
@@ -254,7 +244,6 @@ pub fn build(b: *std.Build) !void {
                 .{ .name = "protobuf", .module = protobuf_mod },
                 .{ .name = "opentelemetry-proto", .module = otel_proto_mod },
                 .{ .name = "clock", .module = clock_mod },
-                .{ .name = "env", .module = env_mod },
             },
         }),
     });
@@ -276,7 +265,6 @@ fn buildExamples(
     otlp_stub_mod: *std.Build.Module,
     proto_mod: *std.Build.Module,
     clock_mod: *std.Build.Module,
-    env_mod: *std.Build.Module,
     name_filter: ?[]const u8,
 ) ![]*std.Build.Step.Compile {
     var exes: std.ArrayList(*std.Build.Step.Compile) = .empty;
@@ -305,7 +293,6 @@ fn buildExamples(
                     .{ .name = "otlp-stub", .module = otlp_stub_mod },
                     .{ .name = "opentelemetry-proto", .module = proto_mod },
                     .{ .name = "clock", .module = clock_mod },
-                    .{ .name = "env", .module = env_mod },
                 },
             });
             try exes.append(b.allocator, b.addExecutable(.{
@@ -324,7 +311,6 @@ fn buildBenchmarks(
     otel_mod: *std.Build.Module,
     benchmark_mod: *std.Build.Module,
     clock_mod: *std.Build.Module,
-    env_mod: *std.Build.Module,
     debug_mode: bool,
 ) ![]*std.Build.Step.Compile {
     var bench_tests: std.ArrayList(*std.Build.Step.Compile) = .empty;
@@ -349,7 +335,6 @@ fn buildBenchmarks(
                     .{ .name = "opentelemetry-sdk", .module = otel_mod },
                     .{ .name = "benchmark", .module = benchmark_mod },
                     .{ .name = "clock", .module = clock_mod },
-                    .{ .name = "env", .module = env_mod },
                 },
             });
 
@@ -381,7 +366,6 @@ fn buildIntegrationTests(
     integration_dir: std.Build.LazyPath,
     otel_mod: *std.Build.Module,
     clock_mod: *std.Build.Module,
-    env_mod: *std.Build.Module,
 ) ![]*std.Build.Step.Compile {
     var integration_tests: std.ArrayList(*std.Build.Step.Compile) = .empty;
     errdefer integration_tests.deinit(b.allocator);
@@ -401,7 +385,6 @@ fn buildIntegrationTests(
         .imports = &.{
             .{ .name = "opentelemetry-sdk", .module = otel_mod },
             .{ .name = "clock", .module = clock_mod },
-            .{ .name = "env", .module = env_mod },
         },
     });
 
@@ -427,7 +410,6 @@ fn buildIntegrationTests(
                                 .{ .name = "opentelemetry-sdk", .module = otel_mod },
                                 .{ .name = "common", .module = common_mod },
                                 .{ .name = "clock", .module = clock_mod },
-                                .{ .name = "env", .module = env_mod },
                             },
                         });
 
@@ -447,7 +429,6 @@ fn buildIntegrationTests(
                         .{ .name = "opentelemetry-sdk", .module = otel_mod },
                         .{ .name = "common", .module = common_mod },
                         .{ .name = "clock", .module = clock_mod },
-                        .{ .name = "env", .module = env_mod },
                     },
                 });
 
