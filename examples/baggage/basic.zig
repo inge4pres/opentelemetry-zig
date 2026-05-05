@@ -9,8 +9,8 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     std.debug.print("=== OpenTelemetry Baggage Example ===\n\n", .{});
 

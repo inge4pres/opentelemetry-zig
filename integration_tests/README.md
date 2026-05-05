@@ -81,12 +81,15 @@ To add new integration tests:
 1. Create a new `.zig` file in the `integration_tests/` directory
 2. Import the `common` module and follow the pattern used in existing tests:
    ```zig
+   const std = @import("std");
    const common = @import("common.zig");
 
-   pub fn main() !void {
-       const allocator = std.heap.page_allocator;
-       var ctx = try common.setupTestContext(allocator, "my-test");
-       defer common.cleanupTestContext(&ctx);
+   pub fn main(init: std.process.Init) !void {
+       const allocator = init.gpa;
+       const io = init.io;
+
+       var ctx = try common.setupTestContext(allocator, io, "my-test");
+       defer common.cleanupTestContext(&ctx, io);
 
        // Run your tests using ctx.tmp_dir
    }

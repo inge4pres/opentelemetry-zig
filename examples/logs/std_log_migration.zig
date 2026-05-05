@@ -6,13 +6,9 @@ pub const std_options: std.Options = .{
     .logFn = sdk.logs.std_log_bridge.logFn,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     std.debug.print("OpenTelemetry std.log Bridge - Migration Example\n", .{});
     std.debug.print("=================================================\n\n", .{});

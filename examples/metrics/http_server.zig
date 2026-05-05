@@ -6,17 +6,15 @@ const metrics_sdk = sdk.metrics;
 const view = metrics_sdk.View;
 const Kind = metrics_sdk.Kind;
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     const otel = try setupTelemetry(allocator, io);
     defer {
         otel.metric_reader.shutdown();
         otel.meter_provider.shutdown();
+        otel.in_memory_exporter.deinit();
     }
 
     const ip = "127.0.0.1";
@@ -30,6 +28,7 @@ pub fn main() !void {
 
     // Send an HTTP request to the server
     var client = http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
     const uri = try std.Uri.parse("http://127.0.0.1:4488");
     var req = try client.request(.GET, uri, .{});
     defer req.deinit();

@@ -3,14 +3,9 @@ const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace = sdk.trace;
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer if (gpa.deinit() == .leak) @panic("leaks detected");
-
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Create SDK components for realistic tracing
 

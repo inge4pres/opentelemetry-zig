@@ -13,24 +13,24 @@ const Kind = metrics_sdk.Kind;
 ///
 /// Histograms are ideal for measuring distributions of values like request durations,
 /// response sizes, or any metric where you want to understand the distribution pattern.
-pub fn main() !void {
-    // Allocate memory for the metrics SDK
-    const METRICS_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB buffer for metrics collection
-    const buf = try std.heap.page_allocator.alloc(u8, METRICS_BUFFER_SIZE);
+pub fn main(init: std.process.Init) !void {
+    // Cap metrics SDK memory at 4MB by backing the FBA with init.gpa.
+    const METRICS_BUFFER_SIZE = 4 * 1024 * 1024;
+    const buf = try init.gpa.alloc(u8, METRICS_BUFFER_SIZE);
+    defer init.gpa.free(buf);
     var fba = std.heap.FixedBufferAllocator.init(buf);
+    const allocator = fba.allocator();
 
-    var threaded: std.Io.Threaded = .init(fba.allocator(), .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = init.io;
 
     // Create meter provider
-    const mp = try MeterProvider.init(fba.allocator(), io);
+    const mp = try MeterProvider.init(allocator, io);
     defer mp.shutdown();
 
     // Example 1: Histogram with Explicit Bucket Aggregation
-    try explicitBucketHistogramExample(fba.allocator(), io, mp);
+    try explicitBucketHistogramExample(allocator, io, mp);
 
-    try exponentialBucketHistogramExample(fba.allocator(), io, mp);
+    try exponentialBucketHistogramExample(allocator, io, mp);
 }
 
 fn explicitBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: *MeterProvider) !void {

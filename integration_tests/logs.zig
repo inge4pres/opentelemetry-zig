@@ -5,11 +5,8 @@ const logs_sdk = sdk.logs;
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = std.heap.page_allocator;
-
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const allocator = init.gpa;
+    const io = init.io;
 
     var ctx = try common.setupTestContext(allocator, io, "logs");
     defer common.cleanupTestContext(&ctx, io);

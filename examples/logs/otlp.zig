@@ -2,12 +2,8 @@ const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
 
 pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const allocator = init.gpa;
+    const io = init.io;
 
     std.debug.print("OpenTelemetry OTLP Logs Exporter Example\n", .{});
     std.debug.print("=========================================\n\n", .{});

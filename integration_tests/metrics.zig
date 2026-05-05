@@ -5,11 +5,8 @@ const metrics_sdk = sdk.metrics;
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = std.heap.page_allocator;
-
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const allocator = init.gpa;
+    const io = init.io;
 
     var ctx = try common.setupTestContext(allocator, io, "metrics");
     defer common.cleanupTestContext(&ctx, io);
@@ -41,6 +38,8 @@ fn testMetrics(
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
+    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.shutdown();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test" });
@@ -95,6 +94,8 @@ fn testMetricsWithCompression(
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
+    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.shutdown();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test-compression" });

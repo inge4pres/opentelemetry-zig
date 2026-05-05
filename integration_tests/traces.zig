@@ -6,11 +6,8 @@ const trace_api = sdk.api.trace;
 const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = std.heap.page_allocator;
-
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const allocator = init.gpa;
+    const io = init.io;
 
     var ctx = try common.setupTestContext(allocator, io, "traces");
     defer common.cleanupTestContext(&ctx, io);
@@ -41,10 +38,10 @@ fn testTraces(
     };
 
     var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
-    errdefer tracer_provider.shutdown();
+    defer tracer_provider.shutdown();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
-    errdefer otlp_exporter.deinit();
+    defer otlp_exporter.deinit();
 
     var simple_processor = trace_sdk.SimpleProcessor.init(
         allocator,
@@ -102,15 +99,10 @@ fn testTraces(
     if (!has_test_span or !has_resource_spans or !has_integration_test) {
         std.debug.print("  ERROR: Traces JSON doesn't contain expected data\n", .{});
         std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
-        tracer_provider.shutdown();
-        otlp_exporter.deinit();
         return error.TracesNotReceivedByCollector;
     }
 
     std.debug.print("  ✓ Traces JSON validated - found {d} test spans\n", .{num_spans});
-
-    tracer_provider.shutdown();
-    otlp_exporter.deinit();
 }
 
 fn testTracesWithCompression(
@@ -131,10 +123,10 @@ fn testTracesWithCompression(
     };
 
     var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
-    errdefer tracer_provider.shutdown();
+    defer tracer_provider.shutdown();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
-    errdefer otlp_exporter.deinit();
+    defer otlp_exporter.deinit();
 
     var simple_processor = trace_sdk.SimpleProcessor.init(
         allocator,
@@ -184,19 +176,13 @@ fn testTracesWithCompression(
         if (err == error.ExpectedContentNotFound) {
             const stale_content = common.readJsonFile(allocator, io, tmp_dir, "traces.json") catch {
                 std.debug.print("  ERROR: Could not read traces.json\n", .{});
-                tracer_provider.shutdown();
-                otlp_exporter.deinit();
                 return error.CompressedTracesNotReceivedByCollector;
             };
             defer allocator.free(stale_content);
             std.debug.print("  ERROR: Compressed traces JSON doesn't contain expected data\n", .{});
             std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{stale_content[0..@min(stale_content.len, 500)]});
-            tracer_provider.shutdown();
-            otlp_exporter.deinit();
             return error.CompressedTracesNotReceivedByCollector;
         }
-        tracer_provider.shutdown();
-        otlp_exporter.deinit();
         return err;
     };
     defer allocator.free(json_content);
@@ -209,8 +195,6 @@ fn testTracesWithCompression(
     if (!has_compressed_span or !has_resource_spans) {
         std.debug.print("  ERROR: Compressed traces JSON doesn't contain expected data\n", .{});
         std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
-        tracer_provider.shutdown();
-        otlp_exporter.deinit();
         return error.CompressedTracesNotReceivedByCollector;
     }
 
@@ -218,7 +202,4 @@ fn testTracesWithCompression(
     if (has_compression_attr) {
         std.debug.print("  ✓ Compression attribute 'gzip' found in traces\n", .{});
     }
-
-    tracer_provider.shutdown();
-    otlp_exporter.deinit();
 }

@@ -3,13 +3,9 @@ const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const MeterProvider = metrics_sdk.MeterProvider;
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer if (gpa.deinit() == .leak) @panic("leaks detected");
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Use the builtin meter provider
     const mp = try MeterProvider.init(allocator, io);
@@ -18,8 +14,9 @@ pub fn main() !void {
         .name = "test.company.org/sample",
     });
 
-    // Allocate a maximum of 4MiB of memory for the metrics sdk
-    const buf = try std.heap.page_allocator.alloc(u8, 4 << 20);
+    // Cap metrics SDK memory at 4MiB by backing the FBA with init.gpa.
+    const buf = try allocator.alloc(u8, 4 << 20);
+    defer allocator.free(buf);
     var fba = std.heap.FixedBufferAllocator.init(buf);
 
     // Declare an in-memory exporter

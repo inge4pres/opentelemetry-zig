@@ -6,13 +6,9 @@ const MeterProvider = metrics_sdk.MeterProvider;
 const MetricExporter = metrics_sdk.MetricExporter;
 const PeriodicExportingReader = metrics_sdk.PeriodicExportingReader;
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     // Create the meter provider
     const mp = try MeterProvider.init(allocator, io);

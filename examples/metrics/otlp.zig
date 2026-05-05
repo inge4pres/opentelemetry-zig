@@ -8,12 +8,8 @@ const otlp_stub = @import("otlp-stub");
 const pbmetrics = @import("opentelemetry-proto").collector_metrics_v1;
 
 pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer if (gpa.deinit() == .leak) @panic("leaks detected");
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const allocator = init.gpa;
+    const io = init.io;
 
     // number of data points we expect to send
     const how_many = 10;

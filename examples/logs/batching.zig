@@ -2,13 +2,9 @@ const std = @import("std");
 const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
     std.debug.print("OpenTelemetry Logs SDK - Batching Example\n", .{});
     std.debug.print("==========================================\n\n", .{});

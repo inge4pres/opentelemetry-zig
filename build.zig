@@ -3,7 +3,7 @@ const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     const test_verbose = b.option(bool, "test-verbose", "Show verbose test output") orelse false;
     const test_fail_first = b.option(bool, "test-fail-first", "Stop on first test failure") orelse false;
@@ -238,6 +238,8 @@ pub fn build(b: *std.Build) !void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/sdk.zig"),
             .target = target,
+            // Doc emission is independent of optimize mode; pin to Debug
+            // for the fastest doc builds.
             .optimize = .Debug,
             .link_libc = true,
             .imports = &.{
@@ -285,9 +287,7 @@ fn buildExamples(
             const b_mod = b.createModule(.{
                 .root_source_file = file_name,
                 .target = otel_sdk_mod.resolved_target.?,
-                // We set the optimization level to ReleaseSafe for examples
-                // because we want to have safety checks, and execute assertions.
-                .optimize = .ReleaseSafe,
+                .optimize = otel_sdk_mod.optimize.?,
                 .imports = &.{
                     .{ .name = "opentelemetry-sdk", .module = otel_sdk_mod },
                     .{ .name = "otlp-stub", .module = otlp_stub_mod },
@@ -381,7 +381,7 @@ fn buildIntegrationTests(
     const common_mod = b.createModule(.{
         .root_source_file = common_path,
         .target = otel_mod.resolved_target.?,
-        .optimize = .ReleaseSafe,
+        .optimize = otel_mod.optimize.?,
         .imports = &.{
             .{ .name = "opentelemetry-sdk", .module = otel_mod },
             .{ .name = "clock", .module = clock_mod },
@@ -404,8 +404,7 @@ fn buildIntegrationTests(
                         const b_mod = b.createModule(.{
                             .root_source_file = file_name,
                             .target = otel_mod.resolved_target.?,
-                            // Use ReleaseSafe for integration tests to have safety checks
-                            .optimize = .ReleaseSafe,
+                            .optimize = otel_mod.optimize.?,
                             .imports = &.{
                                 .{ .name = "opentelemetry-sdk", .module = otel_mod },
                                 .{ .name = "common", .module = common_mod },
@@ -423,8 +422,7 @@ fn buildIntegrationTests(
                 const b_mod = b.createModule(.{
                     .root_source_file = file_name,
                     .target = otel_mod.resolved_target.?,
-                    // Use ReleaseSafe for integration tests to have safety checks
-                    .optimize = .ReleaseSafe,
+                    .optimize = otel_mod.optimize.?,
                     .imports = &.{
                         .{ .name = "opentelemetry-sdk", .module = otel_mod },
                         .{ .name = "common", .module = common_mod },
