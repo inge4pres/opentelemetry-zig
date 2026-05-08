@@ -3,7 +3,7 @@ const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace_sdk = sdk.trace;
 const trace_api = sdk.api.trace;
-const common = @import("common.zig");
+const common = @import("common");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;

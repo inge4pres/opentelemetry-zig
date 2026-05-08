@@ -82,7 +82,7 @@ To add new integration tests:
 2. Import the `common` module and follow the pattern used in existing tests:
    ```zig
    const std = @import("std");
-   const common = @import("common.zig");
+   const common = @import("common");
 
    pub fn main(init: std.process.Init) !void {
        const allocator = init.gpa;
