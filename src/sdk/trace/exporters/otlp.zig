@@ -377,6 +377,55 @@ test "OTLPExporter with InstrumentationScope" {
     try std.testing.expect(found_lib2);
 }
 
+/// Fills its own stack frame with 0xaa to expose dangling pointers into freed
+/// stack memory. Must be noinline so it actually occupies a distinct frame.
+noinline fn poisonStack() void {
+    var buf: [2048]u8 = undefined;
+    @memset(&buf, 0xaa);
+    std.mem.doNotOptimizeAway(&buf);
+}
+
+test "span trace_id and span_id survive stack reuse" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const expected_trace_id = [16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+    const expected_span_id = [8]u8{ 17, 18, 19, 20, 21, 22, 23, 24 };
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    var config = try otlp.ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, io, config);
+    defer exporter.deinit();
+
+    var trace_state = trace.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace.SpanContext.init(
+        trace.TraceID.init(expected_trace_id),
+        trace.SpanID.init(expected_span_id),
+        trace.TraceFlags.default(),
+        trace_state,
+        false,
+    );
+    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+    defer test_span.deinit();
+
+    var spans = [_]trace.Span{test_span};
+    var request = try exporter.spansToOTLPRequest(spans[0..]);
+    defer exporter.cleanupRequest(&request);
+
+    // Overwrite the stack frame that spanToOTLP occupied. If trace_id or span_id
+    // were slices into that frame (the pre-fix dangling-pointer bug) they would
+    // now read 0xaa bytes instead of the original values.
+    poisonStack();
+
+    const otlp_span = request.resource_spans.items[0].scope_spans.items[0].spans.items[0];
+    try std.testing.expectEqualSlices(u8, &expected_trace_id, otlp_span.trace_id);
+    try std.testing.expectEqualSlices(u8, &expected_span_id, otlp_span.span_id);
+}
+
 test "OTLPExporter basic functionality" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
