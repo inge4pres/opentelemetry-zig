@@ -223,19 +223,19 @@ pub const OTLPExporter = struct {
             try attributes.append(self.allocator, key_value);
         }
 
-        // Convert trace_id to hex string (16 bytes -> 32 char hex).
-        // Duplicated onto the exporter allocator because bytesToHex returns a
-        // fixed-size array; borrowing its address would escape the stack frame.
-        const trace_id_str: []const u8 = if (log_record.trace_id) |tid| blk: {
-            const hex = std.fmt.bytesToHex(&tid, .lower);
-            break :blk try self.allocator.dupe(u8, &hex);
-        } else "";
+        // trace_id and span_id are protobuf `bytes` fields.
+        // Binary (gRPC/http_protobuf): serialized as raw bytes, so 16 and 8 bytes respectively.
+        // JSON (http_json): zig-protobuf base64-encodes bytes fields per proto3 JSON spec;
+        //   the collector's protojson unmarshaler base64-decodes back to the correct bytes.
+        const trace_id_str: []const u8 = if (log_record.trace_id) |tid|
+            try self.allocator.dupe(u8, &tid)
+        else
+            "";
 
-        // Convert span_id to hex string (8 bytes -> 16 char hex)
-        const span_id_str: []const u8 = if (log_record.span_id) |sid| blk: {
-            const hex = std.fmt.bytesToHex(&sid, .lower);
-            break :blk try self.allocator.dupe(u8, &hex);
-        } else "";
+        const span_id_str: []const u8 = if (log_record.span_id) |sid|
+            try self.allocator.dupe(u8, &sid)
+        else
+            "";
 
         // Convert body to AnyValue
         const body: ?pbcommon.AnyValue = if (log_record.body) |b|
@@ -431,6 +431,9 @@ test "Log record to OTLP conversion with all fields" {
     try std.testing.expectEqualStrings("ERROR", otlp_log.severity_text);
     try std.testing.expectEqualStrings("Test log message", otlp_log.body.?.value.?.string_value);
     try std.testing.expectEqual(@as(usize, 2), otlp_log.attributes.items.len);
+    // trace_id and span_id are stored as raw bytes (not hex strings).
+    try std.testing.expectEqualSlices(u8, &trace_id, otlp_log.trace_id);
+    try std.testing.expectEqualSlices(u8, &span_id, otlp_log.span_id);
 }
 
 test "Log records grouped by instrumentation scope" {
@@ -576,7 +579,7 @@ test "Resource attributes in OTLP export" {
     try std.testing.expectEqualStrings("my-service", resource.attributes.items[0].value.?.value.?.string_value);
 }
 
-test "Trace context hex conversion" {
+test "Trace context binary encoding" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -613,9 +616,8 @@ test "Trace context hex conversion" {
         if (otlp_log.span_id.len > 0) allocator.free(otlp_log.span_id);
     }
 
-    // Verify hex conversion (lowercase hex without 0x prefix)
-    try std.testing.expectEqualStrings("0123456789abcdef0123456789abcdef", otlp_log.trace_id);
-    try std.testing.expectEqualStrings("0123456789abcdef", otlp_log.span_id);
+    try std.testing.expectEqualSlices(u8, &trace_id, otlp_log.trace_id);
+    try std.testing.expectEqualSlices(u8, &span_id, otlp_log.span_id);
 }
 
 test "Memory cleanup verification" {

@@ -17,6 +17,7 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Context = @import("../context/context.zig").Context;
 const EnabledParameters = @import("enabled_parameters.zig").EnabledParameters;
+const trace = @import("../trace.zig");
 
 // Import configuration module
 const Configuration = @import("../../sdk/config.zig").Configuration;
@@ -298,11 +299,23 @@ pub const Logger = struct {
         body: ?[]const u8,
         attributes: ?[]const Attribute,
     ) void {
+        self.emitLinked(severity_number, severity_text, body, attributes, null);
+    }
+
+    /// Emit a log record linked to a trace span.
+    /// Pass `span.span_context` to correlate logs with traces in the backend.
+    pub fn emitLinked(
+        self: *Self,
+        severity_number: ?u8,
+        severity_text: ?[]const u8,
+        body: ?[]const u8,
+        attributes: ?[]const Attribute,
+        span_context: ?trace.SpanContext,
+    ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) {
             return;
         }
 
-        // Create ReadWriteLogRecord
         var log_record = ReadWriteLogRecord.init(self.scope);
         defer log_record.deinit(self.allocator);
 
@@ -310,8 +323,9 @@ pub const Logger = struct {
         log_record.severity_text = severity_text;
         log_record.body = body;
         log_record.resource = self.provider.resource;
+        log_record.trace_id = if (span_context) |sc| sc.trace_id.toBinary() else null;
+        log_record.span_id = if (span_context) |sc| sc.span_id.toBinary() else null;
 
-        // Add attributes if provided
         if (attributes) |attrs| {
             for (attrs) |attr| {
                 log_record.setAttribute(self.allocator, attr) catch |err| {
@@ -320,7 +334,6 @@ pub const Logger = struct {
             }
         }
 
-        // Call processors in order
         const ctx = Context.init();
         self.provider.mutex.lockUncancelable(self.provider.io);
         defer self.provider.mutex.unlock(self.provider.io);
