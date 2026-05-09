@@ -319,12 +319,13 @@ pub fn loggerEmit(
     const attrs = convertAttributes(allocator, attributes, attr_count) catch return .error_out_of_memory;
     defer if (attrs) |a| allocator.free(a);
 
-    // Emit the log record
     zigLogger.emit(
-        if (severity_number > 0) @intCast(severity_number) else null,
-        if (severity_text) |st| std.mem.span(st) else null,
-        if (body) |b| std.mem.span(b) else null,
-        attrs,
+        if (severity_number > 0) @intCast(severity_number) else 0,
+        if (body) |b| std.mem.span(b) else "",
+        .{
+            .severity_text = if (severity_text) |st| std.mem.span(st) else null,
+            .attributes = attrs,
+        },
     );
 
     return .ok;

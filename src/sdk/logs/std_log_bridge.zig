@@ -240,12 +240,7 @@ pub fn logFn(
     const body = std.fmt.bufPrint(&buf, format, args) catch |err| {
         // If formatting fails, log the error and the raw format string
         std.log.err("std_log_bridge: failed to format log message: {}", .{err});
-        unwrapped_logger.emit(
-            mapSeverity(level),
-            mapSeverityText(level),
-            format,
-            null,
-        );
+        unwrapped_logger.emit(mapSeverity(level), format, .{ .severity_text = mapSeverityText(level) });
         if (config.also_log_to_stderr) {
             std.log.defaultLog(level, scope, format, args);
         }
@@ -282,13 +277,7 @@ pub fn logFn(
 
     const attrs = if (attrs_count > 0) attrs_buffer[0..attrs_count] else null;
 
-    // Emit to OpenTelemetry
-    unwrapped_logger.emit(
-        mapSeverity(level),
-        mapSeverityText(level),
-        body,
-        attrs,
-    );
+    unwrapped_logger.emit(mapSeverity(level), body, .{ .severity_text = mapSeverityText(level), .attributes = attrs });
 
     // Also log to stderr if dual mode is enabled
     if (config.also_log_to_stderr) {

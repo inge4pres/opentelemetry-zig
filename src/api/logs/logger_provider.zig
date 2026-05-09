@@ -291,26 +291,26 @@ pub const Logger = struct {
         self.allocator.destroy(self);
     }
 
-    /// Emit a log record
+    pub const EmitOptions = struct {
+        /// Human-readable severity label (e.g. "WARN", "CRITICAL").
+        /// Optional: backends can derive a standard label from `severity_number`.
+        /// Useful when bridging from a logging system that has its own level names.
+        severity_text: ?[]const u8 = null,
+
+        /// Key-value pairs attached to this log record.
+        attributes: ?[]const Attribute = null,
+
+        /// Span context to correlate this log record with an active trace.
+        /// Pass `span.span_context` to enable log-trace correlation in the backend.
+        span_context: ?trace.SpanContext = null,
+    };
+
+    /// Emit a log record.
     pub fn emit(
         self: *Self,
-        severity_number: ?u8,
-        severity_text: ?[]const u8,
-        body: ?[]const u8,
-        attributes: ?[]const Attribute,
-    ) void {
-        self.emitLinked(severity_number, severity_text, body, attributes, null);
-    }
-
-    /// Emit a log record linked to a trace span.
-    /// Pass `span.span_context` to correlate logs with traces in the backend.
-    pub fn emitLinked(
-        self: *Self,
-        severity_number: ?u8,
-        severity_text: ?[]const u8,
-        body: ?[]const u8,
-        attributes: ?[]const Attribute,
-        span_context: ?trace.SpanContext,
+        severity_number: u8,
+        body: []const u8,
+        options: EmitOptions,
     ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) {
             return;
@@ -320,13 +320,13 @@ pub const Logger = struct {
         defer log_record.deinit(self.allocator);
 
         log_record.severity_number = severity_number;
-        log_record.severity_text = severity_text;
+        log_record.severity_text = options.severity_text;
         log_record.body = body;
         log_record.resource = self.provider.resource;
-        log_record.trace_id = if (span_context) |sc| sc.trace_id.toBinary() else null;
-        log_record.span_id = if (span_context) |sc| sc.span_id.toBinary() else null;
+        log_record.trace_id = if (options.span_context) |sc| sc.trace_id.toBinary() else null;
+        log_record.span_id = if (options.span_context) |sc| sc.span_id.toBinary() else null;
 
-        if (attributes) |attrs| {
+        if (options.attributes) |attrs| {
             for (attrs) |attr| {
                 log_record.setAttribute(self.allocator, attr) catch |err| {
                     std.log.err("Failed to add attribute to log record: {}", .{err});
@@ -350,7 +350,7 @@ pub const Logger = struct {
     /// ```zig
     /// if (logger.enabled(.{ .context = ctx, .severity = 9 })) {
     ///     const expensive_data = computeExpensiveDebugInfo();
-    ///     logger.emit(9, "INFO", expensive_data, null);
+    ///     logger.emit(9, expensive_data, .{});
     /// }
     /// ```
     ///
@@ -456,7 +456,7 @@ test "LoggerProvider with processor" {
     const logger = try provider.getLogger(scope);
 
     // Emit a log
-    logger.emit(9, "INFO", "test message", null);
+    logger.emit(9, "test message", .{ .severity_text = "INFO" });
 
     // Verify export was called
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.export_count);
@@ -535,7 +535,7 @@ test "Logger log records inherit resource from provider" {
     const logger = try provider.getLogger(scope);
 
     // Emit a log
-    logger.emit(9, "INFO", "test message", null);
+    logger.emit(9, "test message", .{ .severity_text = "INFO" });
 
     // Verify resource was passed to the log record
     try std.testing.expect(mock_exporter.captured_resource != null);
