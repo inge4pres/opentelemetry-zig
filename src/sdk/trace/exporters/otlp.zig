@@ -178,17 +178,18 @@ pub const OTLPExporter = struct {
 
                 // Clean up spans
                 for (scope_span.spans.items) |*span| {
-                    // Clean up span attributes
+                    self.allocator.free(span.trace_id);
+                    self.allocator.free(span.span_id);
                     span.attributes.deinit(self.allocator);
 
-                    // Clean up events
                     for (span.events.items) |*event| {
                         event.attributes.deinit(self.allocator);
                     }
                     span.events.deinit(self.allocator);
 
-                    // Clean up links
                     for (span.links.items) |*link| {
+                        self.allocator.free(link.trace_id);
+                        self.allocator.free(link.span_id);
                         link.attributes.deinit(self.allocator);
                     }
                     span.links.deinit(self.allocator);
@@ -250,9 +251,11 @@ pub const OTLPExporter = struct {
                 try link_attributes.append(allocator, key_value);
             }
 
+            const link_trace_id = link.span_context.trace_id.toBinary();
+            const link_span_id = link.span_context.span_id.toBinary();
             const otlp_link = pbtrace.Span.Link{
-                .trace_id = (link.span_context.trace_id.toBinary()[0..]),
-                .span_id = (link.span_context.span_id.toBinary()[0..]),
+                .trace_id = try allocator.dupe(u8, &link_trace_id),
+                .span_id = try allocator.dupe(u8, &link_span_id),
                 .trace_state = (""), // Convert trace state if needed
                 .attributes = link_attributes,
                 .dropped_attributes_count = 0,
@@ -261,9 +264,11 @@ pub const OTLPExporter = struct {
             try links.append(allocator, otlp_link);
         }
 
+        const trace_id = span_context.trace_id.toBinary();
+        const span_id = span_context.span_id.toBinary();
         return pbtrace.Span{
-            .trace_id = (span_context.trace_id.toBinary()[0..]),
-            .span_id = (span_context.span_id.toBinary()[0..]),
+            .trace_id = try allocator.dupe(u8, &trace_id),
+            .span_id = try allocator.dupe(u8, &span_id),
             .trace_state = (""), // Convert trace state if needed
             .parent_span_id = (""), // TODO: get from parent context
             .flags = @intCast(span_context.trace_flags.value),
