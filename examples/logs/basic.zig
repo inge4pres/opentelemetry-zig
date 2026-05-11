@@ -34,18 +34,18 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Emitting log records...\n\n", .{});
 
     // Emit some logs
-    logger.emit(9, "Application started", .{});
+    logger.emit(.info, "Application started", .{});
 
-    logger.emit(5, "Debug message with details", .{});
+    logger.emit(.debug, "Debug message with details", .{});
 
     // Emit with attributes
     const attrs = [_]sdk.attributes.Attribute{
         .{ .key = "user.id", .value = .{ .int = 12345 } },
         .{ .key = "request.path", .value = .{ .string = "/api/users" } },
     };
-    logger.emit(9, "Processing request", .{ .attributes = &attrs });
+    logger.emit(.info, "Processing request", .{ .attributes = &attrs });
 
-    logger.emit(17, "Something went wrong!", .{});
+    logger.emit(.err, "Something went wrong!", .{});
 
     std.debug.print("\n\nShutting down...\n", .{});
 

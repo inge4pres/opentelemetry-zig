@@ -56,17 +56,17 @@ fn testLogs(
     const logger = try provider.getLogger(scope);
 
     const num_logs = 5;
-    logger.emit(1, "Test trace log", .{});
-    logger.emit(5, "Test debug log", .{});
-    logger.emit(9, "Test info log", .{});
-    logger.emit(13, "Test warning log", .{});
-    logger.emit(17, "Test error log", .{ .severity_text = "ERROR" });
+    logger.emit(.trace, "Test trace log", .{});
+    logger.emit(.debug, "Test debug log", .{});
+    logger.emit(.info, "Test info log", .{});
+    logger.emit(.warn, "Test warning log", .{});
+    logger.emit(.err, "Test error log", .{});
 
     const attrs = [_]sdk.attributes.Attribute{
         .{ .key = "test.iteration", .value = .{ .int = 1 } },
         .{ .key = "test.name", .value = .{ .string = "integration-test" } },
     };
-    logger.emit(9, "Test log with attributes", .{ .attributes = &attrs });
+    logger.emit(.info, "Test log with attributes", .{ .attributes = &attrs });
 
     try provider.shutdown();
 
@@ -136,9 +136,9 @@ fn testLogsWithCompression(
         .{ .key = "test.type", .value = .{ .string = "compression" } },
     };
 
-    logger.emit(9, "Compressed log 1", .{ .attributes = &attrs });
-    logger.emit(9, "Compressed log 2", .{ .attributes = &attrs });
-    logger.emit(9, "Compressed log 3", .{ .attributes = &attrs });
+    logger.emit(.info, "Compressed log 1", .{ .attributes = &attrs });
+    logger.emit(.info, "Compressed log 2", .{ .attributes = &attrs });
+    logger.emit(.info, "Compressed log 3", .{ .attributes = &attrs });
 
     try provider.shutdown();
 

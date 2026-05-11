@@ -788,7 +788,7 @@ test "Configuration LoggerProvider with SDK disabled" {
     try std.testing.expect(!logger.enabled(.{ .context = ctx }));
 
     // Emit should do nothing (no crash, no processing)
-    logger.emit(9, "test message", .{ .severity_text = "INFO" });
+    logger.emit(.info, "test message", .{});
 }
 
 const IDGenerator = @import("trace/id_generator.zig").IDGenerator;

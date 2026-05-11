@@ -131,7 +131,7 @@ fn emitLogWorker(logger: *Logger, count: usize) void {
     for (0..count) |i| {
         const body = std.fmt.allocPrint(std.heap.page_allocator, "Log message {}", .{i}) catch return;
         defer std.heap.page_allocator.free(body);
-        logger.emit(0, body, .{});
+        logger.emit(null, body, .{});
     }
 }
 
@@ -376,7 +376,7 @@ test "concurrent forceFlush" {
 
     // Emit some logs first
     for (0..50) |_| {
-        logger.emit(0, "test log", .{});
+        logger.emit(null, "test log", .{});
     }
 
     const num_flush_threads = 10;

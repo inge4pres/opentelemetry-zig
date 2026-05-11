@@ -60,12 +60,12 @@ pub fn main(init: std.process.Init) !void {
     // Emit logs with different severity levels.
     // severity_text is optional — useful when bridging from an existing logging system
     // that has its own level names (e.g. "CRITICAL" instead of "FATAL").
-    logger.emit(1, "Trace level message - very detailed", .{ .severity_text = "TRACE" });
-    logger.emit(5, "Debug level message", .{ .severity_text = "DEBUG" });
-    logger.emit(9, "Application started successfully", .{ .severity_text = "INFO" });
-    logger.emit(13, "This is a warning message", .{ .severity_text = "WARN" });
-    logger.emit(17, "An error occurred", .{ .severity_text = "ERROR" });
-    logger.emit(21, "Fatal error - application cannot continue", .{ .severity_text = "CRITICAL" });
+    logger.emit(.trace, "Trace level message - very detailed", .{});
+    logger.emit(.debug, "Debug level message", .{});
+    logger.emit(.info, "Application started successfully", .{});
+    logger.emit(.warn, "This is a warning message", .{});
+    logger.emit(.err, "An error occurred", .{});
+    logger.emit(.fatal, "Fatal error - application cannot continue", .{ .severity_text = "CRITICAL" });
 
     // Emit with attributes
     const attrs = [_]sdk.attributes.Attribute{
@@ -74,7 +74,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .key = "http.status_code", .value = .{ .int = 200 } },
         .{ .key = "http.response_time_ms", .value = .{ .double = 45.67 } },
     };
-    logger.emit(9, "HTTP request processed", .{ .attributes = &attrs });
+    logger.emit(.info, "HTTP request processed", .{ .attributes = &attrs });
 
     // Emit log with trace correlation (demonstrates distributed tracing integration)
     // In a real application, these would come from the current span context

@@ -2,8 +2,9 @@
 
 // Logger Provider
 pub const LoggerProvider = @import("../api/logs/logger_provider.zig").LoggerProvider;
-// Logger record
+// Logger and associated types
 pub const Logger = @import("../api/logs/logger_provider.zig").Logger;
+pub const Severity = @import("../api/logs/logger_provider.zig").Severity;
 pub const ReadbleLogRecord = @import("../api/logs/logger_provider.zig").ReadableLogRecord;
 
 // Processors

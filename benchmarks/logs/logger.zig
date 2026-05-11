@@ -12,6 +12,7 @@ const InMemoryExporter = sdk.logs.InMemoryExporter;
 const Attribute = sdk.Attribute;
 const AttributeValue = sdk.AttributeValue;
 const InstrumentationScope = sdk.scope.InstrumentationScope;
+const Severity = sdk.logs.Severity;
 
 // Thread-local random number generator
 threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
@@ -100,7 +101,7 @@ test "Logger_Emit_W/O_Attributes" {
 
         pub fn setup(_: @This(), _: std.mem.Allocator) void {}
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
-            self.logger.emit(9, "INFO", "test log message", null);
+            self.logger.emit(.info, "test log message", .{});
         }
         pub fn teardown(_: @This(), _: std.mem.Allocator) void {}
     }{ .logger = logger };
@@ -131,7 +132,7 @@ test "Logger_Emit_With_Attributes" {
         attrs: [5]Attribute,
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
-            self.logger.emit(9, "INFO", "test log message", &self.attrs);
+            self.logger.emit(.info, "test log message", .{ .attributes = &self.attrs });
         }
     }{
         .logger = logger,
@@ -167,30 +168,19 @@ test "Logger_Emit_Different_Severities" {
 
     const bench_config = Config;
 
-    // Test different severity levels (TRACE=1, DEBUG=5, INFO=9, WARN=13, ERROR=17, FATAL=21)
     var counter = std.atomic.Value(u32).init(0);
     const severities = struct {
         logger: *Logger,
-        severity_levels: [6]u8,
+        severity_levels: [6]Severity,
         counter: *std.atomic.Value(u32),
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
             const idx = self.counter.fetchAdd(1, .monotonic) % self.severity_levels.len;
-            const severity = self.severity_levels[idx];
-            const severity_text = switch (severity) {
-                1 => "TRACE",
-                5 => "DEBUG",
-                9 => "INFO",
-                13 => "WARN",
-                17 => "ERROR",
-                21 => "FATAL",
-                else => "UNKNOWN",
-            };
-            self.logger.emit(severity, severity_text, "test log message", null);
+            self.logger.emit(self.severity_levels[idx], "test log message", .{});
         }
     }{
         .logger = logger,
-        .severity_levels = [_]u8{ 1, 5, 9, 13, 17, 21 },
+        .severity_levels = [_]Severity{ .trace, .debug, .info, .warn, .err, .fatal },
         .counter = &counter,
     };
 
@@ -219,7 +209,7 @@ test "Logger_Emit_Small_Body" {
         logger: *Logger,
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
-            self.logger.emit(9, "INFO", "OK", null);
+            self.logger.emit(.info, "OK", .{});
         }
     }{ .logger = logger };
 
@@ -254,7 +244,7 @@ test "Logger_Emit_Large_Body" {
         message: []const u8,
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
-            self.logger.emit(9, "INFO", self.message, null);
+            self.logger.emit(.info, self.message, .{});
         }
     }{
         .logger = logger,
@@ -287,7 +277,7 @@ test "Logger_Emit_With_Many_Attributes" {
         attrs: [10]Attribute,
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
-            self.logger.emit(9, "INFO", "test log with many attributes", &self.attrs);
+            self.logger.emit(.info, "test log with many attributes", .{ .attributes = &self.attrs });
         }
     }{
         .logger = logger,
@@ -346,7 +336,7 @@ test "Logger_Concurrent_Emission" {
                     for (0..10) |i| {
                         var buf: [32]u8 = undefined;
                         const message = std.fmt.bufPrint(&buf, "thread {} log {}", .{ thread_id, i }) catch "log";
-                        l.emit(9, "INFO", message, null);
+                        l.emit(.info, message, .{});
                     }
                 }
             };

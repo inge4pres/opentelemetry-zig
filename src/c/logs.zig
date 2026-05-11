@@ -29,6 +29,7 @@
 const std = @import("std");
 const LoggerProvider = @import("../api/logs/logger_provider.zig").LoggerProvider;
 const Logger = @import("../api/logs/logger_provider.zig").Logger;
+const Severity = @import("../api/logs/logger_provider.zig").Severity;
 const ReadWriteLogRecord = @import("../api/logs/logger_provider.zig").ReadWriteLogRecord;
 const ReadableLogRecord = @import("../api/logs/logger_provider.zig").ReadableLogRecord;
 const LogRecordProcessor = @import("../sdk/logs/log_record_processor.zig").LogRecordProcessor;
@@ -320,7 +321,7 @@ pub fn loggerEmit(
     defer if (attrs) |a| allocator.free(a);
 
     zigLogger.emit(
-        if (severity_number > 0) @intCast(severity_number) else 0,
+        if (severity_number > 0) .{ .severity = @intCast(severity_number) } else null,
         if (body) |b| std.mem.span(b) else "",
         .{
             .severity_text = if (severity_text) |st| std.mem.span(st) else null,

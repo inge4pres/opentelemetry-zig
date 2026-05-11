@@ -269,6 +269,37 @@ pub const LoggerProvider = struct {
     }
 };
 
+/// Severity level for a log record.
+///
+/// Simple variants map to the primary sub-level of each OTel severity group:
+/// `trace`→1, `debug`→5, `info`→9, `warn`→13, `err`→17, `fatal`→21.
+///
+/// Use `.{ .severity = n }` when bridging from a system that exposes sub-level
+/// granularity (e.g. INFO_2 = 10) or when passing an already-computed number.
+/// Pass `null` to `emit` when no severity is set.
+pub const Severity = union(enum) {
+    trace,
+    debug,
+    info,
+    warn,
+    err,
+    fatal,
+    /// Raw OTel severity number (1–24).
+    severity: u8,
+
+    pub fn toNumber(self: Severity) u8 {
+        return switch (self) {
+            .trace => 1,
+            .debug => 5,
+            .info => 9,
+            .warn => 13,
+            .err => 17,
+            .fatal => 21,
+            .severity => |n| n,
+        };
+    }
+};
+
 /// Logger implementation
 pub const Logger = struct {
     allocator: std.mem.Allocator,
@@ -308,7 +339,7 @@ pub const Logger = struct {
     /// Emit a log record.
     pub fn emit(
         self: *Self,
-        severity_number: u8,
+        severity: ?Severity,
         body: []const u8,
         options: EmitOptions,
     ) void {
@@ -319,7 +350,7 @@ pub const Logger = struct {
         var log_record = ReadWriteLogRecord.init(self.scope);
         defer log_record.deinit(self.allocator);
 
-        log_record.severity_number = severity_number;
+        log_record.severity_number = if (severity) |s| s.toNumber() else null;
         log_record.severity_text = options.severity_text;
         log_record.body = body;
         log_record.resource = self.provider.resource;
@@ -350,7 +381,7 @@ pub const Logger = struct {
     /// ```zig
     /// if (logger.enabled(.{ .context = ctx, .severity = 9 })) {
     ///     const expensive_data = computeExpensiveDebugInfo();
-    ///     logger.emit(9, expensive_data, .{});
+    ///     logger.emit(.info, expensive_data, .{});
     /// }
     /// ```
     ///
@@ -456,7 +487,7 @@ test "LoggerProvider with processor" {
     const logger = try provider.getLogger(scope);
 
     // Emit a log
-    logger.emit(9, "test message", .{ .severity_text = "INFO" });
+    logger.emit(.info, "test message", .{});
 
     // Verify export was called
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.export_count);
@@ -535,7 +566,7 @@ test "Logger log records inherit resource from provider" {
     const logger = try provider.getLogger(scope);
 
     // Emit a log
-    logger.emit(9, "test message", .{ .severity_text = "INFO" });
+    logger.emit(.info, "test message", .{});
 
     // Verify resource was passed to the log record
     try std.testing.expect(mock_exporter.captured_resource != null);

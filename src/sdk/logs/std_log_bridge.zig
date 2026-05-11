@@ -35,6 +35,7 @@ const std = @import("std");
 
 const LoggerProvider = @import("../../api/logs/logger_provider.zig").LoggerProvider;
 const Logger = @import("../../api/logs/logger_provider.zig").Logger;
+const Severity = @import("../../api/logs/logger_provider.zig").Severity;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attribute = @import("../../attributes.zig").Attribute;
 
@@ -143,14 +144,14 @@ pub fn shutdown() void {
     state.deinit();
 }
 
-/// Map Zig log levels to OpenTelemetry severity numbers.
+/// Map Zig log levels to OpenTelemetry severity.
 /// See: https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber
-fn mapSeverity(level: std.log.Level) u8 {
+fn mapSeverity(level: std.log.Level) Severity {
     return switch (level) {
-        .err => 17, // ERROR
-        .warn => 13, // WARN
-        .info => 9, // INFO
-        .debug => 5, // DEBUG
+        .err => .err,
+        .warn => .warn,
+        .info => .info,
+        .debug => .debug,
     };
 }
 
@@ -307,10 +308,10 @@ test "std_log_bridge basic configuration" {
 }
 
 test "std_log_bridge severity mapping" {
-    try std.testing.expectEqual(@as(u8, 17), mapSeverity(.err));
-    try std.testing.expectEqual(@as(u8, 13), mapSeverity(.warn));
-    try std.testing.expectEqual(@as(u8, 9), mapSeverity(.info));
-    try std.testing.expectEqual(@as(u8, 5), mapSeverity(.debug));
+    try std.testing.expectEqual(Severity.err, mapSeverity(.err));
+    try std.testing.expectEqual(Severity.warn, mapSeverity(.warn));
+    try std.testing.expectEqual(Severity.info, mapSeverity(.info));
+    try std.testing.expectEqual(Severity.debug, mapSeverity(.debug));
 }
 
 test "std_log_bridge severity text mapping" {

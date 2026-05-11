@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
     // Emit 10 logs quickly - should trigger 2 batches
     var i: usize = 0;
     while (i < 10) : (i += 1) {
-        logger.emit(9, "Batched log message", .{});
+        logger.emit(.info, "Batched log message", .{});
         clock.sleep(50 * std.time.ns_per_ms); // Small delay
     }
 
