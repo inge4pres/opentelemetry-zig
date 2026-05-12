@@ -463,11 +463,13 @@ test "SimpleLogRecordProcessor basic functionality" {
 
     // Create a test log record
     const scope = InstrumentationScope{ .name = "test-logger" };
-    var log_record = logs.ReadWriteLogRecord.init(scope);
+    var log_record: logs.ReadWriteLogRecord = .{
+        .scope = scope,
+        .observed_timestamp = 0,
+        .body = "test log message",
+        .severity_number = 9,
+    };
     defer log_record.deinit(allocator);
-
-    log_record.body = "test log message";
-    log_record.severity_number = 9; // Info
 
     const ctx = context.Context.init();
 
@@ -512,14 +514,16 @@ test "SimpleLogRecordProcessor with attributes" {
     const log_processor = processor.asLogRecordProcessor();
 
     // Create a test log record with attributes
-    const scope = InstrumentationScope{ .name = "test-logger" };
-    var log_record = logs.ReadWriteLogRecord.init(scope);
+    const scope: InstrumentationScope = .{ .name = "test-logger" };
+    var log_record: logs.ReadWriteLogRecord = .{
+        .scope = scope,
+        .observed_timestamp = 0,
+        .body = "log with attributes",
+    };
     defer log_record.deinit(allocator);
 
-    const attr = Attribute{ .key = "test.key", .value = .{ .string = "test.value" } };
+    const attr: Attribute = .{ .key = "test.key", .value = .{ .string = "test.value" } };
     try log_record.setAttribute(allocator, attr);
-
-    log_record.body = "log with attributes";
 
     const ctx = context.Context.init();
 
@@ -584,11 +588,13 @@ test "BatchingLogRecordProcessor basic functionality" {
     // Add 3 log records - should trigger export when batch size (2) is reached
     var i: usize = 0;
     while (i < 3) : (i += 1) {
-        var log_record = logs.ReadWriteLogRecord.init(scope);
+        var log_record: logs.ReadWriteLogRecord = .{
+            .scope = scope,
+            .observed_timestamp = 0,
+            .body = "test log message",
+            .severity_number = 9,
+        };
         defer log_record.deinit(allocator);
-
-        log_record.body = "test log message";
-        log_record.severity_number = 9;
 
         log_processor.onEmit(&log_record, ctx);
     }
@@ -687,11 +693,13 @@ test "integration: multiple processors in pipeline" {
 
     // Create a log record
     const scope = InstrumentationScope{ .name = "test-logger" };
-    var log_record = logs.ReadWriteLogRecord.init(scope);
+    var log_record: logs.ReadWriteLogRecord = .{
+        .scope = scope,
+        .observed_timestamp = 0,
+        .body = "test message",
+        .severity_number = 9,
+    };
     defer log_record.deinit(allocator);
-
-    log_record.body = "test message";
-    log_record.severity_number = 9; // INFO
 
     const ctx = context.Context.init();
 

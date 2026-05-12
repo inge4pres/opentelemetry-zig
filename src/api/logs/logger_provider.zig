@@ -27,33 +27,18 @@ const resource_attributes = @import("../../sdk/resource.zig");
 /// Processors can modify this record, and mutations are visible to subsequent processors.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#logrecordprocessor
 pub const ReadWriteLogRecord = struct {
-    timestamp: ?u64,
-    observed_timestamp: u64,
-    trace_id: ?[16]u8,
-    span_id: ?[8]u8,
-    severity_number: ?u8,
-    severity_text: ?[]const u8,
-    body: ?[]const u8,
-    attributes: std.ArrayListUnmanaged(Attribute),
-    resource: ?[]const Attribute,
     scope: InstrumentationScope,
+    observed_timestamp: u64,
+    timestamp: ?u64 = null,
+    trace_id: ?[16]u8 = null,
+    span_id: ?[8]u8 = null,
+    severity_number: ?u8 = null,
+    severity_text: ?[]const u8 = null,
+    body: ?[]const u8 = null,
+    attributes: std.ArrayListUnmanaged(Attribute) = .empty,
+    resource: ?[]const Attribute = null,
 
     const Self = @This();
-
-    pub fn init(scope: InstrumentationScope) Self {
-        return Self{
-            .timestamp = null,
-            .observed_timestamp = @intCast(clock.nanoTimestamp()),
-            .trace_id = null,
-            .span_id = null,
-            .severity_number = null,
-            .severity_text = null,
-            .body = null,
-            .attributes = .empty,
-            .resource = null,
-            .scope = scope,
-        };
-    }
 
     pub fn setAttribute(self: *Self, allocator: std.mem.Allocator, attribute: Attribute) !void {
         try self.attributes.append(allocator, attribute);
@@ -323,6 +308,14 @@ pub const Logger = struct {
     }
 
     pub const EmitOptions = struct {
+        /// Timestamp of the original event (nanoseconds since Unix epoch).
+        /// When bridging from another logging system, pass the original log timestamp.
+        timestamp: ?u64 = null,
+
+        /// Timestamp when the record was observed by the SDK (nanoseconds since Unix epoch).
+        /// Defaults to the current time if not provided.
+        observed_timestamp: ?u64 = null,
+
         /// Human-readable severity label (e.g. "WARN", "CRITICAL").
         /// Optional: backends can derive a standard label from `severity_number`.
         /// Useful when bridging from a logging system that has its own level names.
@@ -347,15 +340,19 @@ pub const Logger = struct {
             return;
         }
 
-        var log_record = ReadWriteLogRecord.init(self.scope);
+        var log_record: ReadWriteLogRecord = .{
+            .timestamp = options.timestamp,
+            .observed_timestamp = options.observed_timestamp orelse @intCast(clock.nanoTimestamp()),
+            .trace_id = if (options.span_context) |sc| sc.trace_id.toBinary() else null,
+            .span_id = if (options.span_context) |sc| sc.span_id.toBinary() else null,
+            .severity_number = if (severity) |s| s.toNumber() else null,
+            .severity_text = options.severity_text,
+            .body = body,
+            .attributes = .empty,
+            .resource = self.provider.resource,
+            .scope = self.scope,
+        };
         defer log_record.deinit(self.allocator);
-
-        log_record.severity_number = if (severity) |s| s.toNumber() else null;
-        log_record.severity_text = options.severity_text;
-        log_record.body = body;
-        log_record.resource = self.provider.resource;
-        log_record.trace_id = if (options.span_context) |sc| sc.trace_id.toBinary() else null;
-        log_record.span_id = if (options.span_context) |sc| sc.span_id.toBinary() else null;
 
         if (options.attributes) |attrs| {
             for (attrs) |attr| {
