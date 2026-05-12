@@ -307,7 +307,7 @@ pub const Logger = struct {
         self.allocator.destroy(self);
     }
 
-    pub const EmitOptions = struct {
+    pub const Options = struct {
         /// Timestamp of the original event (nanoseconds since Unix epoch).
         /// When bridging from another logging system, pass the original log timestamp.
         timestamp: ?u64 = null,
@@ -334,7 +334,7 @@ pub const Logger = struct {
         self: *Self,
         severity: ?Severity,
         body: []const u8,
-        options: EmitOptions,
+        options: Options,
     ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) {
             return;
