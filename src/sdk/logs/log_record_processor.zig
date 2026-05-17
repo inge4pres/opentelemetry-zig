@@ -431,6 +431,7 @@ test "SimpleLogRecordProcessor basic functionality" {
                     .observed_timestamp = log_record.observed_timestamp,
                     .trace_id = log_record.trace_id,
                     .span_id = log_record.span_id,
+                    .trace_flags = log_record.trace_flags,
                     .severity_number = log_record.severity_number,
                     .severity_text = severity_text,
                     .body = body,

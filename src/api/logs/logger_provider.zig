@@ -15,7 +15,9 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const AttributeValue = @import("../../attributes.zig").AttributeValue;
 const Attributes = @import("../../attributes.zig").Attributes;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
-const Context = @import("../context/context.zig").Context;
+const context_api = @import("../context/context.zig");
+const Context = context_api.Context;
+const getCurrentContext = context_api.getCurrentContext;
 const EnabledParameters = @import("enabled_parameters.zig").EnabledParameters;
 const trace = @import("../trace.zig");
 
@@ -32,6 +34,7 @@ pub const ReadWriteLogRecord = struct {
     timestamp: ?u64 = null,
     trace_id: ?[16]u8 = null,
     span_id: ?[8]u8 = null,
+    trace_flags: ?u8 = null,
     severity_number: ?u8 = null,
     severity_text: ?[]const u8 = null,
     body: ?[]const u8 = null,
@@ -73,6 +76,7 @@ pub const ReadWriteLogRecord = struct {
             .observed_timestamp = self.observed_timestamp,
             .trace_id = self.trace_id,
             .span_id = self.span_id,
+            .trace_flags = self.trace_flags,
             .severity_number = self.severity_number,
             .severity_text = severity_text,
             .body = body,
@@ -90,6 +94,7 @@ pub const ReadableLogRecord = struct {
     observed_timestamp: u64,
     trace_id: ?[16]u8,
     span_id: ?[8]u8,
+    trace_flags: ?u8,
     severity_number: ?u8,
     severity_text: ?[]const u8,
     body: ?[]const u8,
@@ -324,9 +329,15 @@ pub const Logger = struct {
         /// Key-value pairs attached to this log record.
         attributes: ?[]const Attribute = null,
 
+        /// Experimental: subject to change or removal in a future version.
+        ///
         /// Span context to correlate this log record with an active trace.
         /// Pass `span.span_context` to enable log-trace correlation in the backend.
         span_context: ?trace.SpanContext = null,
+
+        /// Propagation context forwarded to log processors on emit.
+        /// If null, the active thread-local context is used.
+        context: ?Context = null,
     };
 
     /// Emit a log record.
@@ -340,11 +351,18 @@ pub const Logger = struct {
             return;
         }
 
+        const context = options.context orelse getCurrentContext();
+
+        // Spec: trace context fields MUST be populated from the resolved Context.
+        // Explicit span_context (experimental) overrides context-derived values when provided.
+        const span_context = options.span_context orelse trace.deserializeSpanContext(context);
+
         var log_record: ReadWriteLogRecord = .{
             .timestamp = options.timestamp,
             .observed_timestamp = options.observed_timestamp orelse @intCast(clock.nanoTimestamp()),
-            .trace_id = if (options.span_context) |sc| sc.trace_id.toBinary() else null,
-            .span_id = if (options.span_context) |sc| sc.span_id.toBinary() else null,
+            .trace_id = if (span_context) |sc| sc.trace_id.toBinary() else null,
+            .span_id = if (span_context) |sc| sc.span_id.toBinary() else null,
+            .trace_flags = if (span_context) |sc| sc.trace_flags.value else null,
             .severity_number = if (severity) |s| s.toNumber() else null,
             .severity_text = options.severity_text,
             .body = body,
@@ -361,13 +379,11 @@ pub const Logger = struct {
                 };
             }
         }
-
-        const ctx = Context.init();
         self.provider.mutex.lockUncancelable(self.provider.io);
         defer self.provider.mutex.unlock(self.provider.io);
 
         for (self.provider.processors.items) |processor| {
-            processor.onEmit(&log_record, ctx);
+            processor.onEmit(&log_record, context);
         }
     }
 
