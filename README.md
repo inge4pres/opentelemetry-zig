@@ -185,4 +185,4 @@ For a more in-depth read of why OpenTelemetry needs a Zig SDK, see ["Zig is grea
 
 ## Join the community
 
-You can find the Zig OTel SDK developers in the [Zig-o11y Discord server](https://discord.gg/Exs3eJymgG).
+You can find the Zig OTel SDK developers in the CNCF Slack [#otel-zig](https://cloud-native.slack.com/archives/C0B4RTXTBEV) channel.
