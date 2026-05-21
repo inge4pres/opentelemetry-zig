@@ -206,13 +206,13 @@ fn attributeToProtobuf(allocator: std.mem.Allocator, attribute: Attribute) !pbco
 
 pub fn attributesToProtobufKeyValueList(allocator: std.mem.Allocator, attributes: ?[]Attribute) !pbcommon.KeyValueList {
     if (attributes) |attrs| {
-        var kvs = pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).empty };
+        var kvs: pbcommon.KeyValueList = .{ .values = try .initCapacity(allocator, attrs.len) };
         for (attrs) |a| {
-            try kvs.values.append(allocator, try attributeToProtobuf(allocator, a));
+            kvs.values.appendAssumeCapacity(try attributeToProtobuf(allocator, a));
         }
         return kvs;
     } else {
-        return pbcommon.KeyValueList{ .values = std.ArrayList(pbcommon.KeyValue).empty };
+        return .{ .values = .empty };
     }
 }
 
@@ -239,7 +239,7 @@ fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points:
 }
 
 fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(HistogramPoint)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
-    var a = try std.ArrayList(pbmetrics.HistogramDataPoint).initCapacity(allocator, data_points.len);
+    var a: std.ArrayList(pbmetrics.HistogramDataPoint) = try .initCapacity(allocator, data_points.len);
     for (data_points) |dp| {
         const bounds = try allocator.alloc(f64, dp.value.explicit_bounds.len);
         for (dp.value.explicit_bounds, 0..) |b, bi| {
@@ -262,7 +262,7 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
 }
 
 fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(ExponentialHistogramPoint)) !std.ArrayList(pbmetrics.ExponentialHistogramDataPoint) {
-    var a = try std.ArrayList(pbmetrics.ExponentialHistogramDataPoint).initCapacity(allocator, data_points.len);
+    var a: std.ArrayList(pbmetrics.ExponentialHistogramDataPoint) = try .initCapacity(allocator, data_points.len);
     for (data_points) |dp| {
         const attrs = try attributesToProtobufKeyValueList(allocator, dp.attributes);
 

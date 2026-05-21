@@ -45,7 +45,7 @@ const BenchmarkContext = struct {
 
         ctx.buffer = std.ArrayList(u8).empty;
         ctx.exporter = InMemoryExporter.init(.fromArrayList(allocator, &ctx.buffer));
-        ctx.processor = SimpleLogRecordProcessor.init(allocator, io, ctx.exporter.asLogRecordExporter());
+        ctx.processor = SimpleLogRecordProcessor.init(io, ctx.exporter.asLogRecordExporter());
 
         ctx.provider = try LoggerProvider.init(allocator, io, null);
         errdefer ctx.provider.deinit();

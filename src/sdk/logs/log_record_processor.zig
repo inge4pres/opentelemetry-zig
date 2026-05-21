@@ -21,13 +21,6 @@ const LogRecordQueue = struct {
         self.* = .{};
     }
 
-    fn deinitItems(self: *LogRecordQueue, allocator: std.mem.Allocator) void {
-        for (0..self.len) |i| {
-            const index = (self.head + i) % self.buffer.len;
-            self.buffer[index].deinit(allocator);
-        }
-    }
-
     fn push(self: *LogRecordQueue, log_record: logs.ReadableLogRecord) bool {
         if (self.len >= self.buffer.len) return false;
         const index = (self.head + self.len) % self.buffer.len;
@@ -38,9 +31,12 @@ const LogRecordQueue = struct {
 
     fn popBatch(self: *LogRecordQueue, dest: []logs.ReadableLogRecord) []logs.ReadableLogRecord {
         const count = @min(dest.len, self.len);
-        for (0..count) |i| {
-            const index = (self.head + i) % self.buffer.len;
-            dest[i] = self.buffer[index];
+        const splitpoint = self.buffer.len - self.head;
+        if (count <= splitpoint) {
+            @memcpy(dest[0..count], self.buffer[self.head..][0..count]);
+        } else {
+            @memcpy(dest[0..splitpoint], self.buffer[self.head..]);
+            @memcpy(dest[splitpoint..count], self.buffer[0 .. count - splitpoint]);
         }
         self.len -= count;
         if (self.len == 0) {
@@ -104,16 +100,14 @@ pub const LogRecordProcessor = struct {
 /// SimpleLogRecordProcessor passes log records to the configured exporter immediately.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#simple-processor
 pub const SimpleLogRecordProcessor = struct {
-    allocator: std.mem.Allocator,
     exporter: LogRecordExporter,
     mutex: std.Io.Mutex,
     io: std.Io,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, exporter: LogRecordExporter) Self {
+    pub fn init(io: std.Io, exporter: LogRecordExporter) Self {
         return Self{
-            .allocator = allocator,
             .exporter = exporter,
             .mutex = std.Io.Mutex.init,
             .io = io,
@@ -138,14 +132,7 @@ pub const SimpleLogRecordProcessor = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        // Convert to readable and export immediately
-        const readable = log_record.toReadable(self.allocator) catch |err| {
-            std.log.err("SimpleLogRecordProcessor failed to convert log record: {}", .{err});
-            return;
-        };
-        defer readable.deinit(self.allocator);
-
-        var log_records = [_]logs.ReadableLogRecord{readable};
+        var log_records = [_]logs.ReadableLogRecord{log_record.asReadable()};
         self.exporter.exportLogs(log_records[0..]) catch |err| {
             std.log.err("SimpleLogRecordProcessor failed to export log record: {}", .{err});
         };
@@ -184,6 +171,7 @@ pub const BatchingLogRecordProcessor = struct {
 
     // State
     queue: LogRecordQueue,
+    batch_arena: std.heap.ArenaAllocator,
     mutex: std.Io.Mutex,
     wake: std.Io.Event,
     io: std.Io,
@@ -218,6 +206,7 @@ pub const BatchingLogRecordProcessor = struct {
             .export_timeout_millis = config.export_timeout_millis,
             .max_export_batch_size = max_export_batch_size,
             .queue = queue,
+            .batch_arena = std.heap.ArenaAllocator.init(allocator),
             .mutex = std.Io.Mutex.init,
             .wake = .unset,
             .io = io,
@@ -235,8 +224,8 @@ pub const BatchingLogRecordProcessor = struct {
         // Shutdown should have been called before deinit
         std.debug.assert(self.export_task == null);
 
-        self.queue.deinitItems(self.allocator);
         self.queue.deinit(self.allocator);
+        self.batch_arena.deinit();
         self.allocator.destroy(self);
     }
 
@@ -264,15 +253,14 @@ pub const BatchingLogRecordProcessor = struct {
             return;
         }
 
-        // Convert to readable and add to queue
-        const readable = log_record.toReadable(self.allocator) catch |err| {
+        // Deep-copy into the batch arena and enqueue
+        const readable = log_record.toReadable(self.batch_arena.allocator()) catch |err| {
             std.log.err("BatchingLogRecordProcessor failed to convert log record: {}", .{err});
             return;
         };
 
         if (!self.queue.push(readable)) {
             std.log.err("BatchingLogRecordProcessor failed to add log record to queue", .{});
-            readable.deinit(self.allocator);
             return;
         }
 
@@ -354,20 +342,24 @@ pub const BatchingLogRecordProcessor = struct {
             std.log.err("BatchingLogRecordProcessor failed to allocate memory for export batch", .{});
             return false;
         };
-        defer self.allocator.free(export_logs);
 
         const logs_to_export = self.queue.popBatch(export_logs);
 
-        // Export the batch (unlock mutex during export)
+        // Export the batch (unlock mutex during export to allow concurrent onEmit calls)
         self.mutex.unlock(self.io);
-        defer self.mutex.lockUncancelable(self.io);
-        defer for (export_logs) |log_record| {
-            log_record.deinit(self.allocator);
-        };
-
         self.exporter.exportLogs(logs_to_export) catch |err| {
             std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
         };
+        self.mutex.lockUncancelable(self.io);
+
+        self.allocator.free(export_logs);
+
+        // Reset the batch arena once the queue is fully drained — all records have been exported
+        // and no remaining records point into the arena.
+        if (self.queue.len == 0) {
+            _ = self.batch_arena.reset(.retain_capacity);
+        }
+
         return true;
     }
 
@@ -402,43 +394,13 @@ test "SimpleLogRecordProcessor basic functionality" {
         }
 
         pub fn deinit(self: *@This()) void {
-            for (self.exported_logs.items) |log_record| {
-                log_record.deinit(self.allocator);
-            }
             self.exported_logs.deinit(self.allocator);
         }
 
         pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             for (log_records) |log_record| {
-                // Make a copy since we're storing it
-                const attrs = try self.allocator.alloc(@import("../../attributes.zig").Attribute, log_record.attributes.len);
-                @memcpy(attrs, log_record.attributes);
-
-                // Copy severity_text and body strings since they will be freed after export
-                const severity_text = if (log_record.severity_text) |text|
-                    try self.allocator.dupe(u8, text)
-                else
-                    null;
-
-                const body = if (log_record.body) |b|
-                    try self.allocator.dupe(u8, b)
-                else
-                    null;
-
-                try self.exported_logs.append(self.allocator, .{
-                    .timestamp = log_record.timestamp,
-                    .observed_timestamp = log_record.observed_timestamp,
-                    .trace_id = log_record.trace_id,
-                    .span_id = log_record.span_id,
-                    .trace_flags = log_record.trace_flags,
-                    .severity_number = log_record.severity_number,
-                    .severity_text = severity_text,
-                    .body = body,
-                    .attributes = attrs,
-                    .resource = log_record.resource,
-                    .scope = log_record.scope,
-                });
+                try self.exported_logs.append(self.allocator, log_record);
             }
         }
 
@@ -459,7 +421,7 @@ test "SimpleLogRecordProcessor basic functionality" {
     defer mock_exporter.deinit();
 
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
+    var processor = SimpleLogRecordProcessor.init(io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
     // Create a test log record
@@ -511,7 +473,7 @@ test "SimpleLogRecordProcessor with attributes" {
 
     var mock_exporter = MockExporter{};
     const exporter = mock_exporter.asLogRecordExporter();
-    var processor = SimpleLogRecordProcessor.init(allocator, io, exporter);
+    var processor = SimpleLogRecordProcessor.init(io, exporter);
     const log_processor = processor.asLogRecordProcessor();
 
     // Create a test log record with attributes
@@ -717,4 +679,47 @@ test "integration: multiple processors in pipeline" {
     try std.testing.expectEqual(@as(usize, 1), log_record.attributes.items.len);
     try std.testing.expectEqualStrings("processor.first", log_record.attributes.items[0].key);
     try std.testing.expectEqual(@as(u8, 17), log_record.severity_number.?); // Modified by second processor
+}
+
+test "LogRecordQueue wrap-around split" {
+    const allocator = std.testing.allocator;
+
+    var queue = try LogRecordQueue.init(allocator, 4);
+    defer queue.deinit(allocator);
+
+    const rec = struct {
+        fn make(ts: u64) logs.ReadableLogRecord {
+            return .{
+                .timestamp = null,
+                .observed_timestamp = ts,
+                .trace_id = null,
+                .span_id = null,
+                .trace_flags = 0,
+                .severity_number = null,
+                .severity_text = null,
+                .body = null,
+                .attributes = &.{},
+                .resource = null,
+                .scope = .{ .name = "t" },
+            };
+        }
+    }.make;
+
+    // Push 2, pop 2 — head advances to 2
+    try std.testing.expect(queue.push(rec(1)));
+    try std.testing.expect(queue.push(rec(2)));
+    var dest: [4]logs.ReadableLogRecord = undefined;
+    _ = queue.popBatch(dest[0..2]);
+
+    // Push 3 — occupies slots 2, 3, 0 (wraps around)
+    try std.testing.expect(queue.push(rec(3)));
+    try std.testing.expect(queue.push(rec(4)));
+    try std.testing.expect(queue.push(rec(5)));
+
+    // Pop 3: splitpoint = 4 - 2 = 2, count = 3 > splitpoint → second @memcpy fires
+    const batch = queue.popBatch(dest[0..3]);
+    try std.testing.expectEqual(@as(usize, 3), batch.len);
+    try std.testing.expectEqual(@as(u64, 3), batch[0].observed_timestamp);
+    try std.testing.expectEqual(@as(u64, 4), batch[1].observed_timestamp);
+    try std.testing.expectEqual(@as(u64, 5), batch[2].observed_timestamp);
 }

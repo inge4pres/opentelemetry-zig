@@ -126,9 +126,9 @@ pub const OTLPExporter = struct {
 
             var scope_attributes = std.ArrayList(pbcommon.KeyValue).empty;
             if (scope_info.attributes) |attrs| {
+                try scope_attributes.ensureTotalCapacityPrecise(self.allocator, attrs.len);
                 for (attrs) |attr| {
-                    const key_value = try attributeToOTLP(attr.key, attr.value);
-                    try scope_attributes.append(self.allocator, key_value);
+                    scope_attributes.appendAssumeCapacity(try attributeToOTLP(attr.key, attr.value));
                 }
             }
 
@@ -218,50 +218,45 @@ pub const OTLPExporter = struct {
         }
 
         // Convert attributes
-        var attributes = std.ArrayList(pbcommon.KeyValue).empty;
+        var attributes: std.ArrayList(pbcommon.KeyValue) = try .initCapacity(allocator, span.attributes.keys().len);
         for (span.attributes.keys(), span.attributes.values()) |key, value| {
-            const key_value = try attributeToOTLP(key, value);
-            try attributes.append(allocator, key_value);
+            attributes.appendAssumeCapacity(try attributeToOTLP(key, value));
         }
 
         // Convert events
-        var events = std.ArrayList(pbtrace.Span.Event).empty;
+        var events: std.ArrayList(pbtrace.Span.Event) = try .initCapacity(allocator, span.events.items.len);
         for (span.events.items) |event| {
-            var event_attributes = std.ArrayList(pbcommon.KeyValue).empty;
+            var event_attributes: std.ArrayList(pbcommon.KeyValue) = try .initCapacity(allocator, event.attributes.keys().len);
             for (event.attributes.keys(), event.attributes.values()) |key, value| {
-                const key_value = try attributeToOTLP(key, value);
-                try event_attributes.append(allocator, key_value);
+                event_attributes.appendAssumeCapacity(try attributeToOTLP(key, value));
             }
 
-            const otlp_event = pbtrace.Span.Event{
+            events.appendAssumeCapacity(pbtrace.Span.Event{
                 .time_unix_nano = event.timestamp,
                 .name = (event.name),
                 .attributes = event_attributes,
                 .dropped_attributes_count = 0,
-            };
-            try events.append(allocator, otlp_event);
+            });
         }
 
         // Convert links
-        var links = std.ArrayList(pbtrace.Span.Link).empty;
+        var links: std.ArrayList(pbtrace.Span.Link) = try .initCapacity(allocator, span.links.items.len);
         for (span.links.items) |link| {
-            var link_attributes = std.ArrayList(pbcommon.KeyValue).empty;
+            var link_attributes: std.ArrayList(pbcommon.KeyValue) = try .initCapacity(allocator, link.attributes.keys().len);
             for (link.attributes.keys(), link.attributes.values()) |key, value| {
-                const key_value = try attributeToOTLP(key, value);
-                try link_attributes.append(allocator, key_value);
+                link_attributes.appendAssumeCapacity(try attributeToOTLP(key, value));
             }
 
             const link_trace_id = link.span_context.trace_id.toBinary();
             const link_span_id = link.span_context.span_id.toBinary();
-            const otlp_link = pbtrace.Span.Link{
+            links.appendAssumeCapacity(.{
                 .trace_id = try allocator.dupe(u8, &link_trace_id),
                 .span_id = try allocator.dupe(u8, &link_span_id),
                 .trace_state = (""), // Convert trace state if needed
                 .attributes = link_attributes,
                 .dropped_attributes_count = 0,
                 .flags = @intCast(link.span_context.trace_flags.value),
-            };
-            try links.append(allocator, otlp_link);
+            });
         }
 
         const trace_id = span_context.trace_id.toBinary();

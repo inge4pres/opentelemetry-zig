@@ -35,7 +35,7 @@ fn testLogs(
     defer otlp_exporter.deinit();
     const exporter = otlp_exporter.asLogRecordExporter();
 
-    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(allocator, io, exporter);
+    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(io, exporter);
     const processor = simple_processor.asLogRecordProcessor();
 
     const service_name: []const u8 = "integration-test";
@@ -110,7 +110,7 @@ fn testLogsWithCompression(
     defer otlp_exporter.deinit();
     const exporter = otlp_exporter.asLogRecordExporter();
 
-    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(allocator, io, exporter);
+    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(io, exporter);
     const processor = simple_processor.asLogRecordProcessor();
 
     const service_name: []const u8 = "integration-test-compression";

@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     const exporter = stdout_exporter.asLogRecordExporter();
 
     // Create a simple processor
-    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(allocator, io, exporter);
+    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(io, exporter);
     const processor = simple_processor.asLogRecordProcessor();
 
     // Create a logger provider

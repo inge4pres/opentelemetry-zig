@@ -176,24 +176,22 @@ pub fn logFn(
     state.mutex.lockUncancelable(io);
     const cfg = state.config;
     const logger: ?*Logger = blk: {
+        defer state.mutex.unlock(io);
+
         if (cfg) |config| {
             // Fast path for single_scope strategy - logger is pre-fetched
             if (config.scope_strategy == .single_scope) {
-                const l = state.logger;
-                state.mutex.unlock(io);
-                break :blk l;
+                break :blk state.logger;
             }
 
             // For per_zig_scope, check cache or create new logger
             const scope_name = comptime @tagName(scope);
             if (state.scope_loggers.get(scope_name)) |cached_logger| {
-                state.mutex.unlock(io);
                 break :blk cached_logger;
             }
 
             // Need to create a new logger for this scope
             const allocator = state.allocator orelse {
-                state.mutex.unlock(io);
                 break :blk null;
             };
 
@@ -203,26 +201,21 @@ pub fn logFn(
             };
 
             const new_logger = config.provider.getLogger(new_scope) catch {
-                state.mutex.unlock(io);
                 break :blk null;
             };
 
             // Cache it (we need to dupe the scope name since it's comptime)
             const scope_name_dupe = allocator.dupe(u8, scope_name) catch {
-                state.mutex.unlock(io);
                 break :blk new_logger;
             };
 
             state.scope_loggers.put(allocator, scope_name_dupe, new_logger) catch {
                 allocator.free(scope_name_dupe);
-                state.mutex.unlock(io);
                 break :blk new_logger;
             };
 
-            state.mutex.unlock(io);
             break :blk new_logger;
         } else {
-            state.mutex.unlock(io);
             break :blk null;
         }
     };
@@ -335,7 +328,7 @@ test "std_log_bridge logFn prints text for body" {
         errdefer in_mem.writer.deinit();
         const exporter = in_mem.asLogRecordExporter();
 
-        var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(std.testing.allocator, io2, exporter);
+        var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(io2, exporter);
         const processor = simple_processor.asLogRecordProcessor();
         try provider.addLogRecordProcessor(processor);
 

@@ -84,7 +84,7 @@ pub const OTLPExporter = struct {
     }
 
     fn logsToOTLPRequest(self: *Self, log_records: []logs.ReadableLogRecord) !pbcollector_logs.ExportLogsServiceRequest {
-        var resource_logs = std.ArrayList(pblogs.ResourceLogs).empty;
+        var resource_logs: std.ArrayList(pblogs.ResourceLogs) = .empty;
 
         // Group log records by instrumentation scope
         var scope_groups = std.HashMap(
@@ -111,19 +111,18 @@ pub const OTLPExporter = struct {
             try result.value_ptr.append(self.allocator, log_record);
         }
 
-        var scope_logs_list = std.ArrayList(pblogs.ScopeLogs).empty;
+        var scope_logs_list: std.ArrayList(pblogs.ScopeLogs) = .empty;
 
         // Convert each scope group to OTLP format
         var scope_iterator = scope_groups.iterator();
         while (scope_iterator.next()) |entry| {
             const scope_log_records = entry.value_ptr.*;
 
-            var otlp_log_records = std.ArrayList(pblogs.LogRecord).empty;
+            var otlp_log_records: std.ArrayList(pblogs.LogRecord) = try .initCapacity(self.allocator, scope_log_records.items.len);
 
             // Convert each log record to OTLP format
             for (scope_log_records.items) |log_record| {
-                const otlp_log = try self.logRecordToOTLP(log_record);
-                try otlp_log_records.append(self.allocator, otlp_log);
+                otlp_log_records.appendAssumeCapacity(try self.logRecordToOTLP(log_record));
             }
 
             // Create scope information from the first log record's scope
@@ -137,11 +136,11 @@ pub const OTLPExporter = struct {
                     .attributes = null,
                 };
 
-            var scope_attributes = std.ArrayList(pbcommon.KeyValue).empty;
+            var scope_attributes: std.ArrayList(pbcommon.KeyValue) = .empty;
             if (scope_info.attributes) |attrs| {
+                try scope_attributes.ensureTotalCapacityPrecise(self.allocator, attrs.len);
                 for (attrs) |attr| {
-                    const key_value = try attributeToOTLP(attr.key, attr.value);
-                    try scope_attributes.append(self.allocator, key_value);
+                    scope_attributes.appendAssumeCapacity(try attributeToOTLP(attr.key, attr.value));
                 }
             }
 
@@ -162,14 +161,14 @@ pub const OTLPExporter = struct {
         var resource_attributes = std.ArrayList(pbcommon.KeyValue).empty;
         if (log_records.len > 0) {
             if (log_records[0].resource) |attrs| {
+                try resource_attributes.ensureTotalCapacityPrecise(self.allocator, attrs.len);
                 for (attrs) |attr| {
-                    const key_value = try attributeToOTLP(attr.key, attr.value);
-                    try resource_attributes.append(self.allocator, key_value);
+                    resource_attributes.appendAssumeCapacity(try attributeToOTLP(attr.key, attr.value));
                 }
             }
         }
 
-        const resource_log = pblogs.ResourceLogs{
+        const resource_log: pblogs.ResourceLogs = .{
             .resource = pbresource.Resource{
                 .attributes = resource_attributes,
                 .dropped_attributes_count = 0,
@@ -217,10 +216,9 @@ pub const OTLPExporter = struct {
 
     fn logRecordToOTLP(self: *Self, log_record: logs.ReadableLogRecord) !pblogs.LogRecord {
         // Convert attributes
-        var attributes = std.ArrayList(pbcommon.KeyValue).empty;
+        var attributes: std.ArrayList(pbcommon.KeyValue) = try .initCapacity(self.allocator, log_record.attributes.len);
         for (log_record.attributes) |attr| {
-            const key_value = try attributeToOTLP(attr.key, attr.value);
-            try attributes.append(self.allocator, key_value);
+            attributes.appendAssumeCapacity(try attributeToOTLP(attr.key, attr.value));
         }
 
         // trace_id and span_id are protobuf `bytes` fields.
@@ -275,14 +273,14 @@ pub const OTLPExporter = struct {
 
     fn attributeToOTLP(key: []const u8, value: attribute.AttributeValue) !pbcommon.KeyValue {
         const any_value: ?pbcommon.AnyValue = switch (value) {
-            .string => |v| pbcommon.AnyValue{ .value = .{ .string_value = (v) } },
-            .bool => |v| pbcommon.AnyValue{ .value = .{ .bool_value = v } },
-            .int => |v| pbcommon.AnyValue{ .value = .{ .int_value = v } },
-            .double => |v| pbcommon.AnyValue{ .value = .{ .double_value = v } },
+            .string => |v| .{ .value = .{ .string_value = (v) } },
+            .bool => |v| .{ .value = .{ .bool_value = v } },
+            .int => |v| .{ .value = .{ .int_value = v } },
+            .double => |v| .{ .value = .{ .double_value = v } },
             .baggage => unreachable, // Baggage is not a regular attribute
         };
 
-        return pbcommon.KeyValue{
+        return .{
             .key = (key),
             .value = any_value,
         };

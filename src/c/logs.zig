@@ -450,7 +450,7 @@ pub fn simpleLogRecordProcessorCreate(exporter: ?*OtelLogRecordExporter) callcon
         allocator.destroy(threaded_ptr);
         return null;
     };
-    storage.* = SimpleLogRecordProcessor.init(allocator, threaded_ptr.io(), exp_handle.exporter);
+    storage.* = SimpleLogRecordProcessor.init(threaded_ptr.io(), exp_handle.exporter);
 
     const handle = allocator.create(LogRecordProcessorHandle) catch {
         allocator.destroy(storage);

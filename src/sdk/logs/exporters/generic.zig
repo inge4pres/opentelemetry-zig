@@ -102,11 +102,16 @@ test "GenericWriterExporter" {
 
         // Create a test log record
         const scope = InstrumentationScope{ .name = "test-logger", .version = "1.0.0" };
-        var log_record: logs.ReadWriteLogRecord = .{ .scope = scope, .observed_timestamp = 0, .body = "test log message", .severity_number = 9, .severity_text = "INFO" };
+        var log_record: logs.ReadWriteLogRecord = .{
+            .scope = scope,
+            .observed_timestamp = 0,
+            .body = "test log message",
+            .severity_number = 9,
+            .severity_text = "INFO",
+        };
         defer log_record.deinit(std.testing.allocator);
 
-        const readable = try log_record.toReadable(std.testing.allocator);
-        defer readable.deinit(std.testing.allocator);
+        const readable = log_record.asReadable();
 
         var log_records = [_]logs.ReadableLogRecord{readable};
         try exporter.exportLogs(log_records[0..log_records.len]);

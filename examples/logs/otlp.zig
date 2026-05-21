@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Create a simple processor (exports immediately)
     // For production, consider using BatchingLogRecordProcessor instead
-    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(allocator, io, exporter);
+    var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(io, exporter);
     const processor = simple_processor.asLogRecordProcessor();
 
     // Create resource attributes to identify this service
