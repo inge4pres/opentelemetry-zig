@@ -1,0 +1,69 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - run: zig fmt --check .
+
+  run_test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - run: zig build --fetch
+      - run: zig build test -Dtest-verbose=true
+        timeout-minutes: 3
+
+  build_examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - run: zig build --fetch
+      - run: zig build examples
+
+  # Execute bencharmks only if the PR has a specific label 'run::benchmarks'
+  benchmarks:
+    if: contains(github.event.pull_request.labels.*.name, 'run::benchmarks')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - run: zig build --fetch
+      # The optimize argument builds the SDK library with optimizations,
+      # benchmarks files are always compiled with ReleaseFast.
+      - run: |
+          zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-output=benchmarks-result.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: benchmarks-result
+          path: benchmarks-result.txt
+          retention-days: 60

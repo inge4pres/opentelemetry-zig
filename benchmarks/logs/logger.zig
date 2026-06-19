@@ -1,0 +1,396 @@
+const std = @import("std");
+const clock = @import("clock");
+const zbench = @import("benchmark");
+
+const sdk = @import("opentelemetry-sdk");
+const LoggerProvider = sdk.logs.LoggerProvider;
+const Logger = sdk.logs.Logger;
+const ReadableLogRecord = sdk.logs.ReadableLogRecord;
+const SimpleLogRecordProcessor = sdk.logs.SimpleLogRecordProcessor;
+const InMemoryExporter = sdk.logs.InMemoryExporter;
+
+const Attribute = sdk.Attribute;
+const AttributeValue = sdk.AttributeValue;
+const InstrumentationScope = sdk.scope.InstrumentationScope;
+const Severity = sdk.logs.Severity;
+
+// Thread-local random number generator
+threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
+
+fn getThreadRng() *std.Random.DefaultPrng {
+    if (thread_rng == null) {
+        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
+    }
+    return &thread_rng.?;
+}
+
+// Benchmark configuration
+const Config = zbench.Config{
+    .iterations = 100_000,
+    .max_iterations = 1_000_000,
+    .time_budget_ns = 2_000_000_000, // 2 seconds
+    .track_allocations = true,
+};
+
+// Benchmark context that holds all necessary state
+const BenchmarkContext = struct {
+    provider: *LoggerProvider,
+    buffer: std.ArrayList(u8),
+    exporter: InMemoryExporter,
+    processor: SimpleLogRecordProcessor,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !*BenchmarkContext {
+        const ctx = try allocator.create(BenchmarkContext);
+        errdefer allocator.destroy(ctx);
+
+        ctx.buffer = std.ArrayList(u8).empty;
+        ctx.exporter = InMemoryExporter.init(.fromArrayList(allocator, &ctx.buffer));
+        ctx.processor = SimpleLogRecordProcessor.init(io, ctx.exporter.asLogRecordExporter());
+
+        ctx.provider = try LoggerProvider.init(allocator, io, null);
+        errdefer ctx.provider.deinit();
+
+        try ctx.provider.addLogRecordProcessor(ctx.processor.asLogRecordProcessor());
+
+        return ctx;
+    }
+
+    fn deinit(self: *BenchmarkContext, allocator: std.mem.Allocator) void {
+        self.provider.deinit();
+        self.exporter.writer.deinit();
+        allocator.destroy(self);
+    }
+};
+
+// Generate random attributes similar to other benchmarks
+const ATTR_VALUES = [_][]const u8{
+    "value_0", "value_1", "value_2", "value_3", "value_4",
+    "value_5", "value_6", "value_7", "value_8", "value_9",
+};
+
+const ATTR_KEYS = [_][]const u8{
+    "key_0", "key_1", "key_2", "key_3", "key_4",
+    "key_5", "key_6", "key_7", "key_8", "key_9",
+};
+
+fn getRandomAttribute(rng: *std.Random.DefaultPrng) Attribute {
+    const key_idx = rng.random().int(usize) % ATTR_KEYS.len;
+    const val_idx = rng.random().int(usize) % ATTR_VALUES.len;
+    return Attribute{
+        .key = ATTR_KEYS[key_idx],
+        .value = AttributeValue{ .string = ATTR_VALUES[val_idx] },
+    };
+}
+
+// === BENCHMARK TESTS ===
+
+test "Logger_Emit_W/O_Attributes" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const without_attributes = struct {
+        logger: *Logger,
+
+        pub fn setup(_: @This(), _: std.mem.Allocator) void {}
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            self.logger.emit(.info, "test log message", .{});
+        }
+        pub fn teardown(_: @This(), _: std.mem.Allocator) void {}
+    }{ .logger = logger };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, Config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Emit_Without_Attributes", &without_attributes, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_Emit_With_Attributes" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const with_attributes = struct {
+        logger: *Logger,
+        attrs: [5]Attribute,
+
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            self.logger.emit(.info, "test log message", .{ .attributes = &self.attrs });
+        }
+    }{
+        .logger = logger,
+        .attrs = [_]Attribute{
+            Attribute{ .key = "user.id", .value = AttributeValue{ .int = 12345 } },
+            Attribute{ .key = "request.path", .value = AttributeValue{ .string = "/api/users" } },
+            Attribute{ .key = "request.method", .value = AttributeValue{ .string = "GET" } },
+            Attribute{ .key = "response.status", .value = AttributeValue{ .int = 200 } },
+            Attribute{ .key = "duration.ms", .value = AttributeValue{ .int = 42 } },
+        },
+    };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, Config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Emit_With_Attributes", &with_attributes, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_Emit_Different_Severities" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const bench_config = Config;
+
+    var counter = std.atomic.Value(u32).init(0);
+    const severities = struct {
+        logger: *Logger,
+        severity_levels: [6]Severity,
+        counter: *std.atomic.Value(u32),
+
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            const idx = self.counter.fetchAdd(1, .monotonic) % self.severity_levels.len;
+            self.logger.emit(self.severity_levels[idx], "test log message", .{});
+        }
+    }{
+        .logger = logger,
+        .severity_levels = [_]Severity{ .trace, .debug, .info, .warn, .err, .fatal },
+        .counter = &counter,
+    };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, bench_config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Emit_Different_Severities", &severities, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_Emit_Small_Body" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const small_body = struct {
+        logger: *Logger,
+
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            self.logger.emit(.info, "OK", .{});
+        }
+    }{ .logger = logger };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, Config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Emit_Small_Body", &small_body, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_Emit_Large_Body" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const large_message = "This is a longer log message that contains more details about what happened " ++
+        "in the application. It might include stack traces, error messages, or other diagnostic " ++
+        "information that is useful for debugging. The message is long enough to test performance " ++
+        "with larger payloads that are more representative of real-world logging scenarios.";
+
+    const large_body = struct {
+        logger: *Logger,
+        message: []const u8,
+
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            self.logger.emit(.info, self.message, .{});
+        }
+    }{
+        .logger = logger,
+        .message = large_message,
+    };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, Config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Emit_Large_Body", &large_body, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_Emit_With_Many_Attributes" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const many_attributes = struct {
+        logger: *Logger,
+        attrs: [10]Attribute,
+
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            self.logger.emit(.info, "test log with many attributes", .{ .attributes = &self.attrs });
+        }
+    }{
+        .logger = logger,
+        .attrs = [_]Attribute{
+            Attribute{ .key = "attr_0", .value = AttributeValue{ .string = "value_0" } },
+            Attribute{ .key = "attr_1", .value = AttributeValue{ .string = "value_1" } },
+            Attribute{ .key = "attr_2", .value = AttributeValue{ .string = "value_2" } },
+            Attribute{ .key = "attr_3", .value = AttributeValue{ .string = "value_3" } },
+            Attribute{ .key = "attr_4", .value = AttributeValue{ .string = "value_4" } },
+            Attribute{ .key = "attr_5", .value = AttributeValue{ .string = "value_5" } },
+            Attribute{ .key = "attr_6", .value = AttributeValue{ .string = "value_6" } },
+            Attribute{ .key = "attr_7", .value = AttributeValue{ .string = "value_7" } },
+            Attribute{ .key = "attr_8", .value = AttributeValue{ .string = "value_8" } },
+            Attribute{ .key = "attr_9", .value = AttributeValue{ .string = "value_9" } },
+        },
+    };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, Config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Emit_With_Many_Attributes", &many_attributes, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_Concurrent_Emission" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+    };
+    const logger = try ctx.provider.getLogger(scope);
+
+    const bench_config = zbench.Config{
+        .iterations = 10_000,
+        .max_iterations = 100_000,
+        .time_budget_ns = 2_000_000_000, // 2 seconds
+        .track_allocations = true,
+    };
+
+    const concurrent_logs = struct {
+        logger: *Logger,
+
+        pub fn run(self: *@This(), allocator: std.mem.Allocator) void {
+            const thread_count = 4;
+            const threads = allocator.alloc(std.Thread, thread_count) catch return;
+            defer allocator.free(threads);
+
+            const worker = struct {
+                fn work(l: *Logger, thread_id: usize) void {
+                    for (0..10) |i| {
+                        var buf: [32]u8 = undefined;
+                        const message = std.fmt.bufPrint(&buf, "thread {} log {}", .{ thread_id, i }) catch "log";
+                        l.emit(.info, message, .{});
+                    }
+                }
+            };
+
+            for (threads, 0..) |*thread, i| {
+                thread.* = std.Thread.spawn(.{}, worker.work, .{ self.logger, i }) catch {
+                    continue;
+                };
+            }
+
+            for (threads) |thread| {
+                thread.join();
+            }
+        }
+    }{ .logger = logger };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, bench_config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_Concurrent_Emission", &concurrent_logs, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
+
+test "Logger_GetLogger_Same_Scope" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const ctx = try BenchmarkContext.init(std.testing.allocator, io);
+    defer ctx.deinit(std.testing.allocator);
+
+    const scope = InstrumentationScope{
+        .name = "benchmark.logs",
+        .version = "1.0.0",
+    };
+
+    const get_logger = struct {
+        provider: *LoggerProvider,
+        scope: InstrumentationScope,
+
+        pub fn run(self: *@This(), _: std.mem.Allocator) void {
+            _ = self.provider.getLogger(self.scope) catch return;
+        }
+    }{
+        .provider = ctx.provider,
+        .scope = scope,
+    };
+
+    var bench = zbench.Benchmark.init(std.testing.allocator, Config);
+    defer bench.deinit();
+
+    try bench.addParam("Logger_GetLogger_Same_Scope", &get_logger, .{});
+
+    const stderr: std.Io.File = .stderr();
+    try bench.run(io, stderr);
+}
