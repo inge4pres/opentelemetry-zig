@@ -192,6 +192,49 @@ test "metric reader collects data from meter provider" {
     }
 }
 
+test "metric reader cumulative aggregation survives freeing exported measurements" {
+    // page_allocator unmaps freed pages, so the use-after-free this guards
+    // against segfaults instead of silently reading recycled bytes (which the
+    // testing allocator would do, hiding the bug). Reaching the end proves no UAF.
+    const allocator = std.heap.page_allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.shutdown();
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.shutdown();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "reproduce.metrics.temporality" });
+    var counter = try meter.createCounter(u64, .{ .name = "requests" });
+
+    // Cumulative temporality: the running total must persist across collect
+    // cycles even though the caller takes ownership of and frees the exported
+    // measurements (and thus their attributes) between cycles.
+    const route: []const u8 = "/reproducer";
+    const want = [_]i64{ 1, 3 };
+    for (1..3) |round| {
+        try counter.add(@intCast(round), .{ "route", route });
+
+        try reader.collect();
+
+        const stored = try inMem.fetch(allocator);
+        defer {
+            for (stored) |*m| m.deinit(allocator);
+            allocator.free(stored);
+        }
+
+        try std.testing.expectEqual(@as(usize, 1), stored.len);
+        try std.testing.expectEqual(want[round - 1], stored[0].data.int[0].value);
+    }
+}
+
 fn deltaTemporality(_: Kind) view.Temporality {
     return .Delta;
 }

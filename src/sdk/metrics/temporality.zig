@@ -73,6 +73,14 @@ pub fn init(allocator: std.mem.Allocator) !*TemporalAggregator {
 }
 
 pub fn deinit(self: *TemporalAggregator) void {
+    var int_keys = self.ints.keyIterator();
+    while (int_keys.next()) |key| {
+        if (key.datapoint_attributes) |attrs| self.memory.free(attrs);
+    }
+    var double_keys = self.doubles.keyIterator();
+    while (double_keys.next()) |key| {
+        if (key.datapoint_attributes) |attrs| self.memory.free(attrs);
+    }
     self.ints.deinit();
     self.doubles.deinit();
     self.memory.destroy(self);
@@ -104,6 +112,12 @@ fn processCumulativeDataPoints(
             gop.value_ptr.timestamps = .{ .start_time_ns = existing_start_time, .time_ns = dp_time };
             gop.value_ptr.value += dp.value;
         } else {
+            // The map outlives the measurements: their attributes are owned by the
+            // exporter and freed after export, so the key must own its own copy.
+            gop.key_ptr.datapoint_attributes = Attributes.with(dp.attributes).dupe(map.allocator) catch |err| {
+                _ = map.remove(identity);
+                return err;
+            };
             gop.value_ptr.value = dp.value;
             gop.value_ptr.timestamps = .{ .start_time_ns = dp_start_time, .time_ns = dp_time };
         }
@@ -136,6 +150,13 @@ fn processDeltaDataPoints(
             if (gop.value_ptr.timestamps) |existing_time| {
                 start_time = existing_time.time_ns;
             }
+        } else {
+            // The map outlives the measurements: their attributes are owned by the
+            // exporter and freed after export, so the key must own its own copy.
+            gop.key_ptr.datapoint_attributes = Attributes.with(dp.attributes).dupe(map.allocator) catch |err| {
+                _ = map.remove(identity);
+                return err;
+            };
         }
         dp.timestamps = .{ .start_time_ns = start_time, .time_ns = dp_time };
         // Update map with this latest datapoint
