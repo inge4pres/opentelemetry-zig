@@ -2,7 +2,7 @@
 
 # OpenTelemetry Zig
 
-<p><img title="jj logo" src="docs/images/zero-otel.png" width="320"></p>
+<p><img title="Zero OTel logo" src="docs/images/zero-otel.png" width="320"></p>
 
 **[Zig docs] &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Installation](#installation) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
@@ -11,7 +11,7 @@
 **[Contributing](#contributing) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Community](#join-the-community)**
 
-[Zig docs]: https://zig-o11y.github.io/opentelemetry-sdk/
+[Zig docs]: https://open-telemetry.github.io/opentelemetry-zig/
 
 </div>
 
@@ -33,7 +33,7 @@ The version of the OpenTelemetry specification targeted here is **1.48.0**.
 Run the following command to add the package to your `build.zig.zon` dependencies, replacing `<ref>` with a release version:
 
 ```shall
-zig fetch --save "git+https://github.com/zig-o11y/opentelemetry-sdk#<ref>"
+zig fetch --save "git+https://github.com/open-telemetry/opentelemetry-zig#<ref>"
 ```
 
 Then in your `build.zig`:
@@ -173,6 +173,8 @@ We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for gu
 - Running benchmarks
 - Test and benchmark options
 
+Refer to [MAINTAINERS.md](./MAINTAINERS.md) if you want to get in touch with the people involved in the Zig SIG.
+
 ## Origins
 
 This project originated from a proposal in the OpenTelemetry community to create a native Zig implementation of the OpenTelemetry SDK.
@@ -180,8 +182,6 @@ This project originated from a proposal in the OpenTelemetry community to create
 You can read more about the original proposal and discussion at:
 
 https://github.com/open-telemetry/community/issues/2514
-
-For a more in-depth read of why OpenTelemetry needs a Zig SDK, see ["Zig is great for Observability"](https://inge.4pr.es/zig-is-great-for-observability/).
 
 ## Join the community
 
