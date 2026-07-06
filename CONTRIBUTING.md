@@ -1,4 +1,18 @@
-# Contributing to OpenTelemetry Zig
+# Contributing 
+
+Welcome to the OpenTelemetry Zig repository!
+
+Before you start, see the OpenTelemetry general
+[contributing](https://github.com/open-telemetry/community/blob/main/guides/contributor/README.md)
+requirements and recommendations.
+
+## CLA and license
+
+Review the project [license](LICENSE) and sign the
+[CNCF CLA](https://identity.linuxfoundation.org/projects/cncf). A signed CLA will be enforced by
+an automatic check once you submit a PR, but you can also sign it after opening your PR.
+
+## OpenTelemetry Zig
 
 The version of Zig used for development is declared in [`build.zig.zon`](./build.zig.zon) in the `.minimum_zig_version` field.
 
@@ -142,6 +156,5 @@ A typical development workflow:
 4. Run relevant examples: `zig build examples -Dexamples-filter=<signal>`
 5. Run benchmarks: `zig build benchmarks -Doptimize=ReleaseFast` (if performance-critical)
 6. Commit your changes
-
 
 

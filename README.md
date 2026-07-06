@@ -28,6 +28,9 @@ The version of the OpenTelemetry specification targeted here is **1.48.0**.
 1. Provide a reference implementation of the OpenTelemetry API
 1. Provide examples on how to use the library in real-world use cases
 
+> [!IMPORTANT]
+> We are currently seeking additional contributors! See [help wanted](#help-wanted) for details.
+
 ## Installation
 
 Run the following command to add the package to your `build.zig.zon` dependencies, replacing `<ref>` with a release version:
@@ -186,3 +189,12 @@ https://github.com/open-telemetry/community/issues/2514
 ## Join the community
 
 You can find the Zig OTel SDK developers in the CNCF Slack [#otel-zig](https://cloud-native.slack.com/archives/C0B4RTXTBEV) channel.
+
+## Help Wanted
+
+We are currently resource constrained and are actively seeking new contributors interested in working towards [approver](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver) / [maintainer](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer) roles. In addition to the documentation for approver / maintainer roles and the [contributing](./CONTRIBUTING.md) guide, here are some additional notes on engaging:
+
+- [Pull request](https://github.com/open-telemetry/opentelemetry-zig/pulls) reviews are equally or more helpful than code contributions. Comments and approvals are valuable with or without a formal project role. They're also a great forcing function to explore a fairly complex codebase.
+- Attending the [Zig SDK](https://github.com/open-telemetry/community#calendar) Special Interest Group (SIG) is a great way to get to know community members and learn about project priorities.
+- Issues labeled [help wanted](https://github.com/open-telemetry/opentelemetry-java/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) are project priorities. Code contributions (or pull request reviews when a PR is linked) for these issues are particularly important.
+- Triaging / responding to new issues and discussions is a great way to engage with the project.
