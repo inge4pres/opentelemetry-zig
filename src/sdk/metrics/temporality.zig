@@ -93,6 +93,12 @@ fn processCumulativeDataPoints(
     datapoints: [*]DataPoint(T),
     array_len: usize,
 ) !void {
+    // Gauges use LastValue semantics: even under cumulative temporality they must
+    // report the latest observation, not a running total.
+    const keep_last_value = switch (measurements.instrumentKind) {
+        .Gauge, .ObservableGauge => true,
+        else => false,
+    };
     for (0..array_len) |idx| {
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
@@ -110,7 +116,7 @@ fn processCumulativeDataPoints(
         if (gop.found_existing) {
             const existing_start_time = if (gop.value_ptr.timestamps) |existing_time| existing_time.start_time_ns else return TemporalAggregationError.MissingTimestampStartTimeUnixNano;
             gop.value_ptr.timestamps = .{ .start_time_ns = existing_start_time, .time_ns = dp_time };
-            gop.value_ptr.value += dp.value;
+            gop.value_ptr.value = if (keep_last_value) dp.value else gop.value_ptr.value + dp.value;
         } else {
             // The map outlives the measurements: their attributes are owned by the
             // exporter and freed after export, so the key must own its own copy.
@@ -312,4 +318,93 @@ test "temporal aggregator process cumulative temporality with timestamps" {
     try std.testing.expectEqual(4, m2.data.int[1].value);
     try std.testing.expectEqual(1, m2.data.int[1].timestamps.?.start_time_ns);
     try std.testing.expectEqual(3, m2.data.int[1].timestamps.?.time_ns);
+}
+
+test "temporal aggregator cumulative gauge keeps last value instead of summing" {
+    const allocator = std.testing.allocator;
+    const ta = try TemporalAggregator.init(allocator);
+    defer ta.deinit();
+
+    const values = [_]i64{ 10, 20, 3, 4 };
+    const data_points = try allocator.alloc(DataPoint(i64), 4);
+    defer {
+        for (data_points) |*dp| dp.deinit(allocator);
+        allocator.free(data_points);
+    }
+
+    for (0..4) |i| {
+        data_points[i] = try DataPoint(i64).new(allocator, values[i], .{});
+        data_points[i].timestamps = .{ .time_ns = @intCast(i) };
+    }
+
+    var m1 = Measurements{
+        .data = .{ .int = data_points[0..2] },
+        .scope = .{ .name = "test" },
+        .instrumentKind = .Gauge,
+        .instrumentOptions = .{ .name = "test" },
+    };
+    try ta.process(&m1, view.TemporalityCumulative);
+
+    var m2 = Measurements{
+        .data = .{ .int = data_points[2..] },
+        .scope = .{ .name = "test" },
+        .instrumentKind = .Gauge,
+        .instrumentOptions = .{ .name = "test" },
+    };
+    try ta.process(&m2, view.TemporalityCumulative);
+
+    // The second cycle reports its own values, not the running total across cycles.
+    // Start time still tracks the first observation for the series.
+    try std.testing.expectEqual(3, m2.data.int[0].value);
+    try std.testing.expectEqual(0, m2.data.int[0].timestamps.?.start_time_ns);
+    try std.testing.expectEqual(2, m2.data.int[0].timestamps.?.time_ns);
+
+    try std.testing.expectEqual(4, m2.data.int[1].value);
+    try std.testing.expectEqual(0, m2.data.int[1].timestamps.?.start_time_ns);
+    try std.testing.expectEqual(3, m2.data.int[1].timestamps.?.time_ns);
+}
+
+test "temporal aggregator cumulative gauge keeps a separate last value per attribute set" {
+    const allocator = std.testing.allocator;
+    const ta = try TemporalAggregator.init(allocator);
+    defer ta.deinit();
+
+    // Three distinct attribute sets, each updated once per cycle. The values are
+    // chosen so that any cross-contamination between series (collapsing all
+    // attributes into one, or leaking a neighbour's value) would be detectable.
+    const route_a: []const u8 = "/a";
+    const route_b: []const u8 = "/b";
+    const route_c: []const u8 = "/c";
+    const routes = [_][]const u8{ route_a, route_b, route_c, route_a, route_b, route_c };
+    const values = [_]i64{ 1, 2, 3, 10, 20, 30 };
+
+    const data_points = try allocator.alloc(DataPoint(i64), 6);
+    defer {
+        for (data_points) |*dp| dp.deinit(allocator);
+        allocator.free(data_points);
+    }
+    for (0..6) |i| {
+        data_points[i] = try DataPoint(i64).new(allocator, values[i], .{ "route", routes[i] });
+        data_points[i].timestamps = .{ .time_ns = @intCast(i) };
+    }
+
+    var m1 = Measurements{
+        .data = .{ .int = data_points[0..3] },
+        .scope = .{ .name = "test" },
+        .instrumentKind = .Gauge,
+        .instrumentOptions = .{ .name = "test" },
+    };
+    try ta.process(&m1, view.TemporalityCumulative);
+
+    var m2 = Measurements{
+        .data = .{ .int = data_points[3..6] },
+        .scope = .{ .name = "test" },
+        .instrumentKind = .Gauge,
+        .instrumentOptions = .{ .name = "test" },
+    };
+    try ta.process(&m2, view.TemporalityCumulative);
+
+    try std.testing.expectEqual(10, m2.data.int[0].value); // /a
+    try std.testing.expectEqual(20, m2.data.int[1].value); // /b
+    try std.testing.expectEqual(30, m2.data.int[2].value); // /c
 }
