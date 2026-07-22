@@ -26,7 +26,7 @@ Each test executable runs independently with its own:
 To run all integration tests:
 
 ```bash
-zig build integration
+zig build sdk-integration
 ```
 
 The tests will run with separate collector containers, allowing for parallel execution.
@@ -100,7 +100,7 @@ To add new integration tests:
    - `waitForFile()` - Wait for collector to write output files
    - `waitForFileContent()` - Wait for specific content in output files
    - `readJsonFile()` - Read JSON output files
-4. The test will automatically be discovered and run by `zig build integration`
+4. The test will automatically be discovered and run by `zig build sdk-integration`
 
 ## Troubleshooting
 

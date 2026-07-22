@@ -33,7 +33,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
-      - run: zig build test -Dtest-verbose=true
+      - run: zig build sdk-test -Dtest-verbose=true
         timeout-minutes: 3
 
   build_examples:
@@ -45,7 +45,7 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
-      - run: zig build examples
+      - run: zig build sdk-examples
 
   # Execute bencharmks only if the PR has a specific label 'run::benchmarks'
   benchmarks:
@@ -61,7 +61,7 @@ jobs:
       # The optimize argument builds the SDK library with optimizations,
       # benchmarks files are always compiled with ReleaseFast.
       - run: |
-          zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-output=benchmarks-result.txt
+          zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output=benchmarks-result.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmarks-result

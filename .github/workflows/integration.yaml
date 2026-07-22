@@ -21,4 +21,4 @@ jobs:
       - name: Fetch dependencies
         run: zig build --fetch
       - name: Run integration tests
-        run: zig build integration
+        run: zig build sdk-integration

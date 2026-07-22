@@ -33,7 +33,7 @@ This compiles the OpenTelemetry SDK as a static library in `zig-out/lib/`.
 Unit tests are executed as part of CI pipeline, you can run them locally while developing:
 
 ```
-zig build test
+zig build sdk-test
 ```
 
 #### Test options
@@ -47,20 +47,20 @@ The test build supports the following options:
 To run only specific tests matching a pattern, use build args:
 
 ```
-zig build test -- "counter"
+zig build sdk-test -- "counter"
 ```
 
 Example usage:
 
 ```
 # Run tests with verbose output (shows test names and timing)
-zig build test -Dtest-verbose=true
+zig build sdk-test -Dtest-verbose=true
 
 # Run specific tests with verbose output and stop on first failure
-zig build test -Dtest-verbose=true -Dtest-fail-first=true -- "counter"
+zig build sdk-test -Dtest-verbose=true -Dtest-fail-first=true -- "counter"
 
 # Show captured logs for tests with warnings/errors
-zig build test -Dtest-show-logs=true
+zig build sdk-test -Dtest-show-logs=true
 ```
 
 ### Running integration tests
@@ -68,7 +68,7 @@ zig build test -Dtest-show-logs=true
 Integration tests verify the SDK behavior against real OpenTelemetry backends. These tests require Docker to be installed and running.
 
 ```
-zig build integration
+zig build sdk-integration
 ```
 
 Integration tests are executed as part of CI on pull requests.
@@ -81,7 +81,7 @@ Integration tests are executed as part of CI on pull requests.
 Build and run all examples:
 
 ```
-zig build examples
+zig build sdk-examples
 ```
 
 #### Examples options
@@ -90,16 +90,16 @@ Filter examples to build and run specific ones:
 
 ```
 # Run only examples matching "otlp"
-zig build examples -Dexamples-filter=otlp
+zig build sdk-examples -Dexamples-filter=otlp
 
 # Run only histogram examples
-zig build examples -Dexamples-filter=histogram
+zig build sdk-examples -Dexamples-filter=histogram
 ```
 
 Examples are organized by signal type:
-- `examples/metrics/` - Metrics API examples
-- `examples/trace/` - Tracing API examples
-- `examples/logs/` - Logging API examples
+- `opentelemetry-sdk/examples/metrics/` - Metrics API examples
+- `opentelemetry-sdk/examples/trace/` - Tracing API examples
+- `opentelemetry-sdk/examples/logs/` - Logging API examples
 
 ### Running benchmarks
 
@@ -108,7 +108,7 @@ Benchmarks are executed as part of the pipeline on Pull Requests if they contain
 They can be executed locally with:
 
 ```
-zig build benchmarks -Doptimize=ReleaseFast
+zig build sdk-benchmarks -Doptimize=ReleaseFast
 ```
 
 #### Benchmark options
@@ -122,13 +122,13 @@ To run only specific benchmarks matching a pattern, use build args:
 
 ```
 # Run only counter benchmarks
-zig build benchmarks -Doptimize=ReleaseFast -- "counter"
+zig build sdk-benchmarks -Doptimize=ReleaseFast -- "counter"
 
 # Run a specific benchmark and save results
-zig build benchmarks -Doptimize=ReleaseFast -Dbenchmark-output="results.txt" -- "hist.record"
+zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output="results.txt" -- "hist.record"
 
 # Run benchmarks in debug mode for profiling
-zig build benchmarks -Dbenchmark-debug=true -- "counter"
+zig build sdk-benchmarks -Dbenchmark-debug=true -- "counter"
 ```
 
 > [!NOTE]
@@ -141,7 +141,7 @@ zig build benchmarks -Dbenchmark-debug=true -- "counter"
 Generate API documentation:
 
 ```
-zig build docs
+zig build sdk-docs
 ```
 
 Documentation will be generated in `zig-out/docs/` and can be viewed by opening `index.html` in a browser.
@@ -151,10 +151,10 @@ Documentation will be generated in `zig-out/docs/` and can be viewed by opening 
 A typical development workflow:
 
 1. Make your changes
-2. Run unit tests: `zig build test`
-3. Run integration tests: `zig build integration` (if applicable)
-4. Run relevant examples: `zig build examples -Dexamples-filter=<signal>`
-5. Run benchmarks: `zig build benchmarks -Doptimize=ReleaseFast` (if performance-critical)
+2. Run unit tests: `zig build sdk-test`
+3. Run integration tests: `zig build sdk-integration` (if applicable)
+4. Run relevant examples: `zig build sdk-examples -Dexamples-filter=<signal>`
+5. Run benchmarks: `zig build sdk-benchmarks -Doptimize=ReleaseFast` (if performance-critical)
 6. Commit your changes
 
 

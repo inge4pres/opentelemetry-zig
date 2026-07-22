@@ -35,9 +35,8 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "src",
-        "examples",
-        "benchmarks",
+        "build",
+        "opentelemetry-sdk",
         "LICENSE",
         "README.md",
     },
