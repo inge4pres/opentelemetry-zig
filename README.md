@@ -2,7 +2,7 @@
 
 # OpenTelemetry Zig
 
-<p><img title="Zero OTel logo" src="docs/images/zero-otel.png" width="320"></p>
+<p><img title="Zero OTel logo" src="images/zero-otel.png" width="320"></p>
 
 **[Zig docs] &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
 **[Installation](#installation) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
