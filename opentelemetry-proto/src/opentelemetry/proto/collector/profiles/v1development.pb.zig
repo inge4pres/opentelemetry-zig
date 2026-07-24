@@ -7,6 +7,7 @@ const fd = protobuf.fd;
 /// import package opentelemetry.proto.profiles.v1development
 const opentelemetry_proto_profiles_v1development = @import("../../profiles/v1development.pb.zig");
 
+/// Status: [Alpha]
 pub const ExportProfilesServiceRequest = struct {
     resource_profiles: std.ArrayList(opentelemetry_proto_profiles_v1development.ResourceProfiles) = .empty,
     dictionary: ?opentelemetry_proto_profiles_v1development.ProfilesDictionary = null,
@@ -75,6 +76,7 @@ pub const ExportProfilesServiceRequest = struct {
     }
 };
 
+/// Status: [Alpha]
 pub const ExportProfilesServiceResponse = struct {
     partial_success: ?ExportProfilesPartialSuccess = null,
 
@@ -141,6 +143,7 @@ pub const ExportProfilesServiceResponse = struct {
     }
 };
 
+/// Status: [Alpha]
 pub const ExportProfilesPartialSuccess = struct {
     rejected_profiles: i64 = 0,
     error_message: []const u8 = &.{},

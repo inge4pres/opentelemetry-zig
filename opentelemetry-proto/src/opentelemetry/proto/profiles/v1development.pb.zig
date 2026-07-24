@@ -9,29 +9,32 @@ const opentelemetry_proto_common_v1 = @import("../common/v1.pb.zig");
 /// import package opentelemetry.proto.resource.v1
 const opentelemetry_proto_resource_v1 = @import("../resource/v1.pb.zig");
 
-/// ProfilesDictionary represents the profiles data shared across the
-/// entire message being sent. The following applies to all fields in this
-/// message:
+/// ProfilesDictionary contains all the dictionary tables that are shared
+/// across the entire ProfilesData message.
+///
+/// The following applies to all fields in this message:
 ///
 /// - A dictionary is an array of dictionary items. Users of the dictionary
 /// compactly reference the items using the index within the array.
 ///
-/// - A dictionary MUST have a zero value encoded as the first element. This
+/// - The element at index 0 MUST be the zero value for the dictionary's element
+/// type (e.g. `""` for `string_table`, `Location{}` for `location_table`). This
 /// allows for _index fields pointing into the dictionary to use a 0 pointer
 /// value to indicate 'null' / 'not set'. Unless otherwise defined, a 'zero
 /// value' message value is one with all default field values, so as to
 /// minimize wire encoded size.
 ///
-/// - There SHOULD NOT be dupes in a dictionary. The identity of dictionary
-/// items is based on their value, recursively as needed. If a particular
-/// implementation does emit duplicated items, it MUST NOT attempt to give them
-/// meaning based on the index or order. A profile processor may remove
-/// duplicate items and this MUST NOT have any observable effects for
-/// consumers.
+/// - There SHOULD NOT be duplicate items in a dictionary. The identity of a
+/// dictionary item is based on its value, recursively as needed. If a particular
+/// implementation does emit duplicate items, it MUST NOT attempt to give them
+/// meaning based on the index or order. A profile processor MAY remove
+/// duplicates and this MUST NOT have any observable effects for consumers.
 ///
 /// - There SHOULD NOT be orphaned (unreferenced) items in a dictionary. A
-/// profile processor may remove ("garbage-collect") orphaned items and this
+/// profile processor MAY remove ("garbage-collect") orphaned items and this
 /// MUST NOT have any observable effects for consumers.
+///
+/// Status: [Alpha]
 pub const ProfilesDictionary = struct {
     mapping_table: std.ArrayList(Mapping) = .empty,
     location_table: std.ArrayList(Location) = .empty,
@@ -120,6 +123,8 @@ pub const ProfilesDictionary = struct {
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
+///
+/// Status: [Alpha]
 pub const ProfilesData = struct {
     resource_profiles: std.ArrayList(ResourceProfiles) = .empty,
     dictionary: ?ProfilesDictionary = null,
@@ -189,6 +194,8 @@ pub const ProfilesData = struct {
 };
 
 /// A collection of ScopeProfiles from a Resource.
+///
+/// Status: [Alpha]
 pub const ResourceProfiles = struct {
     resource: ?opentelemetry_proto_resource_v1.Resource = null,
     scope_profiles: std.ArrayList(ScopeProfiles) = .empty,
@@ -260,6 +267,8 @@ pub const ResourceProfiles = struct {
 };
 
 /// A collection of Profiles produced by an InstrumentationScope.
+///
+/// Status: [Alpha]
 pub const ScopeProfiles = struct {
     scope: ?opentelemetry_proto_common_v1.InstrumentationScope = null,
     profiles: std.ArrayList(Profile) = .empty,
@@ -335,9 +344,7 @@ pub const ScopeProfiles = struct {
 /// metadata. It modifies and annotates pprof Profile with OpenTelemetry
 /// specific fields.
 ///
-/// Note that whilst fields in this message retain the name and field id from pprof in most cases
-/// for ease of understanding data migration, it is not intended that pprof:Profile and
-/// OpenTelemetry:Profile encoding be wire compatible.
+/// Status: [Alpha]
 pub const Profile = struct {
     sample_type: ?ValueType = null,
     samples: std.ArrayList(Sample) = .empty,
@@ -426,6 +433,8 @@ pub const Profile = struct {
 
 /// A pointer from a profile Sample to a trace Span.
 /// Connects a profile sample to a trace span, identified by unique trace and span IDs.
+///
+/// Status: [Alpha]
 pub const Link = struct {
     trace_id: []const u8 = &.{},
     span_id: []const u8 = &.{},
@@ -495,6 +504,8 @@ pub const Link = struct {
 };
 
 /// ValueType describes the type and units of a value.
+///
+/// Status: [Alpha]
 pub const ValueType = struct {
     type_strindex: i32 = 0,
     unit_strindex: i32 = 0,
@@ -568,30 +579,33 @@ pub const ValueType = struct {
 /// information like the thread-id, some indicator of a higher level request
 /// being handled etc.
 ///
-/// A Sample MUST have have at least one values or timestamps_unix_nano entry. If
-/// both fields are populated, they MUST contain the same number of elements, and
-/// the elements at the same index MUST refer to the same event.
+/// A Sample MUST have have at least one entry in values or timestamps_unix_nano.
+/// If both fields are populated, they MUST contain the same number of elements,
+/// and the elements at the same index MUST refer to the same event.
 ///
 /// For the purposes of efficiently representing aggregated data observations, a Sample is regarded
 /// as having a shared identity and an associated collection of per-observation data points.
-/// Samples having the same identity SHOULD be combined by inserting timestamps and values to the data arrays.
+/// A Sample's identity (i.e. primary key) is the tuple of {stack_index, set_of(attribute_indices), link_index}.
+/// Samples having the same identity SHOULD be combined by appending timestamps and values to the data arrays.
 ///
 /// Examples of different ways ('shapes') of representing a sample with the total value of 10:
 ///
-/// Report of a stacktrace at 10 timestamps (consumers must assume the value is 1 for each point):
+/// Timestamps only (consumers must assume the value is 1 for each timestamp):
 /// values: []
 /// timestamps_unix_nano: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 ///
-/// Report of a stacktrace with an aggregated value without timestamps:
+/// Single aggregated value without timestamps (one element representing the total):
 /// values: [10]
 /// timestamps_unix_nano: []
 ///
-/// Report of a stacktrace at 4 timestamps where each point records a specific value:
+/// Per-timestamp value (each point in time records a specific value):
 /// values: [2, 2, 3, 3]
 /// timestamps_unix_nano: [1, 2, 3, 4]
 ///
 /// All Samples for a Profile SHOULD have the same shape, i.e. all data observation series should consistently
 /// adopt the same data recording style.
+///
+/// Status: [Alpha]
 pub const Sample = struct {
     stack_index: i32 = 0,
     attribute_indices: std.ArrayList(i32) = .empty,
@@ -668,6 +682,8 @@ pub const Sample = struct {
 
 /// Describes the mapping of a binary in memory, including its address range,
 /// file offset, and metadata like build ID
+///
+/// Status: [Alpha]
 pub const Mapping = struct {
     memory_start: u64 = 0,
     memory_limit: u64 = 0,
@@ -742,7 +758,13 @@ pub const Mapping = struct {
     }
 };
 
-/// A Stack represents a stack trace as a list of locations.
+/// A Stack represents a stack trace as a list of locations (leaf first).
+/// For example, the stack trace resulting from the call stack
+/// main -> foo -> bar would be encoded into the location_indices list
+/// [2, 1, 0] which references the locations in location_table as:
+/// [Location{"main"}, Location{"foo"}, Location{"bar"}].
+///
+/// Status: [Alpha]
 pub const Stack = struct {
     location_indices: std.ArrayList(i32) = .empty,
 
@@ -809,7 +831,9 @@ pub const Stack = struct {
     }
 };
 
-/// Describes function and line table debug information.
+/// Contains function and line table debug information for a single frame.
+///
+/// Status: [Alpha]
 pub const Location = struct {
     mapping_index: i32 = 0,
     address: u64 = 0,
@@ -883,6 +907,8 @@ pub const Location = struct {
 };
 
 /// Details a specific line in a source code, linked to a function.
+///
+/// Status: [Alpha]
 pub const Line = struct {
     function_index: i32 = 0,
     line: i64 = 0,
@@ -954,7 +980,10 @@ pub const Line = struct {
 };
 
 /// Describes a function, including its human-readable name, system name,
-/// source file, and starting line number in the source.
+/// source file, and starting line number in the source.  At least one of
+/// {name_strindex, system_name_strindex, filename_strindex} MUST be present.
+///
+/// Status: [Alpha]
 pub const Function = struct {
     name_strindex: i32 = 0,
     system_name_strindex: i32 = 0,
@@ -1029,7 +1058,10 @@ pub const Function = struct {
 
 /// A custom 'dictionary native' style of encoding attributes which is more convenient
 /// for profiles than opentelemetry.proto.common.v1.KeyValue
-/// Specifically, uses the string table for keys and allows optional unit information.
+/// Specifically, uses the ProfilesDictionary.string_table for keys
+/// and allows optional unit information.
+///
+/// Status: [Alpha]
 pub const KeyValueAndUnit = struct {
     key_strindex: i32 = 0,
     value: ?opentelemetry_proto_common_v1.AnyValue = null,
