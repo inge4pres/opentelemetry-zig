@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) !void {
         .version = zon.version,
     };
 
-    // proto exposes the "opentelemetry-proto" module the SDK imports.
+    // proto exposes the "opentelemetry-proto" module the SDK imports so it needs to be built first.
     try proto_build.Setup(b, compilation_info, &build_mods);
     try sdk_build.Setup(b, compilation_info, &build_mods);
 }
