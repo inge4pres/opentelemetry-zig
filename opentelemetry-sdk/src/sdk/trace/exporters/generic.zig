@@ -34,77 +34,62 @@ const SerializableSpan = struct {
     }
 };
 
-/// GenericWriterExporter is the generic SpanExporter that outputs spans to the given writer.
-fn GenericWriterExporter(
-    comptime Writer: type,
-) type {
-    return struct {
-        writer: Writer,
+/// WriterExporter outputs spans to the given writer.
+const WriterExporter = struct {
+    writer: *std.Io.Writer,
 
-        const Self = @This();
+    const Self = @This();
 
-        pub fn init(writer: Writer) Self {
-            return Self{
-                .writer = writer,
-            };
+    /// The writer must remain valid for the lifetime of the exporter.
+    pub fn init(writer: *std.Io.Writer) Self {
+        return Self{
+            .writer = writer,
+        };
+    }
+
+    pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+
+        // Convert spans to serializable format
+        var serializable_spans = std.ArrayList(SerializableSpan).empty;
+        defer serializable_spans.deinit(std.heap.page_allocator);
+
+        for (spans) |span| {
+            try serializable_spans.append(std.heap.page_allocator, SerializableSpan.fromSpan(span));
         }
 
-        fn writerInterface(self: *Self) *std.Io.Writer {
-            if (@hasField(Writer, "interface")) {
-                return &self.writer.interface;
-            }
-            if (@hasField(Writer, "writer")) {
-                return &self.writer.writer;
-            }
-            return &self.writer;
-        }
+        try self.writer.print("{f}", .{std.json.fmt(serializable_spans.items, .{})});
+        try self.writer.flush();
+    }
 
-        pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
+    pub fn shutdown(_: *anyopaque) anyerror!void {}
 
-            // Convert spans to serializable format
-            var serializable_spans = std.ArrayList(SerializableSpan).empty;
-            defer serializable_spans.deinit(std.heap.page_allocator);
-
-            for (spans) |span| {
-                try serializable_spans.append(std.heap.page_allocator, SerializableSpan.fromSpan(span));
-            }
-
-            const writer = self.writerInterface();
-            try writer.print("{f}", .{std.json.fmt(serializable_spans.items, .{})});
-            try writer.flush();
-        }
-
-        pub fn shutdown(_: *anyopaque) anyerror!void {}
-
-        pub fn asSpanExporter(self: *Self) SpanExporter {
-            return .{
-                .ptr = self,
-                .vtable = &.{
-                    .exportSpansFn = exportSpans,
-                    .shutdownFn = shutdown,
-                },
-            };
-        }
-    };
-}
+    pub fn asSpanExporter(self: *Self) SpanExporter {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .exportSpansFn = exportSpans,
+                .shutdownFn = shutdown,
+            },
+        };
+    }
+};
 
 /// StdoutExporter outputs spans into OS stdout.
 /// ref: https://opentelemetry.io/docs/specs/otel/trace/sdk_exporters/stdout/
-pub const StdoutExporter = GenericWriterExporter(std.Io.File.Writer);
+pub const StdoutExporter = WriterExporter;
 
 /// InmemoryExporter exports spans to in-memory buffer.
-/// it is designed for testing GenericWriterExporter.
-pub const InMemoryExporter = GenericWriterExporter(std.Io.Writer.Allocating);
+/// it is designed for testing WriterExporter.
+pub const InMemoryExporter = WriterExporter;
 
-// Example showing how to use GenericWriterExporter to create a custom exporter.
-// This demonstrates the pattern used by both StdoutExporter and InMemoryExporter.
-test "exporters/trace GenericWriterExporter" {
+// Example showing how to use WriterExporter with an arbitrary writer.
+test "exporters/trace WriterExporter" {
     var out_buf = std.ArrayList(u8).empty;
     {
-        // Create a custom exporter using the generic type
-        var inmemory_exporter = InMemoryExporter.init(.fromArrayList(std.testing.allocator, &out_buf));
-        errdefer inmemory_exporter.writer.deinit();
+        var writer = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &out_buf);
+        var inmemory_exporter = InMemoryExporter.init(&writer.writer);
+        errdefer writer.deinit();
         var exporter = inmemory_exporter.asSpanExporter();
 
         // Create a test span
@@ -122,7 +107,7 @@ test "exporters/trace GenericWriterExporter" {
         var spans = [_]trace.Span{test_span};
         try exporter.exportSpans(spans[0..spans.len]);
 
-        out_buf = inmemory_exporter.writer.toArrayList();
+        out_buf = writer.toArrayList();
     }
     defer out_buf.deinit(std.testing.allocator);
 
@@ -135,7 +120,8 @@ test StdoutExporter {
     // and can be instantiated correctly
     const io = std.testing.io;
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_exporter = StdoutExporter.init(std.Io.File.stdout().writer(io, &stdout_buffer));
+    var writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_exporter = StdoutExporter.init(&writer.interface);
     var exporter = stdout_exporter.asSpanExporter();
 
     // Create a test span to verify export works
@@ -158,8 +144,9 @@ test StdoutExporter {
 test InMemoryExporter {
     var out_buf = std.ArrayList(u8).empty;
     {
-        var inmemory_exporter = InMemoryExporter.init(.fromArrayList(std.testing.allocator, &out_buf));
-        errdefer inmemory_exporter.writer.deinit();
+        var writer = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &out_buf);
+        var inmemory_exporter = InMemoryExporter.init(&writer.writer);
+        errdefer writer.deinit();
         var exporter = inmemory_exporter.asSpanExporter();
 
         // Create test spans with different properties
@@ -186,7 +173,7 @@ test InMemoryExporter {
         try exporter.exportSpans(spans[0..spans.len]);
         try exporter.shutdown();
 
-        out_buf = inmemory_exporter.writer.toArrayList();
+        out_buf = writer.toArrayList();
     }
     defer out_buf.deinit(std.testing.allocator);
 

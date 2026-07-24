@@ -22,7 +22,8 @@ pub fn main(init: std.process.Init) !void {
 
     // 3. Create a stdout exporter and simple processor
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_exporter = trace.StdOutExporter.init(std.Io.File.stdout().writer(io, &stdout_buffer));
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_exporter = trace.StdOutExporter.init(&stdout_writer.interface);
     var simple_processor = trace.SimpleProcessor.init(allocator, io, stdout_exporter.asSpanExporter());
 
     // 4. Add the processor to the provider

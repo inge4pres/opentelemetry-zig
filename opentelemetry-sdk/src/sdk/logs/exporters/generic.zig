@@ -29,75 +29,62 @@ const SerializableLogRecord = struct {
     }
 };
 
-/// GenericWriterExporter is the generic LogRecordExporter that outputs log records to the given writer.
-fn GenericWriterExporter(
-    comptime Writer: type,
-) type {
-    return struct {
-        writer: Writer,
+/// WriterExporter outputs log records to the given writer.
+const WriterExporter = struct {
+    writer: *std.Io.Writer,
 
-        const Self = @This();
+    const Self = @This();
 
-        pub fn init(writer: Writer) Self {
-            return Self{
-                .writer = writer,
-            };
+    /// The writer must remain valid for the lifetime of the exporter.
+    pub fn init(writer: *std.Io.Writer) Self {
+        return Self{
+            .writer = writer,
+        };
+    }
+
+    pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+
+        // Convert log records to serializable format
+        var serializable_logs: std.ArrayList(SerializableLogRecord) = .empty;
+        defer serializable_logs.deinit(std.heap.page_allocator);
+
+        for (log_records) |log_record| {
+            try serializable_logs.append(std.heap.page_allocator, SerializableLogRecord.fromLogRecord(log_record));
         }
 
-        fn writerInterface(self: *Self) *std.Io.Writer {
-            if (@hasField(Writer, "interface")) {
-                return &self.writer.interface;
-            }
-            if (@hasField(Writer, "writer")) {
-                return &self.writer.writer;
-            }
-            return &self.writer;
-        }
+        // Serialize to JSON - format directly to this writer
+        try self.writer.print("{f}", .{std.json.fmt(serializable_logs.items, .{})});
+        try self.writer.flush();
+    }
 
-        pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
-            const self: *Self = @ptrCast(@alignCast(ctx));
+    pub fn shutdown(_: *anyopaque) anyerror!void {}
 
-            // Convert log records to serializable format
-            var serializable_logs: std.ArrayList(SerializableLogRecord) = .empty;
-            defer serializable_logs.deinit(std.heap.page_allocator);
-
-            for (log_records) |log_record| {
-                try serializable_logs.append(std.heap.page_allocator, SerializableLogRecord.fromLogRecord(log_record));
-            }
-
-            // Serialize to JSON - format directly to this writer
-            const writer = self.writerInterface();
-            try writer.print("{f}", .{std.json.fmt(serializable_logs.items, .{})});
-            try writer.flush();
-        }
-
-        pub fn shutdown(_: *anyopaque) anyerror!void {}
-
-        pub fn asLogRecordExporter(self: *Self) LogRecordExporter {
-            return .{
-                .ptr = self,
-                .vtable = &.{
-                    .exportLogsFn = exportLogs,
-                    .shutdownFn = shutdown,
-                },
-            };
-        }
-    };
-}
+    pub fn asLogRecordExporter(self: *Self) LogRecordExporter {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .exportLogsFn = exportLogs,
+                .shutdownFn = shutdown,
+            },
+        };
+    }
+};
 
 /// StdoutExporter outputs log records into OS stdout.
 /// ref: https://opentelemetry.io/docs/specs/otel/logs/sdk_exporters/stdout/
-pub const StdoutExporter = GenericWriterExporter(std.Io.File.Writer);
+pub const StdoutExporter = WriterExporter;
 
 /// InMemoryExporter exports log records to in-memory buffer.
-/// It is designed for testing GenericWriterExporter.
-pub const InMemoryExporter = GenericWriterExporter(std.Io.Writer.Allocating);
+/// It is designed for testing WriterExporter.
+pub const InMemoryExporter = WriterExporter;
 
-test "GenericWriterExporter" {
+test "WriterExporter" {
     var out_buf: std.ArrayList(u8) = .empty;
     {
-        var inmemory_exporter = InMemoryExporter.init(.fromArrayList(std.testing.allocator, &out_buf));
-        errdefer inmemory_exporter.writer.deinit();
+        var writer = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &out_buf);
+        var inmemory_exporter = InMemoryExporter.init(&writer.writer);
+        errdefer writer.deinit();
         var exporter = inmemory_exporter.asLogRecordExporter();
 
         // Create a test log record
@@ -116,7 +103,7 @@ test "GenericWriterExporter" {
         var log_records = [_]logs.ReadableLogRecord{readable};
         try exporter.exportLogs(log_records[0..log_records.len]);
 
-        out_buf = inmemory_exporter.writer.toArrayList();
+        out_buf = writer.toArrayList();
     }
     defer out_buf.deinit(std.testing.allocator);
 

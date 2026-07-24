@@ -359,13 +359,15 @@ pub fn loggerIsEnabled(
 /// Internal wrapper for stdout exporter that holds the exporter together.
 const StdoutLogExporterWrapper = struct {
     exporter: StdoutExporter,
+    writer: std.Io.File.Writer,
     buffer: [4096]u8,
     threaded: std.Io.Threaded,
     log_record_exporter: ?LogRecordExporter = null,
 
     fn init(self: *StdoutLogExporterWrapper) void {
         // Initialize the exporter with stdout
-        self.exporter = StdoutExporter.init(std.Io.File.stdout().writer(self.threaded.io(), &self.buffer));
+        self.writer = std.Io.File.stdout().writer(self.threaded.io(), &self.buffer);
+        self.exporter = StdoutExporter.init(&self.writer.interface);
         // Now create the log record exporter interface
         self.log_record_exporter = self.exporter.asLogRecordExporter();
     }
@@ -395,6 +397,7 @@ pub fn logRecordExporterStdoutCreate() callconv(.c) ?*OtelLogRecordExporter {
     wrapper.* = .{
         .buffer = undefined,
         .threaded = std.Io.Threaded.init(allocator, .{}),
+        .writer = undefined,
         .exporter = undefined,
         .log_record_exporter = null,
     };

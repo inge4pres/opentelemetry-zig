@@ -679,6 +679,7 @@ pub fn spanGetSpanIdHex(
 /// Internal wrapper for stdout exporter that holds the exporter together.
 const StdoutExporterWrapper = struct {
     exporter: StdoutExporter,
+    writer: std.Io.File.Writer,
     buffer: [4096]u8,
     threaded: std.Io.Threaded,
 };
@@ -706,9 +707,11 @@ pub fn spanExporterStdoutCreate() callconv(.c) ?*OtelSpanExporter {
     wrapper.* = .{
         .buffer = undefined,
         .threaded = std.Io.Threaded.init(allocator, .{}),
+        .writer = undefined,
         .exporter = undefined,
     };
-    wrapper.exporter = StdoutExporter.init(std.Io.File.stdout().writer(wrapper.threaded.io(), &wrapper.buffer));
+    wrapper.writer = std.Io.File.stdout().writer(wrapper.threaded.io(), &wrapper.buffer);
+    wrapper.exporter = StdoutExporter.init(&wrapper.writer.interface);
 
     const handle = allocator.create(SpanExporterHandle) catch {
         wrapper.threaded.deinit();

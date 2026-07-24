@@ -10,7 +10,8 @@ pub fn main(init: std.process.Init) !void {
 
     // Create a stdout exporter
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_exporter = sdk.logs.StdoutExporter.init(std.Io.File.stdout().writer(io, &stdout_buffer));
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_exporter = sdk.logs.StdoutExporter.init(&stdout_writer.interface);
     const exporter = stdout_exporter.asLogRecordExporter();
 
     // Create a simple processor

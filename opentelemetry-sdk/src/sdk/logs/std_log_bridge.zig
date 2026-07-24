@@ -324,8 +324,9 @@ test "std_log_bridge logFn prints text for body" {
 
     var buf = try std.ArrayList(u8).initCapacity(std.testing.allocator, 1024);
     {
-        var in_mem: InMemoryExporter = .init(.fromArrayList(std.testing.allocator, &buf));
-        errdefer in_mem.writer.deinit();
+        var writer = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &buf);
+        var in_mem: InMemoryExporter = .init(&writer.writer);
+        errdefer writer.deinit();
         const exporter = in_mem.asLogRecordExporter();
 
         var simple_processor = sdk.logs.SimpleLogRecordProcessor.init(io2, exporter);
@@ -342,7 +343,7 @@ test "std_log_bridge logFn prints text for body" {
 
         logFn(std.log.Level.debug, .test_scope, "test text", .{});
 
-        buf = in_mem.writer.toArrayList();
+        buf = writer.toArrayList();
     }
     defer buf.deinit(std.testing.allocator);
 
