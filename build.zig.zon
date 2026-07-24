@@ -27,15 +27,18 @@
             .url = "git+https://github.com/hendriknielaender/zBench?ref=v0.13.0#b2b89c475e3ef1bb2bd71255c80478a82d3e0ca8",
             .hash = "zbench-0.13.0-YTdc7xVBAQCCMC-IdLLuotBeiNNNm8k9Pi2V4VYqrwfI",
         },
-        .opentelemetry_proto = .{
-            .url = "git+https://github.com/zig-o11y/opentelemetry-proto?ref=main#c43bd4c4db96fd839c594b7b701b44866b19457e",
-            .hash = "opentelemetry_proto-1.10.3-S4Y0u6zjAgBXl5JQ75DnsV5L2DsJeRzbgbYLSDTkl-f9",
+        // Consumed by the vendored opentelemetry-proto module (see
+        // build/proto/build.zig) and, transitively, by the SDK.
+        .protobuf = .{
+            .url = "git+https://github.com/Arwalk/zig-protobuf?ref=v5.0.0#1f6cb06156b3ff4f52f98bc14f829c0b8393a6fc",
+            .hash = "protobuf-5.0.0-0e82avKUKAAVwTWJzTIEZ14Fu0zC11_lElR8tE6H__y1",
         },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "build",
+        "opentelemetry-proto",
         "opentelemetry-sdk",
         "LICENSE",
         "README.md",
