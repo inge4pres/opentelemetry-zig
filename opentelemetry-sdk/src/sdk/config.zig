@@ -332,6 +332,9 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) !*
 /// ensure that no other thread is actively using the Configuration returned by
 /// `get()` before calling `deinit()`, because this function does not wait for
 /// readers to finish.
+///
+/// Call this on a Configuration obtained from init().
+/// To release the global singleton, use deinitGlobal() instead.
 pub fn deinit(self: *Configuration) void {
     // Atomically claim deinitialization rights.
     // - If we were the active singleton (prev == self), proceed to free.
@@ -350,6 +353,13 @@ pub fn deinit(self: *Configuration) void {
     self.logs_config.deinit(self.allocator);
 
     self.allocator.destroy(self);
+}
+
+/// Release the global configuration singleton, if one is installed.
+/// Safe to call when no singleton is set, and safe to call twice.
+/// Callers must not call deinit() on the same Configuration afterwards.
+pub fn deinitGlobal() void {
+    if (Instance.load(.acquire)) |cfg| cfg.deinit();
 }
 
 // ============================================================================
@@ -707,6 +717,23 @@ test Configuration {
     const config2 = Configuration.get();
 
     try std.testing.expectEqual(config1, config2);
+}
+
+test "deinitGlobal releases the singleton and is idempotent" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    Configuration.set(config);
+
+    // Verify the singleton was released.
+    deinitGlobal();
+    try std.testing.expectEqual(@as(?*const Configuration, null), Configuration.get());
+
+    // Verify a second call is a no-op.
+    deinitGlobal();
+    try std.testing.expectEqual(@as(?*const Configuration, null), Configuration.get());
 }
 
 test "Configuration OTEL_SERVICE_NAME default is unknown_service:<executable>" {

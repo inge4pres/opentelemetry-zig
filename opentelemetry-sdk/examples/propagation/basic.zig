@@ -23,6 +23,8 @@ pub fn main(init: std.process.Init) !void {
     // This reads OTEL_PROPAGATORS environment variable
     var propagator = try sdk.propagation.createGlobalPropagator(allocator, init.io, init.environ_map);
     defer propagator.deinit();
+    // Release the global configuration at exit.
+    defer sdk.config.deinitGlobal();
 
     std.debug.print("Propagator initialized from configuration\n", .{});
     std.debug.print("Baggage propagation enabled: {}\n\n", .{propagator.registry.baggage_enabled});

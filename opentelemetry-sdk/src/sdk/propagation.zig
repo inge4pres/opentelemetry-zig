@@ -28,8 +28,9 @@ pub const PropagatorRegistry = struct {
 
     const Self = @This();
 
-    /// Initialize the propagator registry from configuration
-    pub fn init(allocator: std.mem.Allocator, config: *Configuration) !Self {
+    /// Initialize the propagator registry from configuration.
+    /// Copies the enabled flags; does not retain the configuration.
+    pub fn init(allocator: std.mem.Allocator, config: *const Configuration) !Self {
         var baggage_enabled = false;
 
         // Check which propagators are configured
@@ -81,8 +82,9 @@ pub const CompositePropagator = struct {
 
     const Self = @This();
 
-    /// Create a composite propagator from configuration
-    pub fn initFromConfig(allocator: std.mem.Allocator, config: *Configuration) !Self {
+    /// Create a composite propagator from configuration.
+    /// Borrows the configuration for the duration of the call.
+    pub fn initFromConfig(allocator: std.mem.Allocator, config: *const Configuration) !Self {
         const registry = try PropagatorRegistry.init(allocator, config);
 
         return Self{
@@ -153,21 +155,23 @@ pub const CompositePropagator = struct {
 ///
 /// This is a convenience function that creates a composite propagator using
 /// the global configuration singleton. If no global configuration exists,
-/// it will initialize one from the supplied environment map.
+/// it will initialize one from the supplied environment map and install it.
+/// The returned propagator does not retain the configuration.
+/// Release an installed singleton at shutdown with Configuration.deinitGlobal().
 pub fn createGlobalPropagator(
     allocator: std.mem.Allocator,
     io: std.Io,
     env_map: *const std.process.Environ.Map,
 ) !CompositePropagator {
     const config = Configuration.get() orelse blk: {
-        // No global config exists, create and set one
+        // No global config exists, create and set one.
         const new_config = try Configuration.init(allocator, io, env_map);
         Configuration.set(new_config);
         break :blk new_config;
     };
-    var cfg = @constCast(config);
-    defer cfg.deinit();
-    return try CompositePropagator.initFromConfig(allocator, cfg);
+    // Do not deinit here. The configuration is owned by the caller or the
+    // singleton and may be referenced by other providers.
+    return try CompositePropagator.initFromConfig(allocator, config);
 }
 
 // Tests
@@ -342,4 +346,41 @@ test "CompositePropagator fields list" {
 
     try std.testing.expectEqual(@as(usize, 1), field_list.len);
     try std.testing.expectEqualStrings("baggage", field_list[0]);
+}
+
+test "createGlobalPropagator leaves a caller-owned Configuration alive" {
+    const allocator = std.testing.allocator;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    const cfg = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    var propagator = try createGlobalPropagator(allocator, std.testing.io, &env_map);
+    defer propagator.deinit();
+
+    // Verify the singleton was not released.
+    try std.testing.expectEqual(@as(?*const Configuration, cfg), Configuration.get());
+
+    // Verify the cached configuration is still readable.
+    try std.testing.expectEqual(@as(u32, 2048), cfg.trace_config.bsp_max_queue_size);
+}
+
+test "createGlobalPropagator installs a Configuration when none exists" {
+    const allocator = std.testing.allocator;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    // Only release what this test installed.
+    const before = Configuration.get();
+
+    var propagator = try createGlobalPropagator(allocator, std.testing.io, &env_map);
+    defer propagator.deinit();
+
+    try std.testing.expect(Configuration.get() != null);
+
+    if (before == null) Configuration.deinitGlobal();
 }
