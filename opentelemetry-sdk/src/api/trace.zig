@@ -136,10 +136,10 @@ fn deserializeField(allocator: std.mem.Allocator, comptime T: type, attr_value: 
                     const key = kv.next() orelse continue;
                     const value = kv.next() orelse continue;
 
-                    // Handle intermediate TraceState allocations properly
-                    const new_state = trace_state.insert(allocator, key, value) catch continue;
-                    trace_state.deinit();
-                    trace_state = new_state;
+                    // `append` rather than `insert` because the list-members are read
+                    // left-to-right and must keep the order they had on the wire.
+                    // `insert` would move each one to the front, reversing them.
+                    trace_state.append(key, value) catch continue;
                 }
             }
 
@@ -325,10 +325,52 @@ test "SpanContext serialization/deserialization with metaprogramming" {
     try std.testing.expectEqual(original_span_context.trace_flags.value, deserialized_span_context.trace_flags.value);
     try std.testing.expectEqual(original_span_context.is_remote, deserialized_span_context.is_remote);
 
-    // Verify trace state entries
-    try std.testing.expectEqual(@as(usize, 2), deserialized_span_context.trace_state.entries.count());
-    try std.testing.expectEqualStrings("value1", deserialized_span_context.trace_state.get("key1").?);
-    try std.testing.expectEqualStrings("value2", deserialized_span_context.trace_state.get("key2").?);
+    // Verify trace state entries, including their order: key2 was inserted last, so
+    // it is the left-most list-member and must still be after a round trip.
+    try span.expectTraceStateEntries(&.{
+        .{ "key2", "value2" },
+        .{ "key1", "value1" },
+    }, deserialized_span_context.trace_state);
+}
+
+test "TraceState round-trip preserves the order of the list-members" {
+    const allocator = std.testing.allocator;
+
+    // Deserialization reads list-members left-to-right; using `insert` there would
+    // move each one to the front and reverse the whole list on every round trip.
+    var trace_state = TraceState.init(allocator);
+    defer trace_state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }) |kv| {
+        const next = try trace_state.insert(allocator, kv[0], kv[1]);
+        trace_state.deinit();
+        trace_state = next;
+    }
+
+    const serialized = try serializeField(allocator, trace_state);
+    defer allocator.free(serialized.string);
+    try std.testing.expectEqualStrings(
+        "blue=bluesFirstPosition,rojo=rojosFirstPosition,congo=congosFirstPosition",
+        serialized.string,
+    );
+
+    var deserialized = deserializeField(allocator, TraceState, serialized).?;
+    defer deserialized.deinit();
+
+    try span.expectTraceStateEntries(&.{
+        .{ "blue", "bluesFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "congo", "congosFirstPosition" },
+    }, deserialized);
+
+    // Serializing the deserialized state reproduces the same header verbatim.
+    const reserialized = try serializeField(allocator, deserialized);
+    defer allocator.free(reserialized.string);
+    try std.testing.expectEqualStrings(serialized.string, reserialized.string);
 }
 
 test "SpanContext serialization with empty trace state" {

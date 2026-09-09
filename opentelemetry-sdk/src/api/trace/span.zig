@@ -85,7 +85,9 @@ pub const TraceState = struct {
         return self.entries.get(key);
     }
 
-    /// Add a new key/value pair. Returns a new TraceState with the addition.
+    /// Add a new key/value pair, replacing any existing entry for the same key.
+    /// Returns a new TraceState with the entry as the left-most list-member, as
+    /// required by https://www.w3.org/TR/trace-context/#mutating-the-tracestate-field
     /// Validates input according to W3C Trace Context specification.
     pub fn insert(self: Self, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !Self {
         // Validate key according to W3C spec
@@ -93,32 +95,60 @@ pub const TraceState = struct {
         if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
 
         var new_state = Self.init(allocator);
+        errdefer new_state.deinit();
         try new_state.entries.ensureTotalCapacity(allocator, self.entries.count() + 1);
+
+        try new_state.entries.put(allocator, key, value);
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, key)) continue;
             try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
-        try new_state.entries.put(allocator, key, value);
         return new_state;
     }
 
-    /// Update an existing value for a given key. Returns a new TraceState with the update.
+    /// Append a key/value pair as the right-most list-member, keeping the order in
+    /// which entries are added. Unlike `insert`, this does not apply the W3C rule of
+    /// moving the entry to the front: that rule governs mutations, while this exists
+    /// to rebuild a TraceState from a serialized `tracestate`, where the order of the
+    /// list-members must be preserved verbatim.
+    /// A key that is already present keeps its position and takes the new value.
+    /// W3C allows only one entry per key, so a caller parsing an untrusted header is
+    /// responsible for deciding what a duplicate means: the spec lets a vendor drop
+    /// the offending entry or the whole header, and this returns neither.
+    /// Unlike the methods returning a new TraceState, this mutates in place and so
+    /// allocates with the allocator the TraceState was initialized with, the same one
+    /// `deinit` frees with.
+    /// Validates input according to W3C Trace Context specification.
+    pub fn append(self: *Self, key: []const u8, value: []const u8) !void {
+        if (!isValidTraceStateKey(key)) return error.InvalidTraceStateKey;
+        if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
+
+        try self.entries.put(self.allocator, key, value);
+    }
+
+    /// Update an existing value for a given key. Returns a new TraceState with the
+    /// updated entry moved to the left-most position, as required by
+    /// https://www.w3.org/TR/trace-context/#mutating-the-tracestate-field
+    /// A key that is not already present is not created; the returned TraceState
+    /// is then an unchanged copy.
     /// Validates input according to W3C Trace Context specification.
     pub fn update(self: Self, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !Self {
         if (!isValidTraceStateKey(key)) return error.InvalidTraceStateKey;
         if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
 
         var new_state = Self.init(allocator);
+        errdefer new_state.deinit();
         try new_state.entries.ensureTotalCapacity(allocator, self.entries.count());
+
+        const exists = self.entries.get(key) != null;
+        if (exists) try new_state.entries.put(allocator, key, value);
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, key)) {
-                try new_state.entries.put(allocator, key, value);
-            } else {
-                try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
-            }
+            if (exists and std.mem.eql(u8, entry.key_ptr.*, key)) continue;
+            try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
         return new_state;
     }
@@ -544,4 +574,166 @@ test "TraceState validation" {
 
     // Test invalid value (contains equals)
     try std.testing.expectError(error.InvalidTraceStateValue, trace_state.insert(allocator, "key", "val=ue"));
+}
+
+/// Assert that a TraceState holds exactly the given key/value pairs, in order.
+/// Compares the keys and values by content: `expectEqualSlices` over `[]const u8`
+/// elements compares the slices by pointer, which only holds for deduplicated
+/// string literals and not for keys pointing into a parsed `tracestate` header.
+pub fn expectTraceStateEntries(expected: []const [2][]const u8, state: TraceState) !void {
+    try std.testing.expectEqual(expected.len, state.entries.count());
+    for (expected, state.entries.keys(), state.entries.values()) |kv, key, value| {
+        try std.testing.expectEqualStrings(kv[0], key);
+        try std.testing.expectEqualStrings(kv[1], value);
+    }
+}
+
+test "TraceState insert puts new entries at the front" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "a", "1" },
+        .{ "b", "2" },
+        .{ "c", "3" },
+    }) |kv| {
+        const next = try state.insert(allocator, kv[0], kv[1]);
+        state.deinit();
+        state = next;
+    }
+
+    try expectTraceStateEntries(&.{
+        .{ "c", "3" },
+        .{ "b", "2" },
+        .{ "a", "1" },
+    }, state);
+}
+
+test "TraceState update moves the modified entry to the front" {
+    const allocator = std.testing.allocator;
+
+    // Follows the Congo/Rojo example from the W3C specification: a trace starts at
+    // congo, passes through other systems, then re-enters congo. A third vendor is
+    // present so that the re-entry has to move congo past an intervening entry.
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }) |kv| {
+        const next = try state.insert(allocator, kv[0], kv[1]);
+        state.deinit();
+        state = next;
+    }
+
+    const reentered = try state.update(allocator, "congo", "congosSecondPosition");
+    state.deinit();
+    state = reentered;
+
+    try expectTraceStateEntries(&.{
+        .{ "congo", "congosSecondPosition" },
+        .{ "blue", "bluesFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+    }, state);
+}
+
+test "TraceState insert on an existing key replaces it and moves it to the front" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "vendor", "first" },
+        .{ "other", "value" },
+        .{ "third", "value" },
+    }) |kv| {
+        const next = try state.insert(allocator, kv[0], kv[1]);
+        state.deinit();
+        state = next;
+    }
+
+    const replaced = try state.insert(allocator, "vendor", "second");
+    state.deinit();
+    state = replaced;
+
+    try expectTraceStateEntries(&.{
+        .{ "vendor", "second" },
+        .{ "third", "value" },
+        .{ "other", "value" },
+    }, state);
+}
+
+test "TraceState update leaves an absent key unchanged" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    const with_entry = try state.insert(allocator, "present", "value");
+    state.deinit();
+    state = with_entry;
+
+    const unchanged = try state.update(allocator, "absent", "value");
+    state.deinit();
+    state = unchanged;
+
+    try expectTraceStateEntries(&.{
+        .{ "present", "value" },
+    }, state);
+}
+
+test "TraceState append keeps entries in the order they are added" {
+    const allocator = std.testing.allocator;
+
+    // Deserializing a `tracestate` header replays the list-members left-to-right,
+    // so `append` must leave them where they were rather than moving each to the
+    // front the way `insert` does.
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }) |kv| {
+        try state.append(kv[0], kv[1]);
+    }
+
+    try expectTraceStateEntries(&.{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }, state);
+}
+
+test "TraceState append on an existing key replaces it in place" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    try state.append("vendor", "first");
+    try state.append("other", "value");
+    try state.append("vendor", "second");
+
+    try expectTraceStateEntries(&.{
+        .{ "vendor", "second" },
+        .{ "other", "value" },
+    }, state);
+}
+
+test "TraceState append validates keys and values" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    try std.testing.expectError(error.InvalidTraceStateKey, state.append("Key", "value"));
+    try std.testing.expectError(error.InvalidTraceStateValue, state.append("key", "val,ue"));
+    try std.testing.expectEqual(@as(usize, 0), state.entries.count());
 }
