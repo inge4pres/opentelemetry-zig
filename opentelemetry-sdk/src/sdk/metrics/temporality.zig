@@ -10,6 +10,7 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const DataPoint = @import("../../api/metrics/measurement.zig").DataPoint;
 const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
+const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
 const view = @import("view.zig");
 
 const TemporalAggregator = @This();
@@ -22,14 +23,16 @@ pub const TemporalAggregationError = error{
 /// A representatio of a data point enriched with all the metadata from the instrument and meter hosting it.
 pub const ScopedDataPoint = struct {
     scope: InstrumentationScope,
-    instrument_name: []const u8,
+    instrument_options: sdk_instrument.InstrumentOptions,
     instrument_kind: Kind,
     datapoint_attributes: ?[]Attribute,
 
     pub fn eql(a: ScopedDataPoint, b: ScopedDataPoint) bool {
         const ctx = InstrumentationScope.HashContext{};
         if (!ctx.eql(a.scope, b.scope)) return false;
-        if (!std.mem.eql(u8, a.instrument_name, b.instrument_name)) return false;
+        if (!std.mem.eql(u8, a.instrument_options.name, b.instrument_options.name)) return false;
+        if (!std.mem.eql(u8, a.instrument_options.unit orelse "", b.instrument_options.unit orelse "")) return false;
+        if (!std.mem.eql(u8, a.instrument_options.description orelse "", b.instrument_options.description orelse "")) return false;
         if (a.instrument_kind != b.instrument_kind) return false;
 
         const attrs_context = Attributes.HashContext{};
@@ -41,7 +44,11 @@ pub const ScopedDataPoint = struct {
 pub const HashContext = struct {
     pub fn hash(_: HashContext, key: ScopedDataPoint) u64 {
         var h = std.hash.Wyhash.init(0);
-        h.update(key.instrument_name);
+        h.update(key.instrument_options.name);
+        const unit = key.instrument_options.unit orelse "";
+        std.hash.autoHash(&h, unit.len);
+        h.update(unit);
+        h.update(key.instrument_options.description orelse "");
         std.hash.autoHash(&h, key.instrument_kind);
 
         const instrument_hash = InstrumentationScope.HashContext{};
@@ -61,6 +68,7 @@ pub const HashContext = struct {
 memory: std.mem.Allocator,
 ints: std.HashMap(ScopedDataPoint, DataPoint(i64), HashContext, std.hash_map.default_max_load_percentage),
 doubles: std.HashMap(ScopedDataPoint, DataPoint(f64), HashContext, std.hash_map.default_max_load_percentage),
+histograms: std.HashMap(ScopedDataPoint, DataPoint(HistogramDataPoint), HashContext, std.hash_map.default_max_load_percentage),
 
 pub fn init(allocator: std.mem.Allocator) !*TemporalAggregator {
     const this = try allocator.create(TemporalAggregator);
@@ -68,6 +76,7 @@ pub fn init(allocator: std.mem.Allocator) !*TemporalAggregator {
         .memory = allocator,
         .ints = std.HashMap(ScopedDataPoint, DataPoint(i64), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
         .doubles = std.HashMap(ScopedDataPoint, DataPoint(f64), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
+        .histograms = std.HashMap(ScopedDataPoint, DataPoint(HistogramDataPoint), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
     };
     return this;
 }
@@ -81,8 +90,16 @@ pub fn deinit(self: *TemporalAggregator) void {
     while (double_keys.next()) |key| {
         if (key.datapoint_attributes) |attrs| self.memory.free(attrs);
     }
+    var histogram_entries = self.histograms.iterator();
+    while (histogram_entries.next()) |entry| {
+        if (entry.key_ptr.datapoint_attributes) |attrs| {
+            self.memory.free(attrs);
+        }
+        entry.value_ptr.deinit(self.memory);
+    }
     self.ints.deinit();
     self.doubles.deinit();
+    self.histograms.deinit();
     self.memory.destroy(self);
 }
 
@@ -103,7 +120,7 @@ fn processCumulativeDataPoints(
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
             .scope = measurements.scope,
-            .instrument_name = measurements.instrumentOptions.name,
+            .instrument_options = measurements.instrumentOptions,
             .instrument_kind = measurements.instrumentKind,
             .datapoint_attributes = dp.attributes,
         };
@@ -114,20 +131,80 @@ fn processCumulativeDataPoints(
 
         const gop = try map.getOrPut(identity);
         if (gop.found_existing) {
-            const existing_start_time = if (gop.value_ptr.timestamps) |existing_time| existing_time.start_time_ns else return TemporalAggregationError.MissingTimestampStartTimeUnixNano;
-            gop.value_ptr.timestamps = .{ .start_time_ns = existing_start_time, .time_ns = dp_time };
-            gop.value_ptr.value = if (keep_last_value) dp.value else gop.value_ptr.value + dp.value;
+            const existing_ts = gop.value_ptr.timestamps orelse return TemporalAggregationError.MissingTimestampStartTimeUnixNano;
+            switch (T) {
+                HistogramDataPoint => {
+                    const stored = &gop.value_ptr.value;
+                    stored.count = try std.math.add(u64, stored.count, dp.value.count);
+
+                    stored.sum = if (stored.sum != null and dp.value.sum != null)
+                        stored.sum.? + dp.value.sum.?
+                    else
+                        null;
+
+                    stored.min = if (stored.min != null and dp.value.min != null)
+                        @min(stored.min.?, dp.value.min.?)
+                    else
+                        null;
+
+                    stored.max = if (stored.max != null and dp.value.max != null)
+                        @max(stored.max.?, dp.value.max.?)
+                    else
+                        null;
+
+                    for (stored.bucket_counts, dp.value.bucket_counts) |*stored_count, current_count| {
+                        stored_count.* = try std.math.add(u64, stored_count.*, current_count);
+                    }
+                },
+                i64, f64 => {
+                    gop.value_ptr.value = if (keep_last_value) dp.value else gop.value_ptr.value + dp.value;
+                },
+                else => @compileError("unsupported cumulative data point type"),
+            }
+            gop.value_ptr.timestamps = .{ .start_time_ns = existing_ts.start_time_ns, .time_ns = dp_time };
         } else {
-            // The map outlives the measurements: their attributes are owned by the
-            // exporter and freed after export, so the key must own its own copy.
-            gop.key_ptr.datapoint_attributes = Attributes.with(dp.attributes).dupe(map.allocator) catch |err| {
-                _ = map.remove(identity);
-                return err;
+            errdefer _ = map.remove(identity);
+
+            // The key owns the attribute slice so it survives output deinitialization.
+            const attrs = try Attributes.with(dp.attributes).dupe(map.allocator);
+            errdefer {
+                if (attrs) |a| map.allocator.free(a);
+            }
+
+            const stored_value = switch (T) {
+                HistogramDataPoint => blk: {
+                    var value = dp.value;
+                    value.bucket_counts = try map.allocator.dupe(u64, dp.value.bucket_counts);
+                    break :blk value;
+                },
+                i64, f64 => dp.value,
+                else => @compileError("unsupported cumulative data point type"),
             };
-            gop.value_ptr.value = dp.value;
-            gop.value_ptr.timestamps = .{ .start_time_ns = dp_start_time, .time_ns = dp_time };
+
+            gop.key_ptr.datapoint_attributes = attrs;
+            gop.value_ptr.* = .{
+                .value = stored_value,
+                .attributes = null,
+                .timestamps = .{
+                    .start_time_ns = dp_start_time,
+                    .time_ns = dp_time,
+                },
+            };
         }
-        dp.value = gop.value_ptr.value;
+
+        const output_value = switch (T) {
+            HistogramDataPoint => blk: {
+                // Reuse the output buffer, keeping it separate from the saved state.
+                var value = gop.value_ptr.value;
+                @memcpy(dp.value.bucket_counts, value.bucket_counts);
+                value.bucket_counts = dp.value.bucket_counts;
+                break :blk value;
+            },
+            i64, f64 => gop.value_ptr.value,
+            else => @compileError("unsupported cumulative data point type"),
+        };
+
+        dp.value = output_value;
         dp.timestamps = gop.value_ptr.timestamps;
     }
 }
@@ -143,7 +220,7 @@ fn processDeltaDataPoints(
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
             .scope = measurements.scope,
-            .instrument_name = measurements.instrumentOptions.name,
+            .instrument_options = measurements.instrumentOptions,
             .instrument_kind = measurements.instrumentKind,
             .datapoint_attributes = dp.attributes,
         };
@@ -171,7 +248,7 @@ fn processDeltaDataPoints(
     }
 }
 
-/// Extract the temporality for each unique measurement and applies the proper timestamps to the data points.
+/// Apply the selected temporality to data point values and timestamps.
 pub fn process(self: *TemporalAggregator, measurements: *Measurements, temporality: view.TemporalitySelector) !void {
     switch (temporality(measurements.instrumentKind)) {
         .Delta => {
@@ -185,14 +262,102 @@ pub fn process(self: *TemporalAggregator, measurements: *Measurements, temporali
         },
         .Cumulative => {
             switch (measurements.data) {
-                // TODO update here when the histogram attributes are implemented as an aggregation from raw data points rather than pre-computing them.
-                .histogram, .exponential_histogram => return,
+                .histogram => |datapoints| try processCumulativeDataPoints(
+                    HistogramDataPoint,
+                    &self.histograms,
+                    measurements,
+                    datapoints.ptr,
+                    datapoints.len,
+                ),
+                // TODO: accumulate exponential histograms across collections.
+                .exponential_histogram => return,
                 .int => |datapoints| try processCumulativeDataPoints(i64, &self.ints, measurements, datapoints.ptr, datapoints.len),
                 .double => |datapoints| try processCumulativeDataPoints(f64, &self.doubles, measurements, datapoints.ptr, datapoints.len),
             }
         },
         .Unspecified => return,
     }
+}
+
+test "cumulative histogram reuses the output bucket buffer" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const allocator = failing.allocator();
+    const ta = try TemporalAggregator.init(allocator);
+    defer ta.deinit();
+
+    for ([_]f64{ 0.25, 0.5, 0.75 }, 0..) |value, i| {
+        var dp = DataPoint(HistogramDataPoint){
+            .value = .{
+                .count = 1,
+                .sum = value,
+                .min = value,
+                .max = value,
+                .explicit_bounds = &.{ 0.3, 0.6 },
+                .bucket_counts = try allocator.dupe(u64, &.{ 0, 0, 0 }),
+            },
+            .timestamps = .{ .time_ns = (i + 1) * 100 },
+        };
+        defer dp.deinit(allocator);
+        dp.value.bucket_counts[i] = 1;
+        var measurements = Measurements{
+            .scope = .{ .name = "test" },
+            .instrumentKind = .Histogram,
+            .instrumentOptions = .{ .name = "test-histogram" },
+            .data = .{ .histogram = (&dp)[0..1] },
+        };
+
+        // Updating an existing series needs no new output allocation.
+        if (i == 1) failing.fail_index = failing.alloc_index;
+        try ta.process(&measurements, view.TemporalityCumulative);
+        failing.fail_index = std.math.maxInt(usize);
+
+        if (i == 2) {
+            try std.testing.expectEqual(3, dp.value.count);
+            try std.testing.expectEqual(1.5, dp.value.sum.?);
+            try std.testing.expectEqualSlices(u64, &.{ 1, 1, 1 }, dp.value.bucket_counts);
+        }
+    }
+}
+
+test "cumulative histogram leaves state unchanged on count overflow" {
+    const allocator = std.testing.allocator;
+    const ta = try TemporalAggregator.init(allocator);
+    defer ta.deinit();
+    var first = DataPoint(HistogramDataPoint){
+        .value = .{
+            .count = std.math.maxInt(u64),
+            .sum = 0,
+            .min = 0,
+            .max = 0,
+            .explicit_bounds = &.{},
+            .bucket_counts = try allocator.dupe(u64, &.{std.math.maxInt(u64)}),
+        },
+        .timestamps = .{ .time_ns = 100 },
+    };
+    defer first.deinit(allocator);
+    var measurements = Measurements{
+        .scope = .{ .name = "test" },
+        .instrumentKind = .Histogram,
+        .instrumentOptions = .{ .name = "test-histogram" },
+        .data = .{ .histogram = (&first)[0..1] },
+    };
+    try ta.process(&measurements, view.TemporalityCumulative);
+
+    var second = first;
+    second.value = .{
+        .count = 1,
+        .sum = 0.5,
+        .min = 0.5,
+        .max = 0.5,
+        .explicit_bounds = &.{},
+        .bucket_counts = try allocator.dupe(u64, &.{1}),
+    };
+    second.timestamps = .{ .time_ns = 200 };
+    defer second.deinit(allocator);
+    measurements.data = .{ .histogram = (&second)[0..1] };
+    try std.testing.expectError(error.Overflow, ta.process(&measurements, view.TemporalityCumulative));
+    var entries = ta.histograms.valueIterator();
+    try std.testing.expectEqualDeep(first, entries.next().?.*);
 }
 
 test "temporal aggregator process cumulative without timestamps returns error" {

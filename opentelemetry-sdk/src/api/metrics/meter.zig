@@ -631,12 +631,18 @@ pub const AggregatedMetrics = struct {
                     const config = aggregation_type.ExplicitBucketHistogram;
                     const buckets = config.buckets;
                     const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, buckets, config.record_min_max);
+                    for (aggregated) |*dp| {
+                        dp.timestamps = .{ .time_ns = current_time };
+                    }
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
                 .double => blk: {
                     const config = aggregation_type.ExplicitBucketHistogram;
                     const buckets = config.buckets;
                     const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, buckets, config.record_min_max);
+                    for (aggregated) |*dp| {
+                        dp.timestamps = .{ .time_ns = current_time };
+                    }
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
                 .histogram => blk: {

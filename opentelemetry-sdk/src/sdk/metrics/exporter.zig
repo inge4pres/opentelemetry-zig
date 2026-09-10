@@ -675,8 +675,7 @@ test "e2e periodic exporting metric reader" {
     try histogram.record(1.4, .{});
     try histogram.record(10.4, .{});
 
-    // Need to wait for the PeriodicExportingReader to collect and export the metrics.
-    // Wait for more than 1 collection cycle to ensure that no duplication of data points occurs.
+    // Allow repeated collections; cumulative values must not grow without new records.
     clock.sleep(waiting_ms * 4 * std.time.ns_per_ms);
 
     const data = try inMem.fetch(allocator);
@@ -687,14 +686,32 @@ test "e2e periodic exporting metric reader" {
         allocator.free(data);
     }
 
-    // There are 2 measurements: a counter and a histogram.
-    try std.testing.expectEqual(2, data.len);
-    // Meter attributes are added.
-    try std.testing.expectEqual("test-reader", data[0].scope.name);
-    try std.testing.expectEqual(1, data[0].scope.attributes.?.len);
-    try std.testing.expectEqual("wonderful", data[0].scope.attributes.?[0].key);
-    // Counter has 2 data points.
-    try std.testing.expectEqual(2, data[0].data.int.len);
+    var seen_counter = false;
+    var seen_histogram = false;
+    for (data) |m| {
+        try std.testing.expectEqual("test-reader", m.scope.name);
+        try std.testing.expectEqual(1, m.scope.attributes.?.len);
+        try std.testing.expectEqual("wonderful", m.scope.attributes.?[0].key);
+
+        if (std.mem.eql(u8, m.instrumentOptions.name, "requests")) {
+            try std.testing.expect(m.data.int.len == 1 or m.data.int.len == 2);
+            if (m.data.int.len == 2) seen_counter = true;
+        } else if (std.mem.eql(u8, m.instrumentOptions.name, "latency")) {
+            try std.testing.expectEqual(1, m.data.histogram.len);
+            const value = m.data.histogram[0].value;
+            switch (value.count) {
+                1 => try std.testing.expectApproxEqAbs(1.4, value.sum.?, 1e-12),
+                2 => {
+                    try std.testing.expectApproxEqAbs(11.8, value.sum.?, 1e-12);
+                    seen_histogram = true;
+                },
+                else => return error.UnexpectedHistogramCount,
+            }
+        } else {
+            return error.UnexpectedMetric;
+        }
+    }
+    try std.testing.expect(seen_counter and seen_histogram);
 }
 
 // Include testing for the exporters
