@@ -11,6 +11,7 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const DataPoint = @import("../../api/metrics/measurement.zig").DataPoint;
 const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
+const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
 const view = @import("view.zig");
 
 const TemporalAggregator = @This();
@@ -69,6 +70,7 @@ memory: std.mem.Allocator,
 ints: std.HashMap(ScopedDataPoint, DataPoint(i64), HashContext, std.hash_map.default_max_load_percentage),
 doubles: std.HashMap(ScopedDataPoint, DataPoint(f64), HashContext, std.hash_map.default_max_load_percentage),
 histograms: std.HashMap(ScopedDataPoint, DataPoint(HistogramDataPoint), HashContext, std.hash_map.default_max_load_percentage),
+exponential_histogram: std.HashMap(ScopedDataPoint, DataPoint(ExponentialHistogramDataPoint), HashContext, std.hash_map.default_max_load_percentage),
 
 pub fn init(allocator: std.mem.Allocator) !*TemporalAggregator {
     const this = try allocator.create(TemporalAggregator);
@@ -77,6 +79,7 @@ pub fn init(allocator: std.mem.Allocator) !*TemporalAggregator {
         .ints = std.HashMap(ScopedDataPoint, DataPoint(i64), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
         .doubles = std.HashMap(ScopedDataPoint, DataPoint(f64), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
         .histograms = std.HashMap(ScopedDataPoint, DataPoint(HistogramDataPoint), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
+        .exponential_histogram = std.HashMap(ScopedDataPoint, DataPoint(ExponentialHistogramDataPoint), HashContext, std.hash_map.default_max_load_percentage).init(allocator),
     };
     return this;
 }
@@ -97,9 +100,17 @@ pub fn deinit(self: *TemporalAggregator) void {
         }
         entry.value_ptr.deinit(self.memory);
     }
+    var exponential_histogram_entries = self.exponential_histogram.iterator();
+    while (exponential_histogram_entries.next()) |entry| {
+        if (entry.key_ptr.datapoint_attributes) |attrs| {
+            self.memory.free(attrs);
+        }
+        entry.value_ptr.deinit(self.memory);
+    }
     self.ints.deinit();
     self.doubles.deinit();
     self.histograms.deinit();
+    self.exponential_histogram.deinit();
     self.memory.destroy(self);
 }
 
@@ -156,6 +167,114 @@ fn processCumulativeDataPoints(
                         stored_count.* = try std.math.add(u64, stored_count.*, current_count);
                     }
                 },
+                ExponentialHistogramDataPoint => {
+                    const stored = &gop.value_ptr.value;
+                    const new_count = try std.math.add(u64, stored.count, dp.value.count);
+                    const new_zero_count = try std.math.add(u64, stored.zero_count, dp.value.zero_count);
+
+                    if (stored.scale > dp.value.scale) {
+                        const new_positive_buckets = try bucketScaleConverter(
+                            map.allocator,
+                            stored.positive_offset,
+                            stored.positive_bucket_counts,
+                            stored.scale - dp.value.scale,
+                        );
+                        errdefer {
+                            map.allocator.free(new_positive_buckets.bucket_counts);
+                        }
+
+                        const new_negative_buckets = try bucketScaleConverter(
+                            map.allocator,
+                            stored.negative_offset,
+                            stored.negative_bucket_counts,
+                            stored.scale - dp.value.scale,
+                        );
+                        errdefer {
+                            map.allocator.free(new_negative_buckets.bucket_counts);
+                        }
+
+                        map.allocator.free(stored.positive_bucket_counts);
+                        map.allocator.free(stored.negative_bucket_counts);
+
+                        stored.positive_bucket_counts = new_positive_buckets.bucket_counts;
+                        stored.negative_bucket_counts = new_negative_buckets.bucket_counts;
+                        stored.positive_offset = new_positive_buckets.offset;
+                        stored.negative_offset = new_negative_buckets.offset;
+                        stored.scale = dp.value.scale;
+                    } else if (dp.value.scale > stored.scale) {
+                        const new_positive_buckets = try bucketScaleConverter(
+                            map.allocator,
+                            dp.value.positive_offset,
+                            dp.value.positive_bucket_counts,
+                            dp.value.scale - stored.scale,
+                        );
+                        errdefer {
+                            map.allocator.free(new_positive_buckets.bucket_counts);
+                        }
+
+                        const new_negative_buckets = try bucketScaleConverter(
+                            map.allocator,
+                            dp.value.negative_offset,
+                            dp.value.negative_bucket_counts,
+                            dp.value.scale - stored.scale,
+                        );
+                        errdefer {
+                            map.allocator.free(new_negative_buckets.bucket_counts);
+                        }
+
+                        map.allocator.free(dp.value.positive_bucket_counts);
+                        map.allocator.free(dp.value.negative_bucket_counts);
+
+                        dp.value.positive_bucket_counts = new_positive_buckets.bucket_counts;
+                        dp.value.negative_bucket_counts = new_negative_buckets.bucket_counts;
+                        dp.value.positive_offset = new_positive_buckets.offset;
+                        dp.value.negative_offset = new_negative_buckets.offset;
+                        dp.value.scale = stored.scale;
+                    }
+
+                    const positive_buckets = try bucketAggregation(
+                        map.allocator,
+                        stored.positive_offset,
+                        stored.positive_bucket_counts,
+                        dp.value.positive_offset,
+                        dp.value.positive_bucket_counts,
+                    );
+                    errdefer map.allocator.free(positive_buckets.bucket_counts);
+
+                    const negative_buckets = try bucketAggregation(
+                        map.allocator,
+                        stored.negative_offset,
+                        stored.negative_bucket_counts,
+                        dp.value.negative_offset,
+                        dp.value.negative_bucket_counts,
+                    );
+                    errdefer map.allocator.free(negative_buckets.bucket_counts);
+
+                    map.allocator.free(stored.positive_bucket_counts);
+                    map.allocator.free(stored.negative_bucket_counts);
+
+                    stored.count = new_count;
+                    stored.zero_count = new_zero_count;
+                    stored.positive_offset = positive_buckets.offset;
+                    stored.negative_offset = negative_buckets.offset;
+                    stored.positive_bucket_counts = positive_buckets.bucket_counts;
+                    stored.negative_bucket_counts = negative_buckets.bucket_counts;
+
+                    stored.sum = if (stored.sum != null and dp.value.sum != null)
+                        stored.sum.? + dp.value.sum.?
+                    else
+                        null;
+
+                    stored.min = if (stored.min != null and dp.value.min != null)
+                        @min(stored.min.?, dp.value.min.?)
+                    else
+                        null;
+
+                    stored.max = if (stored.max != null and dp.value.max != null)
+                        @max(stored.max.?, dp.value.max.?)
+                    else
+                        null;
+                },
                 i64, f64 => {
                     gop.value_ptr.value = if (keep_last_value) dp.value else gop.value_ptr.value + dp.value;
                 },
@@ -175,6 +294,17 @@ fn processCumulativeDataPoints(
                 HistogramDataPoint => blk: {
                     var value = dp.value;
                     value.bucket_counts = try map.allocator.dupe(u64, dp.value.bucket_counts);
+                    break :blk value;
+                },
+                ExponentialHistogramDataPoint => blk: {
+                    var value = dp.value;
+                    const stored_positive_bucket_counts = try map.allocator.dupe(u64, dp.value.positive_bucket_counts);
+                    errdefer map.allocator.free(stored_positive_bucket_counts);
+                    value.positive_bucket_counts = stored_positive_bucket_counts;
+
+                    const stored_negative_bucket_counts = try map.allocator.dupe(u64, dp.value.negative_bucket_counts);
+                    errdefer map.allocator.free(stored_negative_bucket_counts);
+                    value.negative_bucket_counts = stored_negative_bucket_counts;
                     break :blk value;
                 },
                 i64, f64 => dp.value,
@@ -200,6 +330,20 @@ fn processCumulativeDataPoints(
                 value.bucket_counts = dp.value.bucket_counts;
                 break :blk value;
             },
+            ExponentialHistogramDataPoint => blk: {
+                var value = gop.value_ptr.value;
+                const output_positive_bucket_counts = try map.allocator.dupe(u64, value.positive_bucket_counts);
+                errdefer map.allocator.free(output_positive_bucket_counts);
+                value.positive_bucket_counts = output_positive_bucket_counts;
+
+                const output_negative_bucket_counts = try map.allocator.dupe(u64, value.negative_bucket_counts);
+                errdefer map.allocator.free(output_negative_bucket_counts);
+                value.negative_bucket_counts = output_negative_bucket_counts;
+
+                map.allocator.free(dp.value.positive_bucket_counts);
+                map.allocator.free(dp.value.negative_bucket_counts);
+                break :blk value;
+            },
             i64, f64 => gop.value_ptr.value,
             else => @compileError("unsupported cumulative data point type"),
         };
@@ -207,6 +351,87 @@ fn processCumulativeDataPoints(
         dp.value = output_value;
         dp.timestamps = gop.value_ptr.timestamps;
     }
+}
+
+fn bucketScaleConverter(
+    allocator: std.mem.Allocator,
+    offset: i32,
+    bucket_counts: []const u64,
+    scale_delta: i32,
+) !struct { offset: i32, bucket_counts: []u64 } {
+    const new_offset = std.math.shr(i32, offset, scale_delta);
+    const new_bucket_len = if (bucket_counts.len > 0) blk: {
+        const last_stored_bucket_number = offset + @as(i32, @intCast(bucket_counts.len - 1));
+        const new_last_bucket_number = std.math.shr(i32, last_stored_bucket_number, scale_delta);
+        break :blk (new_last_bucket_number - new_offset + 1);
+    } else 0;
+
+    const new_bucket_counts = try allocator.alloc(u64, @as(usize, @intCast(new_bucket_len)));
+    errdefer {
+        allocator.free(new_bucket_counts);
+    }
+    @memset(new_bucket_counts, 0);
+
+    for (bucket_counts, 0..) |count, i| {
+        const bucket_number = offset + @as(i32, @intCast(i));
+        const new_bucket_number = std.math.shr(i32, bucket_number, scale_delta);
+        const new_index = @as(usize, @intCast(new_bucket_number - new_offset));
+        new_bucket_counts[new_index] = try std.math.add(u64, new_bucket_counts[new_index], count);
+    }
+
+    return .{ .offset = new_offset, .bucket_counts = new_bucket_counts };
+}
+
+fn bucketAggregation(
+    allocator: std.mem.Allocator,
+    stored_offset: i32,
+    stored_bucket_counts: []const u64,
+    incoming_offset: i32,
+    incoming_bucket_counts: []const u64,
+) !struct { offset: i32, bucket_counts: []u64 } {
+    const new_offset = if (stored_bucket_counts.len != 0 and incoming_bucket_counts.len != 0)
+        @min(stored_offset, incoming_offset)
+    else if (stored_bucket_counts.len != 0)
+        stored_offset
+    else if (incoming_bucket_counts.len != 0)
+        incoming_offset
+    else
+        0;
+
+    const new_bucket_len = if (stored_bucket_counts.len != 0 and incoming_bucket_counts.len != 0) blk: {
+        const stored_last_number = stored_offset + @as(i32, @intCast(stored_bucket_counts.len - 1));
+        const incoming_last_number = incoming_offset + @as(i32, @intCast(incoming_bucket_counts.len - 1));
+        const max_number = @max(stored_last_number, incoming_last_number);
+        break :blk @as(usize, @intCast(max_number - new_offset + 1));
+    } else if (stored_bucket_counts.len != 0)
+        stored_bucket_counts.len
+    else if (incoming_bucket_counts.len != 0)
+        incoming_bucket_counts.len
+    else
+        0;
+
+    const new_bucket_counts = try allocator.alloc(u64, new_bucket_len);
+    errdefer allocator.free(new_bucket_counts);
+    @memset(new_bucket_counts, 0);
+
+    for ([_]struct { offset: i32, bucket_counts: []const u64 }{
+        .{
+            .offset = stored_offset,
+            .bucket_counts = stored_bucket_counts,
+        },
+        .{
+            .offset = incoming_offset,
+            .bucket_counts = incoming_bucket_counts,
+        },
+    }) |buckets| {
+        for (buckets.bucket_counts, 0..) |count, i| {
+            const new_bucket_number = buckets.offset + @as(i32, @intCast(i));
+            const new_index = @as(usize, @intCast(new_bucket_number - new_offset));
+            new_bucket_counts[new_index] = try std.math.add(u64, new_bucket_counts[new_index], count);
+        }
+    }
+
+    return .{ .offset = new_offset, .bucket_counts = new_bucket_counts };
 }
 
 fn processDeltaDataPoints(
@@ -269,8 +494,13 @@ pub fn process(self: *TemporalAggregator, measurements: *Measurements, temporali
                     datapoints.ptr,
                     datapoints.len,
                 ),
-                // TODO: accumulate exponential histograms across collections.
-                .exponential_histogram => return,
+                .exponential_histogram => |datapoints| try processCumulativeDataPoints(
+                    ExponentialHistogramDataPoint,
+                    &self.exponential_histogram,
+                    measurements,
+                    datapoints.ptr,
+                    datapoints.len,
+                ),
                 .int => |datapoints| try processCumulativeDataPoints(i64, &self.ints, measurements, datapoints.ptr, datapoints.len),
                 .double => |datapoints| try processCumulativeDataPoints(f64, &self.doubles, measurements, datapoints.ptr, datapoints.len),
             }
@@ -319,45 +549,77 @@ test "cumulative histogram reuses the output bucket buffer" {
     }
 }
 
-test "cumulative histogram leaves state unchanged on count overflow" {
+test "cumulative histograms leave state unchanged on count overflow" {
     const allocator = std.testing.allocator;
-    const ta = try TemporalAggregator.init(allocator);
-    defer ta.deinit();
-    var first = DataPoint(HistogramDataPoint){
-        .value = .{
-            .count = std.math.maxInt(u64),
-            .sum = 0,
-            .min = 0,
-            .max = 0,
-            .explicit_bounds = &.{},
-            .bucket_counts = try allocator.dupe(u64, &.{std.math.maxInt(u64)}),
-        },
-        .timestamps = .{ .time_ns = 100 },
-    };
-    defer first.deinit(allocator);
-    var measurements = Measurements{
-        .scope = .{ .name = "test" },
-        .instrumentKind = .Histogram,
-        .instrumentOptions = .{ .name = "test-histogram" },
-        .data = .{ .histogram = (&first)[0..1] },
-    };
-    try ta.process(&measurements, view.TemporalityCumulative);
+    inline for (.{ HistogramDataPoint, ExponentialHistogramDataPoint }) |T| {
+        const ta = try TemporalAggregator.init(allocator);
+        defer ta.deinit();
+        var first = DataPoint(T){
+            .value = if (T == HistogramDataPoint) .{
+                .count = std.math.maxInt(u64),
+                .sum = 0,
+                .min = 0,
+                .max = 0,
+                .explicit_bounds = &.{},
+                .bucket_counts = try allocator.dupe(u64, &.{std.math.maxInt(u64)}),
+            } else .{
+                .sum = 0,
+                .count = std.math.maxInt(u64),
+                .zero_count = std.math.maxInt(u64),
+                .min = 0,
+                .max = 0,
+                .scale = 0,
+                .positive_offset = 0,
+                .negative_offset = 0,
+                .positive_bucket_counts = &.{},
+                .negative_bucket_counts = &.{},
+            },
+            .timestamps = .{ .time_ns = 100 },
+        };
+        defer first.deinit(allocator);
+        var measurements = Measurements{
+            .scope = .{ .name = "test" },
+            .instrumentKind = .Histogram,
+            .instrumentOptions = .{ .name = "test-histogram" },
+            .data = if (T == HistogramDataPoint) .{
+                .histogram = (&first)[0..1],
+            } else .{
+                .exponential_histogram = (&first)[0..1],
+            },
+        };
+        try ta.process(&measurements, view.TemporalityCumulative);
 
-    var second = first;
-    second.value = .{
-        .count = 1,
-        .sum = 0.5,
-        .min = 0.5,
-        .max = 0.5,
-        .explicit_bounds = &.{},
-        .bucket_counts = try allocator.dupe(u64, &.{1}),
-    };
-    second.timestamps = .{ .time_ns = 200 };
-    defer second.deinit(allocator);
-    measurements.data = .{ .histogram = (&second)[0..1] };
-    try std.testing.expectError(error.Overflow, ta.process(&measurements, view.TemporalityCumulative));
-    var entries = ta.histograms.valueIterator();
-    try std.testing.expectEqualDeep(first, entries.next().?.*);
+        var second = first;
+        second.value = if (T == HistogramDataPoint) .{
+            .count = 1,
+            .sum = 0.5,
+            .min = 0.5,
+            .max = 0.5,
+            .explicit_bounds = &.{},
+            .bucket_counts = try allocator.dupe(u64, &.{1}),
+        } else .{
+            .count = 1,
+            .sum = 1.5,
+            .min = 1.5,
+            .max = 1.5,
+            .scale = 0,
+            .zero_count = 0,
+            .positive_offset = 0,
+            .negative_offset = 0,
+            .positive_bucket_counts = try allocator.dupe(u64, &.{1}),
+            .negative_bucket_counts = &.{},
+        };
+        second.timestamps = .{ .time_ns = 200 };
+        defer second.deinit(allocator);
+        measurements.data = if (T == HistogramDataPoint) .{
+            .histogram = (&second)[0..1],
+        } else .{
+            .exponential_histogram = (&second)[0..1],
+        };
+        try std.testing.expectError(error.Overflow, ta.process(&measurements, view.TemporalityCumulative));
+        var entries = if (T == HistogramDataPoint) ta.histograms.valueIterator() else ta.exponential_histogram.valueIterator();
+        try std.testing.expectEqualDeep(first, entries.next().?.*);
+    }
 }
 
 test "temporal aggregator process cumulative without timestamps returns error" {
@@ -572,4 +834,136 @@ test "temporal aggregator cumulative gauge keeps a separate last value per attri
     try std.testing.expectEqual(10, m2.data.int[0].value); // /a
     try std.testing.expectEqual(20, m2.data.int[1].value); // /b
     try std.testing.expectEqual(30, m2.data.int[2].value); // /c
+}
+
+test "cumulative exponential histogram merges buckets at different scales" {
+    const allocator = std.testing.allocator;
+
+    for ([_]bool{ false, true }) |reverse_order| {
+        const ta = try TemporalAggregator.init(allocator);
+        defer ta.deinit();
+        var first = DataPoint(ExponentialHistogramDataPoint){
+            .value = .{
+                .count = 21,
+                .sum = null,
+                .scale = 2,
+                .zero_count = 0,
+                .positive_offset = -3,
+                .positive_bucket_counts = try allocator.dupe(u64, &.{ 1, 2, 3, 4, 5 }),
+                .negative_offset = -1,
+                .negative_bucket_counts = try allocator.dupe(u64, &.{ 2, 1, 3 }),
+            },
+            .timestamps = .{ .time_ns = 100 },
+        };
+        defer first.deinit(allocator);
+
+        var second = first;
+        second.value = .{
+            .count = 6,
+            .sum = null,
+            .scale = 0,
+            .zero_count = 0,
+            .positive_offset = -1,
+            .positive_bucket_counts = try allocator.dupe(u64, &.{ 2, 1 }),
+            .negative_offset = -1,
+            .negative_bucket_counts = try allocator.dupe(u64, &.{ 1, 2 }),
+        };
+        second.timestamps = .{ .time_ns = 200 };
+        defer second.deinit(allocator);
+
+        if (reverse_order) {
+            std.mem.swap(ExponentialHistogramDataPoint, &first.value, &second.value);
+        }
+
+        var measurements = Measurements{
+            .scope = .{ .name = "test" },
+            .instrumentKind = .Histogram,
+            .instrumentOptions = .{ .name = "test-exponential-histogram" },
+            .data = .{ .exponential_histogram = (&first)[0..1] },
+        };
+        try ta.process(&measurements, view.TemporalityCumulative);
+
+        measurements.data = .{ .exponential_histogram = (&second)[0..1] };
+        try ta.process(&measurements, view.TemporalityCumulative);
+
+        try std.testing.expectEqual(0, second.value.scale);
+        try std.testing.expectEqual(27, second.value.count);
+        try std.testing.expectEqual(-1, second.value.positive_offset);
+        try std.testing.expectEqual(-1, second.value.negative_offset);
+        try std.testing.expectEqualSlices(u64, &.{ 8, 10 }, second.value.positive_bucket_counts);
+        try std.testing.expectEqualSlices(u64, &.{ 3, 6 }, second.value.negative_bucket_counts);
+    }
+}
+
+test "cumulative exponential histogram cleans up on allocation failure" {
+    inline for (.{ .initial, .stored_finer, .incoming_finer }) |scenario| {
+        var failure_offset: usize = 0;
+        while (true) : (failure_offset += 1) {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const allocator = failing.allocator();
+            const ta = try TemporalAggregator.init(allocator);
+            defer ta.deinit();
+
+            var first = DataPoint(ExponentialHistogramDataPoint){
+                .value = .{
+                    .count = 21,
+                    .sum = null,
+                    .scale = 2,
+                    .zero_count = 0,
+                    .positive_offset = -3,
+                    .positive_bucket_counts = try allocator.dupe(u64, &.{ 1, 2, 3, 4, 5 }),
+                    .negative_offset = -1,
+                    .negative_bucket_counts = try allocator.dupe(u64, &.{ 2, 1, 3 }),
+                },
+                .timestamps = .{ .time_ns = 100 },
+            };
+            defer first.deinit(allocator);
+
+            var second = first;
+            second.value = .{
+                .count = 6,
+                .sum = null,
+                .scale = 0,
+                .zero_count = 0,
+                .positive_offset = -1,
+                .positive_bucket_counts = try allocator.dupe(u64, &.{ 2, 1 }),
+                .negative_offset = -1,
+                .negative_bucket_counts = try allocator.dupe(u64, &.{ 1, 2 }),
+            };
+            second.timestamps = .{ .time_ns = 200 };
+            defer second.deinit(allocator);
+
+            if (scenario == .incoming_finer) {
+                std.mem.swap(ExponentialHistogramDataPoint, &first.value, &second.value);
+            }
+
+            var measurements = Measurements{
+                .scope = .{ .name = "test" },
+                .instrumentKind = .Histogram,
+                .instrumentOptions = .{ .name = "test-exponential-histogram" },
+                .data = .{ .exponential_histogram = (&first)[0..1] },
+            };
+
+            if (scenario != .initial) {
+                try ta.process(&measurements, view.TemporalityCumulative);
+                measurements.data = .{ .exponential_histogram = (&second)[0..1] };
+            }
+
+            failing.fail_index = failing.alloc_index + failure_offset;
+            failing.resize_fail_index = failing.resize_index;
+            const result = ta.process(&measurements, view.TemporalityCumulative);
+            if (failing.has_induced_failure) {
+                try std.testing.expectError(error.OutOfMemory, result);
+            } else {
+                try result;
+                const value = measurements.data.exponential_histogram[0].value;
+                if (scenario == .initial) {
+                    try std.testing.expectEqual(21, value.count);
+                } else {
+                    try std.testing.expectEqual(27, value.count);
+                }
+                break;
+            }
+        }
+    }
 }

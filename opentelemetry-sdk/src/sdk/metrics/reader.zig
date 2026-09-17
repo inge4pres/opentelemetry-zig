@@ -33,6 +33,7 @@ const ExportResult = exporter.ExportResult;
 const Temporality = @import("temporality.zig");
 const clock = @import("clock");
 const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
+const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
 
 const InMemoryExporter = @import("exporters/in_memory.zig").InMemoryExporter;
 
@@ -134,7 +135,8 @@ pub const MetricReader = struct {
                 try toBeExported.appendSlice(self.allocator, measurements);
             }
 
-            try self.appendMissingCumulativeHistograms(mp, &toBeExported);
+            try self.appendMissingCumulativeHistograms(HistogramDataPoint, mp, &toBeExported);
+            try self.appendMissingCumulativeHistograms(ExponentialHistogramDataPoint, mp, &toBeExported);
             const owned = try toBeExported.toOwnedSlice(self.allocator);
             switch (self.exporter.exportBatch(owned, self.exportTimeout)) {
                 ExportResult.Success => return,
@@ -148,14 +150,21 @@ pub const MetricReader = struct {
 
     fn appendMissingCumulativeHistograms(
         self: *Self,
+        comptime T: type,
         mp: *MeterProvider,
         toBeExported: *std.ArrayList(Measurements),
     ) !void {
-        if (self.temporal_aggregation.histograms.count() == 0) return;
+        const map = switch (T) {
+            HistogramDataPoint => &self.temporal_aggregation.histograms,
+            ExponentialHistogramDataPoint => &self.temporal_aggregation.exponential_histogram,
+            else => @compileError("unsupported data type"),
+        };
+
+        if (map.count() == 0) return;
 
         const Group = struct {
             target_index: ?usize = null,
-            missing: std.ArrayList(DataPoint(HistogramDataPoint)) = .empty,
+            missing: std.ArrayList(DataPoint(T)) = .empty,
         };
         var groups = std.HashMap(Temporality.ScopedDataPoint, Group, Temporality.HashContext, std.hash_map.default_max_load_percentage).init(self.allocator);
         defer {
@@ -171,22 +180,41 @@ pub const MetricReader = struct {
 
         // These temporary keys borrow attributes from the current output.
         for (toBeExported.items, 0..) |m, index| {
-            if (m.data != .histogram) continue;
-            var key = Temporality.ScopedDataPoint{
-                .scope = m.scope,
-                .instrument_options = m.instrumentOptions,
-                .instrument_kind = m.instrumentKind,
-                .datapoint_attributes = null,
-            };
-            try groups.put(key, .{ .target_index = index });
-            for (m.data.histogram) |dp| {
-                key.datapoint_attributes = dp.attributes;
-                try seen.put(key, {});
+            switch (T) {
+                HistogramDataPoint => {
+                    if (m.data != .histogram) continue;
+                    var key = Temporality.ScopedDataPoint{
+                        .scope = m.scope,
+                        .instrument_options = m.instrumentOptions,
+                        .instrument_kind = m.instrumentKind,
+                        .datapoint_attributes = null,
+                    };
+                    try groups.put(key, .{ .target_index = index });
+                    for (m.data.histogram) |dp| {
+                        key.datapoint_attributes = dp.attributes;
+                        try seen.put(key, {});
+                    }
+                },
+                ExponentialHistogramDataPoint => {
+                    if (m.data != .exponential_histogram) continue;
+                    var key = Temporality.ScopedDataPoint{
+                        .scope = m.scope,
+                        .instrument_options = m.instrumentOptions,
+                        .instrument_kind = m.instrumentKind,
+                        .datapoint_attributes = null,
+                    };
+                    try groups.put(key, .{ .target_index = index });
+                    for (m.data.exponential_histogram) |dp| {
+                        key.datapoint_attributes = dp.attributes;
+                        try seen.put(key, {});
+                    }
+                },
+                else => @compileError("unsupported data type"),
             }
         }
 
         const collection_time: u64 = @intCast(clock.nanoTimestamp());
-        var iter = self.temporal_aggregation.histograms.iterator();
+        var iter = map.iterator();
         while (iter.next()) |entry| {
             if (seen.contains(entry.key_ptr.*)) continue;
             var key = entry.key_ptr.*;
@@ -211,10 +239,19 @@ pub const MetricReader = struct {
             const group = entry.value_ptr;
             if (group.missing.items.len == 0) continue;
             if (group.target_index) |index| {
-                const existing = toBeExported.items[index].data.histogram;
+                const existing = switch (T) {
+                    HistogramDataPoint => toBeExported.items[index].data.histogram,
+                    ExponentialHistogramDataPoint => toBeExported.items[index].data.exponential_histogram,
+                    else => @compileError("unsupported data type"),
+                };
                 const extended = try self.allocator.realloc(existing, existing.len + group.missing.items.len);
                 @memcpy(extended[existing.len..], group.missing.items);
-                toBeExported.items[index].data.histogram = extended;
+
+                switch (T) {
+                    HistogramDataPoint => toBeExported.items[index].data.histogram = extended,
+                    ExponentialHistogramDataPoint => toBeExported.items[index].data.exponential_histogram = extended,
+                    else => @compileError("unsupported data type"),
+                }
                 group.missing.clearRetainingCapacity();
             } else {
                 // Reserve first so transferring the owned slice cannot fail afterward.
@@ -223,7 +260,11 @@ pub const MetricReader = struct {
                     .scope = entry.key_ptr.scope,
                     .instrumentKind = entry.key_ptr.instrument_kind,
                     .instrumentOptions = entry.key_ptr.instrument_options,
-                    .data = .{ .histogram = try group.missing.toOwnedSlice(self.allocator) },
+                    .data = switch (T) {
+                        HistogramDataPoint => .{ .histogram = try group.missing.toOwnedSlice(self.allocator) },
+                        ExponentialHistogramDataPoint => .{ .exponential_histogram = try group.missing.toOwnedSlice(self.allocator) },
+                        else => @compileError("unsupported data type"),
+                    },
                     .resource = mp.resource,
                 });
             }
@@ -501,146 +542,165 @@ test "metric reader cumulative histogram across collection" {
 }
 
 test "metric reader frees pending histograms on collection failure" {
-    const Sink = struct {
-        allocator: std.mem.Allocator,
-        exporter: ExporterIface = .{ .exportFn = exportBatch },
-        calls: usize = 0,
-        series: usize = 0,
-        count: u64 = 0,
-        sum: f64 = 0,
+    inline for (.{ .histogram, .exponential_histogram }) |data_kind| {
+        const Sink = struct {
+            allocator: std.mem.Allocator,
+            exporter: ExporterIface = .{ .exportFn = exportBatch },
+            calls: usize = 0,
+            series: usize = 0,
+            count: u64 = 0,
+            sum: f64 = 0,
 
-        // Consume output without allocating so failures stay in the collection path.
-        fn exportBatch(iface: *ExporterIface, metrics: []Measurements) MetricReadError!void {
-            const self: *@This() = @fieldParentPtr("exporter", iface);
-            defer self.allocator.free(metrics);
-            self.calls += 1;
-            self.series = 0;
-            self.count = 0;
-            self.sum = 0;
-            for (metrics) |*m| {
-                defer m.deinit(self.allocator);
-                for (m.data.histogram) |dp| {
-                    self.series += 1;
-                    self.count += dp.value.count;
-                    self.sum += dp.value.sum.?;
+            // Consume output without allocating so failures stay in the collection path.
+            fn exportBatch(iface: *ExporterIface, metrics: []Measurements) MetricReadError!void {
+                const self: *@This() = @fieldParentPtr("exporter", iface);
+                defer self.allocator.free(metrics);
+                self.calls += 1;
+                self.series = 0;
+                self.count = 0;
+                self.sum = 0;
+                for (metrics) |*m| {
+                    defer m.deinit(self.allocator);
+                    const data_points = @field(m.data, @tagName(data_kind));
+                    for (data_points) |dp| {
+                        self.series += 1;
+                        self.count += dp.value.count;
+                        self.sum += dp.value.sum.?;
+                    }
                 }
             }
+        };
+
+        var failure_offset: usize = 0;
+        while (true) : (failure_offset += 1) {
+            var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+            const allocator = failing.allocator();
+            const io = std.testing.io;
+
+            const mp = try MeterProvider.init(allocator, io);
+            defer mp.shutdown();
+
+            var sink = Sink{ .allocator = allocator };
+            const metric_exporter = try MetricExporter.new(allocator, io, &sink.exporter);
+
+            if (data_kind == .exponential_histogram) {
+                metric_exporter.aggregation = exponentialAggregationScaleZero;
+            }
+
+            const reader = try MetricReader.init(allocator, io, metric_exporter);
+            defer reader.shutdown();
+            try mp.addReader(reader);
+
+            const meter = try mp.getMeter(.{ .name = "test" });
+            const histogram = try meter.createHistogram(f64, .{ .name = "test-histogram" });
+            const get: []const u8 = "GET";
+            const post: []const u8 = "POST";
+            try histogram.record(0.25, .{ "http.request.method", get });
+            try histogram.record(1.0, .{ "http.request.method", post });
+
+            if (data_kind == .exponential_histogram) {
+                try histogram.record(-0.5, .{ "http.request.method", post });
+            }
+
+            try reader.collect();
+            try std.testing.expectEqual(1, sink.calls);
+
+            // Fail each allocation while rebuilding inactive output.
+            failing.fail_index = failing.alloc_index + failure_offset;
+            failing.resize_fail_index = failing.resize_index;
+            const result = reader.collect();
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+
+            if (!failing.has_induced_failure) {
+                try result;
+                try std.testing.expect(failure_offset > 0);
+                try std.testing.expectEqual(2, sink.calls);
+            } else {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(1, sink.calls);
+
+                // A failed output must leave the saved cumulative state usable.
+                try reader.collect();
+                try std.testing.expectEqual(2, sink.calls);
+            }
+            try std.testing.expectEqual(2, sink.series);
+            try std.testing.expectEqual(@as(u64, if (data_kind == .exponential_histogram) 3 else 2), sink.count);
+            try std.testing.expectEqual(@as(f64, if (data_kind == .exponential_histogram) 0.75 else 1.25), sink.sum);
+
+            if (!failing.has_induced_failure) break;
         }
-    };
+    }
+}
 
-    var failure_offset: usize = 0;
-    while (true) : (failure_offset += 1) {
-        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-        const allocator = failing.allocator();
-        const io = std.testing.io;
+test "metric reader cumulative histograms retain inactive series" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
+    inline for (.{ .histogram, .exponential_histogram }) |data_kind| {
         const mp = try MeterProvider.init(allocator, io);
         defer mp.shutdown();
 
-        var sink = Sink{ .allocator = allocator };
-        const metric_exporter = try MetricExporter.new(allocator, io, &sink.exporter);
-        const reader = try MetricReader.init(allocator, io, metric_exporter);
+        var inMem = try InMemoryExporter.init(allocator, io);
+        defer inMem.deinit();
+
+        const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+        if (data_kind == .exponential_histogram) {
+            metric_exporter.aggregation = exponentialAggregationScaleZero;
+        }
+
+        var reader = try MetricReader.init(allocator, io, metric_exporter);
         defer reader.shutdown();
         try mp.addReader(reader);
 
         const meter = try mp.getMeter(.{ .name = "test" });
         const histogram = try meter.createHistogram(f64, .{ .name = "test-histogram" });
+
         const get: []const u8 = "GET";
         const post: []const u8 = "POST";
         try histogram.record(0.25, .{ "http.request.method", get });
         try histogram.record(1.0, .{ "http.request.method", post });
-        try reader.collect();
-        try std.testing.expectEqual(1, sink.calls);
 
-        // Fail each allocation while rebuilding inactive output.
-        failing.fail_index = failing.alloc_index + failure_offset;
-        failing.resize_fail_index = failing.resize_index;
-        const result = reader.collect();
-        failing.fail_index = std.math.maxInt(usize);
-        failing.resize_fail_index = std.math.maxInt(usize);
-
-        if (!failing.has_induced_failure) {
-            try result;
-            try std.testing.expect(failure_offset > 0);
-            try std.testing.expectEqual(2, sink.calls);
-        } else {
-            try std.testing.expectError(error.OutOfMemory, result);
-            try std.testing.expectEqual(1, sink.calls);
-
-            // A failed output must leave the saved cumulative state usable.
+        for (0..2) |cycle| {
+            if (cycle == 1) try histogram.record(0.5, .{ "http.request.method", get });
             try reader.collect();
-            try std.testing.expectEqual(2, sink.calls);
-        }
-        try std.testing.expectEqual(2, sink.series);
-        try std.testing.expectEqual(2, sink.count);
-        try std.testing.expectEqual(1.25, sink.sum);
-
-        if (!failing.has_induced_failure) break;
-    }
-}
-
-test "metric reader cumulative histogram retains inactive series" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
-
-    var inMem = try InMemoryExporter.init(allocator, io);
-    defer inMem.deinit();
-
-    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
-
-    var reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
-    try mp.addReader(reader);
-
-    const meter = try mp.getMeter(.{ .name = "test" });
-    const histogram = try meter.createHistogram(f64, .{ .name = "test-histogram" });
-
-    const get: []const u8 = "GET";
-    const post: []const u8 = "POST";
-    try histogram.record(0.25, .{ "http.request.method", get });
-    try histogram.record(1.0, .{ "http.request.method", post });
-
-    for (0..2) |cycle| {
-        if (cycle == 1) try histogram.record(0.5, .{ "http.request.method", get });
-        try reader.collect();
-        const collected = try inMem.fetch(allocator);
-        defer {
-            for (collected) |*m| m.deinit(allocator);
-            allocator.free(collected);
-        }
-        try std.testing.expectEqual(1, collected.len);
-        try std.testing.expectEqual(2, collected[0].data.histogram.len);
-
-        var seen_get = false;
-        var seen_post = false;
-        for (collected[0].data.histogram) |dp| {
-            const attrs = dp.attributes orelse return error.MissingAttributes;
-            try std.testing.expectEqual(1, attrs.len);
-            try std.testing.expectEqualStrings("http.request.method", attrs[0].key);
-            const method = switch (attrs[0].value) {
-                .string => |value| value,
-                else => return error.UnexpectedAttributeType,
-            };
-            const sum = dp.value.sum orelse return error.MissingSum;
-
-            if (std.mem.eql(u8, method, get)) {
-                try std.testing.expect(!seen_get);
-                seen_get = true;
-                try std.testing.expectEqual(@as(u64, if (cycle == 0) 1 else 2), dp.value.count);
-                try std.testing.expectEqual(@as(f64, if (cycle == 0) 0.25 else 0.75), sum);
-            } else if (std.mem.eql(u8, method, post)) {
-                try std.testing.expect(!seen_post);
-                seen_post = true;
-                try std.testing.expectEqual(1, dp.value.count);
-                try std.testing.expectEqual(1.0, sum);
-            } else {
-                return error.UnexpectedMethod;
+            const collected = try inMem.fetch(allocator);
+            defer {
+                for (collected) |*m| m.deinit(allocator);
+                allocator.free(collected);
             }
+            try std.testing.expectEqual(1, collected.len);
+            const data_points = @field(collected[0].data, @tagName(data_kind));
+            try std.testing.expectEqual(2, data_points.len);
+
+            var seen_get = false;
+            var seen_post = false;
+            for (data_points) |dp| {
+                const attrs = dp.attributes orelse return error.MissingAttributes;
+                try std.testing.expectEqual(1, attrs.len);
+                try std.testing.expectEqualStrings("http.request.method", attrs[0].key);
+                const method = switch (attrs[0].value) {
+                    .string => |value| value,
+                    else => return error.UnexpectedAttributeType,
+                };
+                const sum = dp.value.sum orelse return error.MissingSum;
+
+                if (std.mem.eql(u8, method, get)) {
+                    try std.testing.expect(!seen_get);
+                    seen_get = true;
+                    try std.testing.expectEqual(@as(u64, if (cycle == 0) 1 else 2), dp.value.count);
+                    try std.testing.expectEqual(@as(f64, if (cycle == 0) 0.25 else 0.75), sum);
+                } else if (std.mem.eql(u8, method, post)) {
+                    try std.testing.expect(!seen_post);
+                    seen_post = true;
+                    try std.testing.expectEqual(1, dp.value.count);
+                    try std.testing.expectEqual(1.0, sum);
+                } else {
+                    return error.UnexpectedMethod;
+                }
+            }
+            try std.testing.expect(seen_get and seen_post);
         }
-        try std.testing.expect(seen_get and seen_post);
     }
 }
 
@@ -686,4 +746,211 @@ test "metric reader cumulative histogram separates instrument options" {
             try std.testing.expectEqual(sums[index], m.data.histogram[0].value.sum.?);
         }
     }
+}
+
+fn exponentialAggregationScaleZero(_: Kind) view.Aggregation {
+    return .{ .ExponentialBucketHistogram = .{ .max_scale = 0 } };
+}
+
+test "metric reader cumulative exponential histogram across collection" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    inline for (.{ f64, i64 }) |T| {
+        const mp = try MeterProvider.init(allocator, io);
+        defer mp.shutdown();
+
+        var inMem = try InMemoryExporter.init(allocator, io);
+        defer inMem.deinit();
+
+        const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+        metric_exporter.temporality = view.TemporalityCumulative;
+        metric_exporter.aggregation = exponentialAggregationScaleZero;
+        const reader = try MetricReader.init(allocator, io, metric_exporter);
+        defer reader.shutdown();
+
+        const histogram_name = "test-exponential-histogram";
+        const meter = try mp.getMeter(.{ .name = "test" });
+        try mp.addReader(reader);
+        const exponential_histogram = try meter.createHistogram(T, .{ .name = histogram_name });
+        const first = switch (T) {
+            f64 => -1.5,
+            i64 => -3,
+            else => @compileError("unexpected type"),
+        };
+        const second = switch (T) {
+            f64 => 3.0,
+            i64 => 6,
+            else => @compileError("unexpected type"),
+        };
+        var start_time: ?u64 = null;
+
+        for (0..3) |cycle| {
+            if (cycle == 0) {
+                try exponential_histogram.record(first, .{});
+            }
+            if (cycle == 1) {
+                try exponential_histogram.record(second, .{});
+            }
+            const before: u64 = @intCast(clock.nanoTimestamp());
+            try reader.collect();
+            const after: u64 = @intCast(clock.nanoTimestamp());
+
+            const result = try inMem.fetch(allocator);
+            defer {
+                for (result) |*m| m.deinit(allocator);
+                allocator.free(result);
+            }
+
+            try std.testing.expectEqual(1, result.len);
+            const dp = result[0].data.exponential_histogram;
+            try std.testing.expectEqual(1, dp.len);
+            try std.testing.expectEqual(@as(u64, if (cycle == 0) 1 else 2), dp[0].value.count);
+
+            if (T == f64) {
+                try std.testing.expectEqual(@as(f64, if (cycle == 0) -1.5 else 1.5), dp[0].value.sum.?);
+            } else if (T == i64) {
+                try std.testing.expectEqual(null, dp[0].value.sum);
+            }
+
+            const expected_min: f64 = if (T == f64) first else @floatFromInt(first);
+            const expected_max: f64 = if (cycle == 0) expected_min else if (T == f64) second else @floatFromInt(second);
+            try std.testing.expectEqual(expected_min, dp[0].value.min.?);
+            try std.testing.expectEqual(expected_max, dp[0].value.max.?);
+            try std.testing.expectEqual(0, dp[0].value.scale);
+            try std.testing.expectEqualSlices(u64, if (cycle == 0) &[0]u64{} else &[1]u64{1}, dp[0].value.positive_bucket_counts);
+            try std.testing.expectEqualSlices(u64, &[1]u64{1}, dp[0].value.negative_bucket_counts);
+
+            const expected_negative_offset = if (T == f64) 0 else if (T == i64) 1 else @compileError("unsupported type");
+            try std.testing.expectEqual(expected_negative_offset, dp[0].value.negative_offset);
+
+            if (cycle > 0) {
+                const expected_positive_offset = if (T == f64) 1 else if (T == i64) 2 else @compileError("unsupported type");
+                try std.testing.expectEqual(expected_positive_offset, dp[0].value.positive_offset);
+            }
+
+            const timestamps = dp[0].timestamps.?;
+            if (cycle == 0) {
+                start_time = timestamps.start_time_ns;
+                try std.testing.expectEqual(timestamps.time_ns, start_time);
+            }
+            try std.testing.expectEqual(start_time, timestamps.start_time_ns);
+            try std.testing.expect(timestamps.time_ns >= before and timestamps.time_ns <= after);
+        }
+    }
+}
+
+test "metric reader cumulative exponential histogram merges buckets at the same scale" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.shutdown();
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    metric_exporter.temporality = view.TemporalityCumulative;
+    metric_exporter.aggregation = exponentialAggregationScaleZero;
+    const reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.shutdown();
+
+    const histogram_name = "test-exponential-histogram";
+    const meter = try mp.getMeter(.{ .name = "test" });
+    try mp.addReader(reader);
+    const exponential_histogram = try meter.createHistogram(f64, .{ .name = histogram_name });
+
+    // first
+    try exponential_histogram.record(1.5, .{});
+    try exponential_histogram.record(3.0, .{});
+    try exponential_histogram.record(0, .{});
+    try reader.collect();
+
+    const result = try inMem.fetch(allocator);
+    defer {
+        for (result) |*m| m.deinit(allocator);
+        allocator.free(result);
+    }
+
+    try std.testing.expectEqual(1, result.len);
+    const dp = result[0].data.exponential_histogram;
+    try std.testing.expectEqual(1, dp.len);
+    try std.testing.expectEqual(0, dp[0].value.scale);
+    try std.testing.expectEqual(3, dp[0].value.count);
+    try std.testing.expectEqual(1, dp[0].value.zero_count);
+    try std.testing.expectEqual(0, dp[0].value.positive_offset);
+    try std.testing.expectEqual(4.5, dp[0].value.sum.?);
+    try std.testing.expectEqualSlices(u64, &[2]u64{ 1, 1 }, dp[0].value.positive_bucket_counts);
+    try std.testing.expectEqualSlices(u64, &[0]u64{}, dp[0].value.negative_bucket_counts);
+
+    // second
+    try exponential_histogram.record(3.0, .{});
+    try exponential_histogram.record(6.0, .{});
+    try exponential_histogram.record(-3.0, .{});
+    try exponential_histogram.record(-6.0, .{});
+
+    try reader.collect();
+
+    const result2 = try inMem.fetch(allocator);
+    defer {
+        for (result2) |*m| m.deinit(allocator);
+        allocator.free(result2);
+    }
+
+    try std.testing.expectEqual(1, result2.len);
+    const dp2 = result2[0].data.exponential_histogram;
+    try std.testing.expectEqual(1, dp2.len);
+    try std.testing.expectEqual(0, dp2[0].value.scale);
+    try std.testing.expectEqual(7, dp2[0].value.count);
+    try std.testing.expectEqual(0, dp2[0].value.positive_offset);
+    try std.testing.expectEqual(1, dp2[0].value.negative_offset);
+    try std.testing.expectEqual(4.5, dp2[0].value.sum.?);
+    try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp2[0].value.positive_bucket_counts);
+    try std.testing.expectEqualSlices(u64, &[2]u64{ 1, 1 }, dp2[0].value.negative_bucket_counts);
+
+    // third
+    try exponential_histogram.record(-1.5, .{});
+    try exponential_histogram.record(-3.0, .{});
+
+    try reader.collect();
+    const result3 = try inMem.fetch(allocator);
+    defer {
+        for (result3) |*m| m.deinit(allocator);
+        allocator.free(result3);
+    }
+
+    try std.testing.expectEqual(1, result3.len);
+    const dp3 = result3[0].data.exponential_histogram;
+    try std.testing.expectEqual(1, dp3.len);
+    try std.testing.expectEqual(0, dp3[0].value.scale);
+    try std.testing.expectEqual(9, dp3[0].value.count);
+    try std.testing.expectEqual(0, dp3[0].value.positive_offset);
+    try std.testing.expectEqual(0, dp3[0].value.negative_offset);
+    try std.testing.expectEqual(0, dp3[0].value.sum.?);
+    try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp3[0].value.positive_bucket_counts);
+    try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp3[0].value.negative_bucket_counts);
+
+    // final
+    try exponential_histogram.record(0, .{});
+    try exponential_histogram.record(0, .{});
+
+    try reader.collect();
+    const result4 = try inMem.fetch(allocator);
+    defer {
+        for (result4) |*m| m.deinit(allocator);
+        allocator.free(result4);
+    }
+
+    try std.testing.expectEqual(1, result4.len);
+    const dp4 = result4[0].data.exponential_histogram;
+    try std.testing.expectEqual(1, dp4.len);
+    try std.testing.expectEqual(0, dp4[0].value.scale);
+    try std.testing.expectEqual(11, dp4[0].value.count);
+    try std.testing.expectEqual(3, dp4[0].value.zero_count);
+    try std.testing.expectEqual(0, dp4[0].value.positive_offset);
+    try std.testing.expectEqual(0, dp4[0].value.negative_offset);
+    try std.testing.expectEqual(0, dp4[0].value.sum.?);
+    try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp4[0].value.positive_bucket_counts);
+    try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp4[0].value.negative_bucket_counts);
 }

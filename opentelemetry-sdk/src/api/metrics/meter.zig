@@ -661,11 +661,17 @@ pub const AggregatedMetrics = struct {
                 .int => blk: {
                     const config = aggregation_type.ExponentialBucketHistogram;
                     const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, config.max_scale, config.max_size, config.record_min_max);
+                    for (aggregated) |*dp| {
+                        dp.timestamps = .{ .time_ns = current_time };
+                    }
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
                 .double => blk: {
                     const config = aggregation_type.ExponentialBucketHistogram;
                     const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, config.max_scale, config.max_size, config.record_min_max);
+                    for (aggregated) |*dp| {
+                        dp.timestamps = .{ .time_ns = current_time };
+                    }
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
                 .exponential_histogram => blk: {

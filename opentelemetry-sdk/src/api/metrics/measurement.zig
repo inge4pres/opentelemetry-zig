@@ -40,6 +40,8 @@ pub fn DataPoint(comptime T: type) type {
         }
 
         pub fn deepCopy(self: Self, allocator: std.mem.Allocator) !Self {
+            const attr = if (self.attributes) |a| try allocator.dupe(Attribute, a) else null;
+            errdefer if (attr) |a| allocator.free(a);
             return Self{
                 .value = switch (T) {
                     HistogramDataPoint => HistogramDataPoint{
@@ -50,21 +52,27 @@ pub fn DataPoint(comptime T: type) type {
                         .min = self.value.min,
                         .max = self.value.max,
                     },
-                    ExponentialHistogramDataPoint => ExponentialHistogramDataPoint{
-                        .sum = self.value.sum,
-                        .count = self.value.count,
-                        .min = self.value.min,
-                        .max = self.value.max,
-                        .scale = self.value.scale,
-                        .zero_count = self.value.zero_count,
-                        .positive_offset = self.value.positive_offset,
-                        .positive_bucket_counts = try allocator.dupe(u64, self.value.positive_bucket_counts),
-                        .negative_offset = self.value.negative_offset,
-                        .negative_bucket_counts = try allocator.dupe(u64, self.value.negative_bucket_counts),
+                    ExponentialHistogramDataPoint => blk: {
+                        const positive_bucket_counts = try allocator.dupe(u64, self.value.positive_bucket_counts);
+                        errdefer allocator.free(positive_bucket_counts);
+                        const negative_bucket_counts = try allocator.dupe(u64, self.value.negative_bucket_counts);
+                        const value = ExponentialHistogramDataPoint{
+                            .sum = self.value.sum,
+                            .count = self.value.count,
+                            .min = self.value.min,
+                            .max = self.value.max,
+                            .scale = self.value.scale,
+                            .zero_count = self.value.zero_count,
+                            .positive_offset = self.value.positive_offset,
+                            .positive_bucket_counts = positive_bucket_counts,
+                            .negative_offset = self.value.negative_offset,
+                            .negative_bucket_counts = negative_bucket_counts,
+                        };
+                        break :blk value;
                     },
                     else => self.value,
                 },
-                .attributes = try Attributes.with(self.attributes).dupe(allocator),
+                .attributes = attr,
             };
         }
     };
