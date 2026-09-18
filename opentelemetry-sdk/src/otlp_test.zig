@@ -46,6 +46,32 @@ test "otlp HTTPClient send fails on non-retryable error" {
     try std.testing.expectError(otlp.ExportError.NonRetryableStatusCodeInResponse, result);
 }
 
+test "otlp HTTPClient send honors ConfigOptions.timeout_sec" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try HTTPTestServer.init(allocator, io, slowResponse);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+    config.timeout_sec = 1;
+
+    var dummy = try emptyMetricsExportRequest(allocator);
+    defer dummy.deinit(std.testing.allocator);
+
+    const result = otlp.Export(allocator, io, config, otlp.Signal.Data{ .metrics = dummy });
+    try std.testing.expectError(otlp.ExportError.Timeout, result);
+}
+
 test "otlp HTTPClient send retries on retryable error" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -317,6 +343,12 @@ const AssertionError = error{
     CompressionMismatch,
     ExtraHeaderMissing,
 };
+
+// Accepts the request but stalls well past any sane export timeout.
+fn slowResponse(request: *http.Server.Request) anyerror!void {
+    clock.sleep(2 * std.time.ns_per_s);
+    try request.respond("", .{ .status = .ok });
+}
 
 fn badRequest(request: *http.Server.Request) anyerror!void {
     try request.respond("", .{ .status = .bad_request });
