@@ -347,7 +347,12 @@ pub const BatchingLogRecordProcessor = struct {
 
         // Export the batch (unlock mutex during export to allow concurrent onEmit calls)
         self.mutex.unlock(self.io);
-        self.exporter.exportLogs(logs_to_export) catch |err| {
+        clock.callTimeout(
+            self.io,
+            self.export_timeout_millis,
+            LogRecordExporter.exportLogs,
+            .{ self.exporter, logs_to_export },
+        ) catch |err| {
             std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
         };
         self.mutex.lockUncancelable(self.io);
@@ -495,6 +500,68 @@ test "SimpleLogRecordProcessor with attributes" {
 
     // Verify export was called
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.export_count);
+}
+
+test "BatchingLogRecordProcessor bounds export with export_timeout_millis" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Blocks far past the processor's export timeout, on a cancelable sleep so
+    // that the timeout can actually cut the export short.
+    const StallingExporter = struct {
+        io: std.Io,
+        canceled: std.atomic.Value(bool) = .init(false),
+
+        pub fn exportLogs(ctx: *anyopaque, _: []logs.ReadableLogRecord) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            std.Io.sleep(self.io, std.Io.Duration.fromSeconds(5), .awake) catch |err| {
+                self.canceled.store(true, .release);
+                return err;
+            };
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var stalling = StallingExporter{ .io = io };
+    var processor = try BatchingLogRecordProcessor.init(allocator, io, stalling.asLogRecordExporter(), .{
+        .export_timeout_millis = 100,
+        // Keep the background loop asleep so forceFlush is what drives the export.
+        .scheduled_delay_millis = 60_000,
+    });
+    defer {
+        const log_processor = processor.asLogRecordProcessor();
+        log_processor.shutdown() catch {};
+        processor.deinit();
+    }
+
+    const log_processor = processor.asLogRecordProcessor();
+    var log_record: logs.ReadWriteLogRecord = .{
+        .scope = InstrumentationScope{ .name = "test-logger" },
+        .observed_timestamp = 0,
+        .body = .{ .string = "stalled log message" },
+        .severity_number = 9,
+    };
+    defer log_record.deinit(allocator);
+    log_processor.onEmit(&log_record, context.Context.init());
+
+    const start_ns = clock.monotonicNs();
+    try log_processor.forceFlush();
+    const elapsed_ms = (clock.monotonicNs() - start_ns) / std.time.ns_per_ms;
+
+    try std.testing.expect(stalling.canceled.load(.acquire));
+    // The exporter would have blocked for 5s; the deadline is 100ms.
+    try std.testing.expect(elapsed_ms < 2000);
 }
 
 test "BatchingLogRecordProcessor basic functionality" {

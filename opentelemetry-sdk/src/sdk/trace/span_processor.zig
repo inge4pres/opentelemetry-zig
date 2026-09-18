@@ -351,7 +351,12 @@ pub const BatchingProcessor = struct {
             span.deinit();
         };
 
-        self.exporter.exportSpans(spans_to_export) catch |err| {
+        clock.callTimeout(
+            self.io,
+            self.export_timeout_millis,
+            SpanExporter.exportSpans,
+            .{ self.exporter, spans_to_export },
+        ) catch |err| {
             std.log.err("BatchingProcessor failed to export span batch: {}", .{err});
         };
         return true;
@@ -469,6 +474,71 @@ test "SimpleProcessor basic functionality" {
     // Verify the span was exported
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.exported_spans.items.len);
     try std.testing.expectEqualStrings("test-span", mock_exporter.exported_spans.items[0].name);
+}
+
+test "BatchingProcessor bounds export with export_timeout_millis" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Blocks far past the processor's export timeout, on a cancelable sleep so
+    // that the timeout can actually cut the export short.
+    const StallingExporter = struct {
+        io: std.Io,
+        canceled: std.atomic.Value(bool) = .init(false),
+
+        pub fn exportSpans(ctx: *anyopaque, _: []trace.Span) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            std.Io.sleep(self.io, std.Io.Duration.fromSeconds(5), .awake) catch |err| {
+                self.canceled.store(true, .release);
+                return err;
+            };
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asSpanExporter(self: *@This()) SpanExporter {
+            return SpanExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportSpansFn = exportSpans,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var stalling = StallingExporter{ .io = io };
+    var processor = try BatchingProcessor.init(allocator, io, stalling.asSpanExporter(), .{
+        .export_timeout_millis = 100,
+        // Keep the background loop asleep so forceFlush is what drives the export.
+        .scheduled_delay_millis = 60_000,
+    });
+    defer {
+        const span_processor = processor.asSpanProcessor();
+        span_processor.shutdown() catch {};
+        processor.deinit();
+    }
+
+    const span_processor = processor.asSpanProcessor();
+
+    const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+    var trace_state = trace.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var test_span = trace.Span.init(allocator, span_context, "stalled-span", .Internal, scope);
+    defer test_span.deinit();
+
+    span_processor.onEnd(test_span);
+
+    const start_ns = clock.monotonicNs();
+    try span_processor.forceFlush();
+    const elapsed_ms = (clock.monotonicNs() - start_ns) / std.time.ns_per_ms;
+
+    try std.testing.expect(stalling.canceled.load(.acquire));
+    // The exporter would have blocked for 5s; the deadline is 100ms.
+    try std.testing.expect(elapsed_ms < 2000);
 }
 
 test "BatchingProcessor basic functionality" {
