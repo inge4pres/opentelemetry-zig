@@ -18,6 +18,7 @@ const TracerProviderAPI = trace_api.TracerProviderImpl;
 const TracerAPI = trace_api.TracerImpl;
 
 const RandomIDGenerator = @import("id_generator.zig").RandomIDGenerator;
+const Sampler = @import("sampler.zig").Sampler;
 
 const Attributes = @import("../../attributes.zig").Attributes;
 const Attribute = @import("../../attributes.zig").Attribute;
@@ -42,6 +43,7 @@ pub const TracerProvider = struct {
     ),
     processors: std.ArrayList(SpanProcessor),
     id_generator: IDGenerator,
+    sampler: Sampler,
     mutex: std.Io.Mutex,
     is_shutdown: std.atomic.Value(bool),
     // Interface implementation
@@ -65,6 +67,7 @@ pub const TracerProvider = struct {
             .tracers = .empty,
             .processors = std.ArrayList(SpanProcessor).empty,
             .id_generator = id_generator,
+            .sampler = if (cfg) |c| c.trace_config.sampler else Sampler.default(),
             .mutex = std.Io.Mutex.init,
             .is_shutdown = std.atomic.Value(bool).init(false),
             .tracer_provider = TracerProviderAPI{
@@ -309,10 +312,21 @@ pub const Tracer = struct {
             trace_state = trace_api.TraceState.init(allocator);
         }
 
-        const trace_flags = if (parent_span_context) |parent_sc|
-            if (parent_sc.isValid()) parent_sc.trace_flags else trace_api.TraceFlags.sampled()
+        const decision = self.provider.sampler.shouldSample(.{
+            .parent = parent_span_context,
+            .trace_id = trace_id,
+        });
+
+        // Only the sampled flag comes from the decision: the rest of the
+        // parent's flags describe the trace ID, which the child shares.
+        const inherited_flags = if (parent_span_context) |parent_sc|
+            parent_sc.trace_flags
         else
-            trace_api.TraceFlags.sampled();
+            trace_api.TraceFlags.default();
+        const trace_flags = if (decision == .record_and_sample)
+            inherited_flags.setSampled()
+        else
+            inherited_flags.clearSampled();
 
         // Create span context
         const span_context = trace_api.SpanContext.init(
@@ -329,7 +343,7 @@ pub const Tracer = struct {
             (if (parent_sc.span_id.isValid()) parent_sc.span_id else null)
         else
             null;
-        span.is_recording = true; // SDK spans are recording by default
+        span.is_recording = decision != .drop;
         span.resource = self.provider.resource;
 
         // Set attributes if provided
@@ -347,9 +361,11 @@ pub const Tracer = struct {
         // Set start time if provided, otherwise use current time
         span.start_time_unix_nano = options.start_timestamp orelse @intCast(clock.nanoTimestamp());
 
-        // Notify processors that the span has started
-        const parent_context = options.parent_context orelse context.Context.init();
-        self.provider.onSpanStart(&span, parent_context);
+        // Processors only see spans the sampler decided to record
+        if (span.is_recording) {
+            const parent_context = options.parent_context orelse context.Context.init();
+            self.provider.onSpanStart(&span, parent_context);
+        }
 
         return span;
     }
@@ -434,6 +450,73 @@ test "Tracer inherits valid parent trace flags" {
     defer span.deinit();
 
     try std.testing.expectEqual(parent_span_context.trace_flags.value, span.span_context.trace_flags.value);
+}
+
+test "Tracer follows the parent sampling decision" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+    provider.sampler = Sampler.default();
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+
+    for ([_]bool{ true, false }) |parent_sampled| {
+        var parent_trace_state = trace_api.TraceState.init(allocator);
+        defer parent_trace_state.deinit();
+        const parent_span_context = trace_api.SpanContext.init(
+            trace_api.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+            trace_api.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+            if (parent_sampled) trace_api.TraceFlags.sampled() else trace_api.TraceFlags.default(),
+            parent_trace_state,
+            true,
+        );
+        var parent_context = try trace_api.insertSpanContext(allocator, parent_span_context);
+        defer {
+            trace_api.freeSerializedSpanContext(allocator, parent_context);
+            parent_context.deinit();
+        }
+
+        var span = try tracer.startSpan(allocator, "child-span", .{ .parent_context = parent_context });
+        defer span.deinit();
+
+        try std.testing.expectEqual(parent_sampled, span.is_recording);
+        try std.testing.expectEqual(parent_sampled, span.span_context.trace_flags.isSampled());
+    }
+}
+
+test "Tracer does not record or export dropped spans" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+    provider.sampler = .always_off;
+
+    var mock_processor = MockProcessor.init(allocator);
+    defer mock_processor.deinit();
+    try provider.addSpanProcessor(mock_processor.asSpanProcessor());
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var span = try tracer.startSpan(allocator, "dropped-span", .{});
+    defer span.deinit();
+
+    try std.testing.expect(!span.is_recording);
+    try std.testing.expect(!span.span_context.trace_flags.isSampled());
+    // A dropped span still carries a valid context so propagation keeps working.
+    try std.testing.expect(span.span_context.isValid());
+
+    tracer.endSpan(&span);
+
+    try std.testing.expectEqual(@as(usize, 0), mock_processor.started_spans.items.len);
+    try std.testing.expectEqual(@as(usize, 0), mock_processor.ended_spans.items.len);
 }
 
 test "Tracer records parent span ID" {
@@ -559,7 +642,42 @@ test "TracerProvider with config from environment" {
     try std.testing.expectEqual(@as(u32, 2048), provider.config.?.trace_config.bsp_max_queue_size);
     try std.testing.expectEqual(@as(u64, 5000), provider.config.?.trace_config.bsp_schedule_delay_ms);
     try std.testing.expectEqual(@as(u32, 512), provider.config.?.trace_config.bsp_max_export_batch_size);
-    try std.testing.expectEqual(TraceConfig.Sampler.parentbased_always_on, provider.config.?.trace_config.sampler);
+    try std.testing.expectEqual(Sampler.default(), provider.config.?.trace_config.sampler);
+    try std.testing.expectEqual(Sampler.default(), provider.sampler);
+}
+
+test "TracerProvider honors OTEL_TRACES_SAMPLER" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_TRACES_SAMPLER", "always_off");
+
+    const cfg = try Configuration.init(allocator, io, &env_map);
+    // deinit() also clears the global singleton, so it does not leak into
+    // the tests that run after this one.
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+
+    var mock_processor = MockProcessor.init(allocator);
+    defer mock_processor.deinit();
+    try provider.addSpanProcessor(mock_processor.asSpanProcessor());
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var span = try tracer.startSpan(allocator, "test-span", .{});
+    defer span.deinit();
+    tracer.endSpan(&span);
+
+    try std.testing.expectEqual(Sampler.always_off, provider.sampler);
+    try std.testing.expect(!span.is_recording);
+    try std.testing.expectEqual(@as(usize, 0), mock_processor.ended_spans.items.len);
 }
 
 test "TracerProvider end span with links and events" {
