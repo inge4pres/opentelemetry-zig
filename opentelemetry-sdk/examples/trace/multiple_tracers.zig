@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 2. Create a tracer provider with the ID generator
     var tracer_provider = try trace.TracerProvider.init(allocator, io, id_generator);
-    defer tracer_provider.shutdown();
+    defer tracer_provider.deinit();
 
     // 3. Create a stdout exporter and simple processor for output
     var stdout_buffer: [4096]u8 = undefined;
@@ -100,8 +100,8 @@ pub fn main(init: std.process.Init) !void {
     try payment_span.addEvent("Payment authorized", null, null);
     try db_span.addEvent("Query executed successfully", null, null);
 
-    // End spans - use tracer.endSpan() for basic functionality
-    user_tracer.endSpan(&user_span);
-    payment_tracer.endSpan(&payment_span);
-    database_tracer.endSpan(&db_span);
+    // End spans: this is what hands them over to the span processors
+    user_span.end(null);
+    payment_span.end(null);
+    db_span.end(null);
 }

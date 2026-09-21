@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 2. Create a tracer provider with the ID generator
     var tracer_provider = try trace.TracerProvider.init(allocator, io, id_generator);
-    defer tracer_provider.shutdown();
+    defer tracer_provider.deinit();
 
     // 3. Create a stdout exporter and simple processor
     var stdout_buffer: [4096]u8 = undefined;
@@ -94,12 +94,12 @@ pub fn main(init: std.process.Init) !void {
     clock.sleep(50 * std.time.ns_per_ms); // DB query time
 
     // End the DB span first (child spans should end before parent)
-    db_tracer.endSpan(&db_span);
+    db_span.end(null);
 
     clock.sleep(50 * std.time.ns_per_ms); // HTTP processing time
 
     // End the HTTP span
-    http_tracer.endSpan(&http_span);
+    http_span.end(null);
 
     // Verify spans were created successfully with valid IDs (not all zeros)
     const zero_trace_id = [_]u8{0} ** 16;

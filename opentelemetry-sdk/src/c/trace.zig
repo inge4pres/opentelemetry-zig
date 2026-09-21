@@ -36,7 +36,6 @@
 const std = @import("std");
 const clock = @import("clock");
 const TracerProvider = @import("../sdk/trace/provider.zig").TracerProvider;
-const Tracer = @import("../sdk/trace/provider.zig").Tracer;
 const TracerImpl = @import("../api/trace/tracer.zig").TracerImpl;
 const trace_api = @import("../api/trace.zig");
 const Span = trace_api.Span;
@@ -221,12 +220,9 @@ fn convertAttributes(
 }
 
 /// Internal storage for a span and its associated data.
-/// Holds a reference to the provider so we can detect shutdown and avoid
-/// use-after-free when the provider is destroyed before the span is ended.
+/// The span carries its own back-reference to the tracer that started it.
 const SpanWrapper = struct {
     span: Span,
-    tracer: *TracerImpl,
-    provider: *TracerProvider,
     allocator: std.mem.Allocator,
 
     fn deinit(self: *SpanWrapper) void {
@@ -263,7 +259,7 @@ pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
     };
 
     const handle = allocator.create(TracerProviderHandle) catch {
-        provider.shutdown();
+        provider.deinit();
         allocator.destroy(prng_ptr);
         return null;
     };
@@ -283,7 +279,7 @@ pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
 pub fn tracerProviderShutdown(provider: ?*OtelTracerProvider) callconv(.c) void {
     if (provider) |p| {
         const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
-        handle.provider.shutdown();
+        handle.provider.deinit();
         handle.threaded.deinit();
         handle.allocator.destroy(handle.threaded);
         handle.allocator.destroy(handle.prng);
@@ -400,9 +396,6 @@ pub fn tracerStartSpan(
 
     defer if (start_opts.attributes) |attrs| allocator.free(attrs);
 
-    // Recover the SDK Tracer and its provider to store a safe back-reference.
-    const sdk_tracer: *Tracer = @fieldParentPtr("tracer", tr);
-
     // Create span wrapper
     const wrapper = allocator.create(SpanWrapper) catch return null;
 
@@ -411,8 +404,6 @@ pub fn tracerStartSpan(
             allocator.destroy(wrapper);
             return null;
         },
-        .tracer = tr,
-        .provider = sdk_tracer.provider,
         .allocator = allocator,
     };
 
@@ -435,21 +426,12 @@ pub fn tracerIsEnabled(tracer: ?*OtelTracer) callconv(.c) bool {
 /// End a span.
 ///
 /// After calling this function, the span handle becomes invalid.
-/// NOTE: All spans should be ended before the provider is shut down. If the
-/// provider has already been shut down, the span is ended locally but
-/// processors are not notified.
+/// NOTE: All spans must be ended before the provider is shut down, since a
+/// span notifies the tracer that started it.
 pub fn spanEnd(span: ?*OtelSpan) callconv(.c) void {
     if (span) |s| {
         const wrapper: *SpanWrapper = @ptrCast(@alignCast(s));
-        if (!wrapper.provider.is_shutdown.load(.acquire)) {
-            wrapper.tracer.endSpan(&wrapper.span);
-        } else {
-            // Provider already shut down — end the span locally without
-            // notifying processors to avoid use-after-free.
-            if (wrapper.span.is_recording) {
-                wrapper.span.end(null);
-            }
-        }
+        wrapper.span.end(null);
         wrapper.deinit();
     }
 }

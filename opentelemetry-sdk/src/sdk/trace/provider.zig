@@ -102,10 +102,17 @@ pub const TracerProvider = struct {
         });
     }
 
+    /// Shutdown the provider, if it is still running, and free it along with
+    /// its tracers. Every Span started by those tracers must have ended before
+    /// this is called, since a Span points back to the Tracer that started it.
     pub fn deinit(self: *Self) void {
-        // Clean up all tracers
+        self.shutdown();
+
+        self.mutex.lockUncancelable(self.io);
+
         var it = self.tracers.valueIterator();
         while (it.next()) |tracer| {
+            tracer.*.deinit();
             self.allocator.destroy(tracer.*);
         }
         self.tracers.deinit(self.allocator);
@@ -114,6 +121,9 @@ pub const TracerProvider = struct {
         if (self.resource) |res| {
             resource_attributes.freeResource(self.allocator, res);
         }
+
+        // Unlock before destroying the struct
+        self.mutex.unlock(self.io);
 
         self.allocator.destroy(self);
     }
@@ -171,13 +181,17 @@ pub const TracerProvider = struct {
         return &tracer.tracer;
     }
 
-    /// Shutdown the tracer provider and all associated processors
+    /// Shutdown the tracer provider and all associated processors.
+    /// The provider and its tracers stay alive so that spans still holding a
+    /// pointer to their tracer can end without notifying anything; use
+    /// deinit() to free them.
     pub fn shutdown(self: *Self) void {
         if (self.is_shutdown.swap(true, .acq_rel)) {
             return; // Already shutdown
         }
 
         self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
 
         // Shutdown all processors
         for (self.processors.items) |processor| {
@@ -185,27 +199,6 @@ pub const TracerProvider = struct {
                 std.log.err("Failed to shutdown span processor: {}", .{err});
             };
         }
-
-        // Clean up SDKTracers
-        var sdk_tracers_iter = self.tracers.valueIterator();
-        while (sdk_tracers_iter.next()) |sdk_tracer| {
-            sdk_tracer.*.deinit();
-            self.allocator.destroy(sdk_tracer.*);
-        }
-        self.tracers.deinit(self.allocator);
-
-        self.processors.deinit(self.allocator);
-
-        // Free resource attributes
-        if (self.resource) |res| {
-            resource_attributes.freeResource(self.allocator, res);
-        }
-
-        // Unlock before destroying the struct
-        self.mutex.unlock(self.io);
-
-        // Destroy self
-        self.allocator.destroy(self);
     }
 
     /// Force flush all processors
@@ -263,7 +256,7 @@ pub const Tracer = struct {
             .tracer = TracerAPI{
                 .startSpanFn = startSpan,
                 .isEnabledFn = isEnabled,
-                .endSpanFn = endSpanImpl,
+                .onEndFn = onEndImpl,
             },
         };
     }
@@ -349,6 +342,7 @@ pub const Tracer = struct {
             null;
         span.is_recording = decision != .drop;
         span.resource = self.provider.resource;
+        span.tracer = tracer;
 
         // Set attributes if provided
         if (options.attributes) |attrs| {
@@ -381,19 +375,9 @@ pub const Tracer = struct {
         return !self.provider.is_shutdown.load(.acquire);
     }
 
-    /// Implementation of Tracer.endSpan
-    /// End a span - this should be called when the span is completed
-    fn endSpanImpl(tracer: *TracerAPI, span: *trace_api.Span) void {
+    /// Implementation of Tracer.onEnd: hand the ended span to the processors.
+    fn onEndImpl(tracer: *TracerAPI, span: *const trace_api.Span) void {
         const self: *Self = @fieldParentPtr("tracer", tracer);
-        self.endSpan(span);
-    }
-
-    /// End a span - this should be called when the span is completed
-    pub fn endSpan(self: Self, span: *trace_api.Span) void {
-        if (!span.is_recording) return;
-        span.end(null);
-
-        // Notify processors that the span has ended
         self.provider.onSpanEnd(span.*);
     }
 };
@@ -408,7 +392,7 @@ test "TracerProvider basic functionality" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown(); // Use shutdown to properly destroy the provider
+    defer provider.deinit();
 
     // Get a tracer via the interface
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -468,7 +452,7 @@ test "Tracer inherits valid parent trace flags" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
     var parent_trace_state = trace_api.TraceState.init(allocator);
@@ -500,7 +484,7 @@ test "Tracer follows the parent sampling decision" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
     provider.sampler = Sampler.default();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -537,7 +521,7 @@ test "Tracer does not record or export dropped spans" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
     provider.sampler = .always_off;
 
     var mock_processor = MockProcessor.init(allocator);
@@ -553,7 +537,7 @@ test "Tracer does not record or export dropped spans" {
     // A dropped span still carries a valid context so propagation keeps working.
     try std.testing.expect(span.span_context.isValid());
 
-    tracer.endSpan(&span);
+    span.end(null);
 
     try std.testing.expectEqual(@as(usize, 0), mock_processor.started_spans.items.len);
     try std.testing.expectEqual(@as(usize, 0), mock_processor.ended_spans.items.len);
@@ -567,7 +551,7 @@ test "Tracer records parent span ID" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
     var parent = try tracer.startSpan(allocator, "parent", .{});
@@ -641,7 +625,7 @@ test "TracerProvider with processors" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown(); // Use shutdown to properly destroy the provider
+    defer provider.deinit();
 
     // Add a mock processor
     var mock_processor = MockProcessor.init(allocator);
@@ -653,10 +637,67 @@ test "TracerProvider with processors" {
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
     var span = try tracer.startSpan(allocator, "test-span", .{});
     defer span.deinit();
-    defer tracer.endSpan(&span);
+    defer span.end(null);
 
     // Verify the processor was called on start
     try std.testing.expectEqual(@as(usize, 1), mock_processor.started_spans.items.len);
+}
+
+test "Span.end notifies the span processors" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.deinit();
+
+    var mock_processor = MockProcessor.init(allocator);
+    defer mock_processor.deinit();
+    try provider.addSpanProcessor(mock_processor.asSpanProcessor());
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var span = try tracer.startSpan(allocator, "test-span", .{});
+    defer span.deinit();
+
+    span.end(null);
+
+    try std.testing.expectEqual(@as(usize, 1), mock_processor.ended_spans.items.len);
+    try std.testing.expectEqualStrings("test-span", mock_processor.ended_spans.items[0].name);
+    try std.testing.expect(mock_processor.ended_spans.items[0].end_time_unix_nano > 0);
+
+    // Ending an already ended span is a no-op
+    span.end(null);
+    try std.testing.expectEqual(@as(usize, 1), mock_processor.ended_spans.items.len);
+}
+
+test "Span.end after TracerProvider shutdown does not notify the span processors" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.deinit();
+
+    var mock_processor = MockProcessor.init(allocator);
+    defer mock_processor.deinit();
+    try provider.addSpanProcessor(mock_processor.asSpanProcessor());
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var span = try tracer.startSpan(allocator, "test-span", .{});
+    defer span.deinit();
+
+    // shutdown() keeps the tracer alive, so the span can still end safely
+    provider.shutdown();
+    span.end(null);
+
+    try std.testing.expectEqual(@as(usize, 0), mock_processor.ended_spans.items.len);
+    try std.testing.expect(!span.is_recording);
 }
 
 test "TracerProvider with config from environment" {
@@ -676,7 +717,7 @@ test "TracerProvider with config from environment" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
 
     // Verify config was loaded with defaults
     try std.testing.expectEqual(@as(u32, 2048), provider.config.?.trace_config.bsp_max_queue_size);
@@ -704,7 +745,7 @@ test "TracerProvider honors OTEL_TRACES_SAMPLER" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
 
     var mock_processor = MockProcessor.init(allocator);
     defer mock_processor.deinit();
@@ -713,7 +754,7 @@ test "TracerProvider honors OTEL_TRACES_SAMPLER" {
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
     var span = try tracer.startSpan(allocator, "test-span", .{});
     defer span.deinit();
-    tracer.endSpan(&span);
+    span.end(null);
 
     try std.testing.expectEqual(Sampler.always_off, provider.sampler);
     try std.testing.expect(!span.is_recording);
@@ -729,7 +770,7 @@ test "TracerProvider end span with links and events" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown(); // Use shutdown to properly destroy the provider
+    defer provider.deinit();
 
     // Get a tracer via the interface
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -757,7 +798,7 @@ test "TracerProvider end span with links and events" {
         .attributes = attributes,
     });
     defer span.deinit();
-    defer tracer.endSpan(&span);
+    defer span.end(null);
 
     try std.testing.expectEqualStrings("test-span-with-link", span.name);
     try std.testing.expect(span.is_recording);

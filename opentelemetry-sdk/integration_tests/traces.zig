@@ -38,7 +38,7 @@ fn testTraces(
     };
 
     var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
-    defer tracer_provider.shutdown();
+    defer tracer_provider.deinit();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
     defer otlp_exporter.deinit();
@@ -77,7 +77,7 @@ fn testTraces(
         clock.sleep(10 * std.time.ns_per_ms);
 
         span.setStatus(trace_api.Status.ok());
-        tracer.endSpan(&span);
+        span.end(null);
     }
 
     std.debug.print("  Waiting for collector to process and write traces...\n", .{});
@@ -123,7 +123,7 @@ fn testTracesWithCompression(
     };
 
     var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
-    defer tracer_provider.shutdown();
+    defer tracer_provider.deinit();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
     defer otlp_exporter.deinit();
@@ -163,7 +163,7 @@ fn testTracesWithCompression(
         clock.sleep(10 * std.time.ns_per_ms);
 
         span.setStatus(trace_api.Status.ok());
-        tracer.endSpan(&span);
+        span.end(null);
     }
 
     std.debug.print("  Waiting for collector to process compressed traces...\n", .{});
