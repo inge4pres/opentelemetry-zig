@@ -290,8 +290,12 @@ pub const Tracer = struct {
         var trace_id: trace_api.TraceID = undefined;
         var span_id: trace_api.SpanID = undefined;
 
+        // An invalid parent starts a new trace, otherwise the child would
+        // inherit an all-zero trace ID.
         if (options.parent_context) |parent_ctx| {
-            parent_span_context = trace_api.extractSpanContext(parent_ctx);
+            if (trace_api.extractSpanContext(parent_ctx)) |parent_sc| {
+                if (parent_sc.isValid()) parent_span_context = parent_sc;
+            }
         }
 
         // Determine trace ID based on parent
@@ -417,6 +421,42 @@ test "TracerProvider basic functionality" {
     try std.testing.expectEqualStrings("test-span", span.name);
     try std.testing.expect(span.is_recording);
     try std.testing.expect(span.span_context.trace_flags.isSampled());
+}
+
+test "Tracer starts a new trace under an invalid parent" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+    provider.sampler = .{ .trace_id_ratio = .{ .ratio = 0.0 } };
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+
+    var parent_trace_state = trace_api.TraceState.init(allocator);
+    defer parent_trace_state.deinit();
+    const invalid_parent = trace_api.SpanContext.init(
+        trace_api.TraceID.zero(),
+        trace_api.SpanID.zero(),
+        trace_api.TraceFlags.sampled(),
+        parent_trace_state,
+        true,
+    );
+    var parent_context = try trace_api.insertSpanContext(allocator, invalid_parent);
+    defer {
+        trace_api.freeSerializedSpanContext(allocator, parent_context);
+        parent_context.deinit();
+    }
+
+    var span = try tracer.startSpan(allocator, "child-span", .{ .parent_context = parent_context });
+    defer span.deinit();
+
+    try std.testing.expect(span.span_context.isValid());
+    try std.testing.expect(!span.is_recording);
+    try std.testing.expectEqual(@as(?trace_api.SpanID, null), span.parent_span_id);
 }
 
 test "Tracer inherits valid parent trace flags" {

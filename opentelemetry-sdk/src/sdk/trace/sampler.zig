@@ -57,16 +57,19 @@ pub const Sampler = union(enum) {
         ratio: f64,
 
         fn shouldSample(self: TraceIdRatio, params: Params) Decision {
+            // NaN would trap in @intFromFloat; parseRatio never produces it.
+            std.debug.assert(!std.math.isNan(self.ratio));
             if (self.ratio >= 1.0) return .record_and_sample;
             if (self.ratio <= 0.0) return .drop;
 
-            // W3C Trace Context requires at elast the last 7 bytes of a trace ID to
-            // be random, so they can be compared against the ratio directly.
-            // We 8 to align with other SDKs.
-            // See https://opentelemetry.io/docs/specs/otel/trace/sdk/#traceidratiobased
-            const upper_bound: u64 = @intFromFloat(self.ratio * @as(f64, @floatFromInt(std.math.maxInt(u64))));
-            const id = std.mem.readInt(u64, params.trace_id.value[8..16], .big);
-            return if (id < upper_bound) .record_and_sample else .drop;
+            // W3C Trace Context Level 2 only guarantees randomness in the 7
+            // rightmost bytes, so the eighth from the right must not
+            // influence the decision.
+            // See https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/trace/sdk.md#traceidratiobased-sampler-algorithm
+            const max_randomness: f64 = @floatFromInt(@as(u64, 1) << 56);
+            const threshold: u64 = @intFromFloat((1.0 - self.ratio) * max_randomness);
+            const randomness = std.mem.readInt(u56, params.trace_id.value[9..16], .big);
+            return if (randomness >= threshold) .record_and_sample else .drop;
         }
     };
 
@@ -115,13 +118,13 @@ pub const Sampler = union(enum) {
     }
 
     /// The specification requires falling back to 1.0 when the argument is
-    /// missing or unparseable.
+    /// missing or not a ratio in [0, 1].
     fn parseRatio(arg: ?[]const u8) f64 {
         const raw = arg orelse return 1.0;
-        return std.fmt.parseFloat(f64, raw) catch {
-            std.log.warn("OTEL_TRACES_SAMPLER_ARG={s} is not a valid ratio, using 1.0", .{raw});
-            return 1.0;
-        };
+        const ratio = std.fmt.parseFloat(f64, raw) catch std.math.nan(f64);
+        if (ratio >= 0.0 and ratio <= 1.0) return ratio;
+        std.log.warn("OTEL_TRACES_SAMPLER_ARG={s} is not a valid ratio, using 1.0", .{raw});
+        return 1.0;
     }
 };
 
@@ -186,16 +189,17 @@ test "trace_id_ratio bounds" {
     try testing.expectEqual(Decision.drop, none.shouldSample(testParams(null)));
 }
 
-test "trace_id_ratio splits on the trailing trace ID bytes" {
+test "trace_id_ratio compares only the 56 rightmost trace ID bits" {
     const sampler = Sampler{ .trace_id_ratio = .{ .ratio = 0.5 } };
 
+    // Byte 8 is not guaranteed random and must not sway the decision.
     var low = testParams(null);
-    low.trace_id = trace.TraceID.init([_]u8{ 1, 0, 0, 0, 0, 0, 0, 0, 0x0f, 0, 0, 0, 0, 0, 0, 0 });
-    try testing.expectEqual(Decision.record_and_sample, sampler.shouldSample(low));
+    low.trace_id = trace.TraceID.init([_]u8{ 1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x0f, 0, 0, 0, 0, 0, 0 });
+    try testing.expectEqual(Decision.drop, sampler.shouldSample(low));
 
     var high = testParams(null);
-    high.trace_id = trace.TraceID.init([_]u8{ 1, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0, 0, 0, 0, 0, 0, 0 });
-    try testing.expectEqual(Decision.drop, sampler.shouldSample(high));
+    high.trace_id = trace.TraceID.init([_]u8{ 1, 0, 0, 0, 0, 0, 0, 0, 0x00, 0xf0, 0, 0, 0, 0, 0, 0 });
+    try testing.expectEqual(Decision.record_and_sample, sampler.shouldSample(high));
 }
 
 test "trace_id_ratio samples roughly the configured fraction" {
@@ -248,6 +252,7 @@ test "fromString maps every sampler name" {
 test "fromString falls back to a ratio of 1.0 on a bad argument" {
     const expected = Sampler{ .trace_id_ratio = .{ .ratio = 1.0 } };
 
-    try testing.expectEqual(expected, Sampler.fromString("traceidratio", "not-a-number").?);
-    try testing.expectEqual(expected, Sampler.fromString("traceidratio", null).?);
+    for ([_]?[]const u8{ null, "not-a-number", "-1", "1.5", "nan", "inf" }) |arg| {
+        try testing.expectEqual(expected, Sampler.fromString("traceidratio", arg).?);
+    }
 }
