@@ -415,7 +415,7 @@ test "Tracer starts a new trace under an invalid parent" {
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
     var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
-    defer provider.shutdown();
+    defer provider.deinit();
     provider.sampler = .{ .trace_id_ratio = .{ .ratio = 0.0 } };
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
