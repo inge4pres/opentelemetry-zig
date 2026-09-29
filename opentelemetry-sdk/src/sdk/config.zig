@@ -8,6 +8,8 @@
 
 const std = @import("std");
 
+const CommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
+
 const EnvMap = std.process.Environ.Map;
 
 const Sampler = @import("trace/sampler.zig").Sampler;
@@ -365,13 +367,11 @@ fn resolveServiceName(allocator: std.mem.Allocator, io: std.Io, env_map: *const 
 
 /// Extract the service.name value from OTEL_RESOURCE_ATTRIBUTES, if present.
 fn serviceNameFromResourceAttributes(attrs: []const u8) ?[]const u8 {
-    var iter = std.mem.splitScalar(u8, attrs, ',');
-    while (iter.next()) |keyVal| {
-        const eq_pos = std.mem.indexOfScalar(u8, keyVal, '=') orelse continue;
-        const key = std.mem.trim(u8, keyVal[0..eq_pos], &std.ascii.whitespace);
-        if (std.mem.eql(u8, key, "service.name")) {
-            return std.mem.trim(u8, keyVal[eq_pos + 1 ..], &std.ascii.whitespace);
-        }
+    var iter: CommaSeparatedAssignmentIterator = .init(attrs);
+    while (iter.next()) |entry| {
+        if (!std.mem.eql(u8, entry.name, "service.name")) continue;
+        // A bare `service.name` with no value does not count; keep looking.
+        if (entry.value) |value| return value;
     }
     return null;
 }

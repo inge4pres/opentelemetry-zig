@@ -1,12 +1,17 @@
 const std = @import("std");
 const Attribute = @import("../attributes.zig").Attribute;
-const AttributeValue = @import("../attributes.zig").AttributeValue;
 const Configuration = @import("config.zig").Configuration;
+const CommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
 
 /// Build resource attributes from configuration
 /// Combines OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
 pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuration) ![]Attribute {
-    var attributes: std.ArrayList(Attribute) = .empty;
+    const has_service_name = config.service_name != null;
+
+    // `parseResourceAttributes` reserves its own capacity, so this only covers
+    // the service.name entry below: its append then cannot fail and orphan a
+    // duped attribute.
+    var attributes: std.ArrayList(Attribute) = try .initCapacity(allocator, @intFromBool(has_service_name));
     errdefer {
         for (attributes.items) |attr| {
             allocator.free(attr.key);
@@ -18,14 +23,11 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
     }
 
     // Add service.name if configured
-    const has_service_name = config.service_name != null;
     if (config.service_name) |service_name| {
-        const key = try allocator.dupe(u8, "service.name");
-        const value = try allocator.dupe(u8, service_name);
-        try attributes.append(allocator, Attribute{
-            .key = key,
-            .value = AttributeValue{ .string = value },
-        });
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, .{
+            .key = "service.name",
+            .value = .{ .string = service_name },
+        }));
     }
 
     // Parse and add resource attributes
@@ -46,40 +48,32 @@ fn parseResourceAttributes(
     attributes: *std.ArrayList(Attribute),
     skip_service_name: bool,
 ) !void {
-    var iter = std.mem.splitScalar(u8, attrs_str, ',');
-    while (iter.next()) |pair| {
-        const trimmed = std.mem.trim(u8, pair, &std.ascii.whitespace);
-        if (trimmed.len == 0) continue;
+    // At most one attribute per entry, and a comma-separated list holds at most
+    // one more entry than it has commas. Reserving up front makes the appends
+    // below infallible, so a duped attribute is never orphaned mid-append.
+    try attributes.ensureUnusedCapacity(allocator, std.mem.countScalar(u8, attrs_str, ',') + 1);
 
-        // Split on '=' to get key and value
-        const eq_pos = std.mem.indexOf(u8, trimmed, "=") orelse {
-            std.log.warn("Invalid resource attribute (missing '='): {s}", .{trimmed});
+    var iter: CommaSeparatedAssignmentIterator = .init(attrs_str);
+    while (iter.next()) |entry| {
+        const value = entry.value orelse {
+            std.log.warn("Invalid resource attribute (missing '='): {s}", .{entry.name});
             continue;
         };
 
-        const key_part = std.mem.trim(u8, trimmed[0..eq_pos], &std.ascii.whitespace);
-        const value_part = std.mem.trim(u8, trimmed[eq_pos + 1 ..], &std.ascii.whitespace);
-
-        if (key_part.len == 0) {
-            std.log.warn("Invalid resource attribute (empty key): {s}", .{trimmed});
+        if (entry.name.len == 0) {
+            std.log.warn("Invalid resource attribute (empty key): ={s}", .{value});
             continue;
         }
 
         // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
-        if (skip_service_name and std.mem.eql(u8, key_part, "service.name")) {
+        if (skip_service_name and std.mem.eql(u8, entry.name, "service.name")) {
             continue;
         }
 
-        const key = try allocator.dupe(u8, key_part);
-        errdefer allocator.free(key);
-
-        const value = try allocator.dupe(u8, value_part);
-        errdefer allocator.free(value);
-
-        try attributes.append(allocator, Attribute{
-            .key = key,
-            .value = AttributeValue{ .string = value },
-        });
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, .{
+            .key = entry.name,
+            .value = .{ .string = value },
+        }));
     }
 }
 

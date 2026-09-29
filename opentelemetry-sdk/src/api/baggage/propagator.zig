@@ -22,6 +22,7 @@ const std = @import("std");
 const EnvMap = std.process.Environ.Map;
 const Baggage = @import("../baggage.zig").Baggage;
 const BaggageEntry = @import("../baggage.zig").BaggageEntry;
+const CommaSeparatedAssignmentIterator = @import("../../sdk/key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
 
 /// Generic interface for getting values from a carrier.
 ///
@@ -199,34 +200,29 @@ pub fn extract(
     var baggage = Baggage.init();
     errdefer baggage.deinit();
 
-    // Split by commas to get individual entries
-    var entries_iter = std.mem.splitScalar(u8, header_value, ',');
-    while (entries_iter.next()) |entry_str| {
-        const trimmed = std.mem.trim(u8, entry_str, " \t");
-        if (trimmed.len == 0) continue;
+    // A baggage header is a list of assignments whose values carry an optional
+    // `;metadata` tail. Neither a key nor a value may hold a raw `,` or `;`.
+    var entries: CommaSeparatedAssignmentIterator = .init(header_value);
+    while (entries.next()) |entry| {
+        // Empty key or value is skipped
+        // A `;` in the key means the member never began with an assignment => empty key
+        if (entry.name.len == 0 or std.mem.indexOfScalar(u8, entry.name, ';') != null or entry.value == null) continue;
 
-        // Split by semicolon to separate value from metadata
-        var parts_iter = std.mem.splitScalar(u8, trimmed, ';');
-        const key_value_part = parts_iter.next() orelse continue;
-
-        // Split key=value
-        var kv_iter = std.mem.splitScalar(u8, key_value_part, '=');
-        const encoded_key = kv_iter.next() orelse continue;
-        const encoded_value = kv_iter.rest();
-
-        if (encoded_key.len == 0 or encoded_value.len == 0) continue;
+        var parts = std.mem.splitScalar(u8, entry.value orelse unreachable, ';');
+        const encoded_value = std.mem.trim(u8, parts.first(), &std.ascii.whitespace);
+        if (encoded_value.len == 0) continue;
 
         // Decode key and value
-        const key = urlDecode(allocator, encoded_key) catch continue;
+        const key = urlDecode(allocator, entry.name) catch continue;
         defer allocator.free(key);
 
         const value = urlDecode(allocator, encoded_value) catch continue;
         defer allocator.free(value);
 
-        // Get metadata if present
-        const metadata_part = parts_iter.rest();
-        const metadata = if (metadata_part.len > 0)
-            urlDecode(allocator, metadata_part) catch null
+        // Get metadata if present, kept verbatim rather than parsed further
+        const encoded_metadata = std.mem.trim(u8, parts.rest(), &std.ascii.whitespace);
+        const metadata = if (encoded_metadata.len > 0)
+            urlDecode(allocator, encoded_metadata) catch null
         else
             null;
         defer if (metadata) |m| allocator.free(m);
@@ -518,6 +514,81 @@ test "extract malformed baggage" {
 
     // Should extract an empty baggage since the format is invalid
     try std.testing.expectEqual(@as(usize, 0), extracted.count());
+}
+
+test "extract strips whitespace around separators" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // The grammar allows optional whitespace around ',', '=' and ';'.
+    try headers.put("baggage", " key1 = value1 ; meta1 , key2 = value2 ");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), extracted.count());
+
+    const first = extracted.getValue("key1").?;
+    try std.testing.expectEqualStrings("value1", first.value);
+    try std.testing.expectEqualStrings("meta1", first.metadata.?);
+
+    const second = extracted.getValue("key2").?;
+    try std.testing.expectEqualStrings("value2", second.value);
+    try std.testing.expect(second.metadata == null);
+}
+
+test "extract keeps '=' inside values and metadata" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // '=' is a legal baggage octet, so only the first one splits the pair.
+    try headers.put("baggage", "equation=a=b,account=12345;priority=high");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), extracted.count());
+    try std.testing.expectEqualStrings("a=b", extracted.getValue("equation").?.value);
+
+    const account = extracted.getValue("account").?;
+    try std.testing.expectEqualStrings("12345", account.value);
+    try std.testing.expectEqualStrings("priority=high", account.metadata.?);
+}
+
+test "extract skips a member with an empty value" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // An empty value is dropped whether or not metadata follows it.
+    try headers.put("baggage", "bare=,spaced= ;meta,key=value");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), extracted.count());
+    try std.testing.expectEqualStrings("value", extracted.getValue("key").?.value);
+}
+
+test "extract skips a member that does not begin with an assignment" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    try headers.put("baggage", ";orphan=value,key=value");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    // The leading ';' lands in the key, which marks the member as malformed.
+    try std.testing.expectEqual(@as(usize, 1), extracted.count());
+    try std.testing.expectEqualStrings("value", extracted.getValue("key").?.value);
 }
 
 test "http header case insensitive" {
