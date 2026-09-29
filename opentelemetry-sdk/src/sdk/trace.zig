@@ -9,6 +9,7 @@ pub const SpanExporter = @import("trace/span_exporter.zig").SpanExporter;
 pub const TracerProvider = @import("trace/provider.zig").TracerProvider;
 pub const Tracer = @import("trace/provider.zig").Tracer;
 pub const IDGenerator = @import("trace/id_generator.zig").IDGenerator;
+pub const Sampler = @import("trace/sampler.zig").Sampler;
 pub const RandomIDGenerator = @import("trace/id_generator.zig").RandomIDGenerator;
 
 pub const StdOutExporter = @import("trace/exporter.zig").StdOutExporter;
@@ -18,6 +19,7 @@ test {
     _ = @import("trace/exporter.zig");
     _ = @import("trace/id_generator.zig");
     _ = @import("trace/provider.zig");
+    _ = @import("trace/sampler.zig");
     _ = @import("trace/span_exporter.zig");
     _ = @import("trace/span_processor.zig");
 }

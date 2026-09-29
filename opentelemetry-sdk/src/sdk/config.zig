@@ -10,6 +10,8 @@ const std = @import("std");
 
 const EnvMap = std.process.Environ.Map;
 
+const Sampler = @import("trace/sampler.zig").Sampler;
+
 /// Log level for SDK internal logging
 pub const LogLevel = enum {
     trace,
@@ -57,9 +59,9 @@ pub const TracePropagator = enum {
 
 /// Trace-specific configuration
 pub const TraceConfig = struct {
-    /// Sampling strategy
+    /// Sampling strategy, built from OTEL_TRACES_SAMPLER
     sampler: Sampler,
-    /// Arguments for the sampler (e.g., sampling probability)
+    /// Raw OTEL_TRACES_SAMPLER_ARG value, already applied to `sampler`
     sampler_arg: ?[]const u8,
     /// Exporter type
     exporter: ExporterType,
@@ -77,31 +79,6 @@ pub const TraceConfig = struct {
     link_count_limit: u32,
     event_attribute_count_limit: u32,
     link_attribute_count_limit: u32,
-
-    pub const Sampler = enum {
-        always_on,
-        always_off,
-        traceidratio,
-        parentbased_always_on,
-        parentbased_always_off,
-        parentbased_traceidratio,
-        parentbased_jaeger_remote,
-        jaeger_remote,
-        xray,
-
-        fn fromString(s: []const u8) ?Sampler {
-            if (std.ascii.eqlIgnoreCase(s, "always_on")) return .always_on;
-            if (std.ascii.eqlIgnoreCase(s, "always_off")) return .always_off;
-            if (std.ascii.eqlIgnoreCase(s, "traceidratio")) return .traceidratio;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_always_on")) return .parentbased_always_on;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_always_off")) return .parentbased_always_off;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_traceidratio")) return .parentbased_traceidratio;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_jaeger_remote")) return .parentbased_jaeger_remote;
-            if (std.ascii.eqlIgnoreCase(s, "jaeger_remote")) return .jaeger_remote;
-            if (std.ascii.eqlIgnoreCase(s, "xray")) return .xray;
-            return null;
-        }
-    };
 
     pub const ExporterType = enum {
         otlp,
@@ -121,15 +98,21 @@ pub const TraceConfig = struct {
     };
 
     pub fn fromEnv(env_map: *const EnvMap, allocator: std.mem.Allocator) !TraceConfig {
+        const sampler_arg = if (env_map.get("OTEL_TRACES_SAMPLER_ARG")) |s|
+            try allocator.dupe(u8, s)
+        else
+            null;
+        errdefer if (sampler_arg) |arg| allocator.free(arg);
+
         return TraceConfig{
-            .sampler = if (env_map.get("OTEL_TRACES_SAMPLER")) |s|
-                Sampler.fromString(s) orelse .parentbased_always_on
+            .sampler = if (env_map.get("OTEL_TRACES_SAMPLER")) |name|
+                Sampler.fromString(name, sampler_arg) orelse blk: {
+                    std.log.warn("OTEL_TRACES_SAMPLER={s} is not a known sampler, using the default", .{name});
+                    break :blk Sampler.default();
+                }
             else
-                .parentbased_always_on,
-            .sampler_arg = if (env_map.get("OTEL_TRACES_SAMPLER_ARG")) |s|
-                try allocator.dupe(u8, s)
-            else
-                null,
+                Sampler.default(),
+            .sampler_arg = sampler_arg,
             .exporter = if (env_map.get("OTEL_TRACES_EXPORTER")) |s|
                 ExporterType.fromString(s) orelse .otlp
             else
@@ -572,7 +555,7 @@ test "TraceConfig.fromEnv - defaults" {
     var config = try TraceConfig.fromEnv(&env_map, allocator);
     defer config.deinit(allocator);
 
-    try std.testing.expectEqual(TraceConfig.Sampler.parentbased_always_on, config.sampler);
+    try std.testing.expectEqual(Sampler.default(), config.sampler);
     try std.testing.expectEqual(@as(?[]const u8, null), config.sampler_arg);
     try std.testing.expectEqual(TraceConfig.ExporterType.otlp, config.exporter);
     try std.testing.expectEqual(@as(u64, 5000), config.bsp_schedule_delay_ms);
@@ -596,7 +579,7 @@ test "TraceConfig.fromEnv - custom values" {
     var config = try TraceConfig.fromEnv(&env_map, allocator);
     defer config.deinit(allocator);
 
-    try std.testing.expectEqual(TraceConfig.Sampler.always_on, config.sampler);
+    try std.testing.expectEqual(Sampler.always_on, config.sampler);
     try std.testing.expectEqualStrings("0.5", config.sampler_arg.?);
     try std.testing.expectEqual(TraceConfig.ExporterType.jaeger, config.exporter);
     try std.testing.expectEqual(@as(u64, 1000), config.bsp_schedule_delay_ms);
@@ -697,7 +680,7 @@ test "Configuration.init - custom values" {
     try std.testing.expectEqual(false, config.sdk_disabled);
     try std.testing.expectEqualStrings("test-service", config.service_name.?);
     try std.testing.expectEqual(LogLevel.debug, config.log_level);
-    try std.testing.expectEqual(TraceConfig.Sampler.always_on, config.trace_config.sampler);
+    try std.testing.expectEqual(Sampler.always_on, config.trace_config.sampler);
 }
 
 test Configuration {
