@@ -154,7 +154,7 @@ int main(void) {
     otel_span_exporter_t* exporter = otel_span_exporter_stdout_create();
     if (!exporter) {
         fprintf(stderr, "Failed to create exporter\n");
-        otel_tracer_provider_shutdown(provider);
+        otel_tracer_provider_destroy(provider);
         return 1;
     }
     printf("✓ Created stdout SpanExporter\n");
@@ -163,7 +163,7 @@ int main(void) {
     otel_span_processor_t* processor = otel_simple_span_processor_create(exporter);
     if (!processor) {
         fprintf(stderr, "Failed to create processor\n");
-        otel_tracer_provider_shutdown(provider);
+        otel_tracer_provider_destroy(provider);
         return 1;
     }
     printf("✓ Created SimpleSpanProcessor\n");
@@ -172,7 +172,7 @@ int main(void) {
     otel_status_t status = otel_tracer_provider_add_span_processor(provider, processor);
     if (status != OTEL_STATUS_OK) {
         fprintf(stderr, "Failed to add processor: %d\n", status);
-        otel_tracer_provider_shutdown(provider);
+        otel_tracer_provider_destroy(provider);
         return 1;
     }
     printf("✓ Added processor to provider\n");
@@ -186,7 +186,7 @@ int main(void) {
     );
     if (!tracer) {
         fprintf(stderr, "Failed to get tracer\n");
-        otel_tracer_provider_shutdown(provider);
+        otel_tracer_provider_destroy(provider);
         return 1;
     }
     printf("✓ Got Tracer 'example-service'\n");
@@ -295,6 +295,9 @@ int main(void) {
     printf("\n--- Shutdown ---\n\n");
     otel_tracer_provider_shutdown(provider);
     printf("✓ TracerProvider shutdown complete\n");
+
+    otel_tracer_provider_destroy(provider);
+    printf("✓ TracerProvider destroyed\n");
 
     printf("\nDone!\n");
     return 0;

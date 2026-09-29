@@ -29,8 +29,9 @@
 //! // End the span
 //! otel_span_end(span);
 //!
-//! // Cleanup
+//! // Cleanup: shutdown stops recording, destroy frees the provider
 //! otel_tracer_provider_shutdown(provider);
+//! otel_tracer_provider_destroy(provider);
 //! ```
 
 const std = @import("std");
@@ -273,10 +274,26 @@ pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
     return @ptrCast(handle);
 }
 
-/// Shutdown the TracerProvider and release all resources.
+/// Shutdown the TracerProvider: flush and stop the span processors, and stop
+/// recording new spans.
 ///
-/// After calling this function, the provider handle becomes invalid.
+/// The handle stays valid so that spans started before the shutdown can still
+/// be ended; they are dropped instead of being exported. Call
+/// otel_tracer_provider_destroy() to release the provider.
 pub fn tracerProviderShutdown(provider: ?*OtelTracerProvider) callconv(.c) void {
+    if (provider) |p| {
+        const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
+        handle.provider.shutdown();
+    }
+}
+
+/// Destroy the TracerProvider and release all resources, shutting it down
+/// first if that has not happened yet.
+///
+/// After calling this function, the provider handle becomes invalid, and so do
+/// the tracers obtained from it. Every span must have been ended before this
+/// is called, since an unended span still points back to its tracer.
+pub fn tracerProviderDestroy(provider: ?*OtelTracerProvider) callconv(.c) void {
     if (provider) |p| {
         const handle: *TracerProviderHandle = @ptrCast(@alignCast(p));
         handle.provider.deinit();
@@ -426,8 +443,9 @@ pub fn tracerIsEnabled(tracer: ?*OtelTracer) callconv(.c) bool {
 /// End a span.
 ///
 /// After calling this function, the span handle becomes invalid.
-/// NOTE: All spans must be ended before the provider is shut down, since a
-/// span notifies the tracer that started it.
+/// NOTE: All spans must be ended before the provider is destroyed, since a
+/// span notifies the tracer that started it. Ending a span after the provider
+/// was shut down is safe, but the span is not exported.
 pub fn spanEnd(span: ?*OtelSpan) callconv(.c) void {
     if (span) |s| {
         const wrapper: *SpanWrapper = @ptrCast(@alignCast(s));
@@ -784,6 +802,7 @@ comptime {
     // TracerProvider exports
     @export(&tracerProviderCreate, .{ .name = "otel_tracer_provider_create" });
     @export(&tracerProviderShutdown, .{ .name = "otel_tracer_provider_shutdown" });
+    @export(&tracerProviderDestroy, .{ .name = "otel_tracer_provider_destroy" });
     @export(&tracerProviderGetTracer, .{ .name = "otel_tracer_provider_get_tracer" });
     @export(&tracerProviderAddSpanProcessor, .{ .name = "otel_tracer_provider_add_span_processor" });
     @export(&tracerProviderForceFlush, .{ .name = "otel_tracer_provider_force_flush" });
@@ -824,13 +843,13 @@ comptime {
 test "trace C API - create tracer provider" {
     const provider = tracerProviderCreate();
     try std.testing.expect(provider != null);
-    defer tracerProviderShutdown(provider);
+    defer tracerProviderDestroy(provider);
 }
 
 test "trace C API - get tracer" {
     const provider = tracerProviderCreate();
     try std.testing.expect(provider != null);
-    defer tracerProviderShutdown(provider);
+    defer tracerProviderDestroy(provider);
 
     const tracer = tracerProviderGetTracer(provider, "test-tracer", "1.0.0", null);
     try std.testing.expect(tracer != null);
@@ -841,7 +860,7 @@ test "trace C API - get tracer" {
 test "trace C API - start and end span" {
     const provider = tracerProviderCreate();
     try std.testing.expect(provider != null);
-    defer tracerProviderShutdown(provider);
+    defer tracerProviderDestroy(provider);
 
     const tracer = tracerProviderGetTracer(provider, "test-tracer", null, null);
     try std.testing.expect(tracer != null);
@@ -868,7 +887,7 @@ test "trace C API - start and end span" {
 test "trace C API - span with options" {
     const provider = tracerProviderCreate();
     try std.testing.expect(provider != null);
-    defer tracerProviderShutdown(provider);
+    defer tracerProviderDestroy(provider);
 
     const tracer = tracerProviderGetTracer(provider, "test-tracer", null, null);
     try std.testing.expect(tracer != null);
@@ -887,7 +906,7 @@ test "trace C API - span with options" {
 test "trace C API - get trace and span IDs" {
     const provider = tracerProviderCreate();
     try std.testing.expect(provider != null);
-    defer tracerProviderShutdown(provider);
+    defer tracerProviderDestroy(provider);
 
     const tracer = tracerProviderGetTracer(provider, "test-tracer", null, null);
     try std.testing.expect(tracer != null);
@@ -905,4 +924,20 @@ test "trace C API - get trace and span IDs" {
     // Verify the IDs are valid hex strings (not all zeros typically)
     try std.testing.expect(trace_id_buf[0] != 0);
     try std.testing.expect(span_id_buf[0] != 0);
+}
+
+test "trace C API - span ended after shutdown, before destroy" {
+    const provider = tracerProviderCreate();
+    try std.testing.expect(provider != null);
+    defer tracerProviderDestroy(provider);
+
+    const tracer = tracerProviderGetTracer(provider, "test-tracer", null, null);
+    try std.testing.expect(tracer != null);
+
+    const span = tracerStartSpan(tracer, "test-span", null);
+    try std.testing.expect(span != null);
+
+    // The provider outlives its shutdown, so the span can still end safely
+    tracerProviderShutdown(provider);
+    spanEnd(span);
 }
