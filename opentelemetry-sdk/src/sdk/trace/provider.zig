@@ -217,10 +217,14 @@ pub const TracerProvider = struct {
 
     /// Internal method called by SDKTracer when a span starts
     pub fn onSpanStart(self: *Self, span: *trace_api.Span, parent_context: context.Context) void {
-        if (self.sdk_disabled or self.is_shutdown.load(.acquire)) return;
+        if (self.sdk_disabled) return;
 
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+
+        // shutdown() raises the flag before taking the mutex, so re-reading it
+        // here puts this call entirely before or after the processor shutdown
+        if (self.is_shutdown.load(.acquire)) return;
 
         for (self.processors.items) |processor| {
             processor.onStart(span, parent_context);
@@ -229,13 +233,21 @@ pub const TracerProvider = struct {
 
     /// Internal method called by SDKTracer when a span ends
     pub fn onSpanEnd(self: *Self, span: trace_api.Span) void {
-        if (self.sdk_disabled or self.is_shutdown.load(.acquire)) return;
+        if (self.sdk_disabled) return;
 
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
+        // See onSpanStart: the flag is re-read under the mutex on purpose
+        if (self.is_shutdown.load(.acquire)) return;
+
+        // Processors may retain the span they are handed, so the copy must not
+        // carry the back-pointer to a tracer that deinit() will free
+        var ended = span;
+        ended.tracer = null;
+
         for (self.processors.items) |processor| {
-            processor.onEnd(span);
+            processor.onEnd(ended);
         }
     }
 };
@@ -667,6 +679,8 @@ test "Span.end notifies the span processors" {
     try std.testing.expectEqual(@as(usize, 1), mock_processor.ended_spans.items.len);
     try std.testing.expectEqualStrings("test-span", mock_processor.ended_spans.items[0].name);
     try std.testing.expect(mock_processor.ended_spans.items[0].end_time_unix_nano > 0);
+    // A processor may outlive the tracer, so its copy must not point back at it
+    try std.testing.expectEqual(@as(?*trace_api.TracerImpl, null), mock_processor.ended_spans.items[0].tracer);
 
     // Ending an already ended span is a no-op
     span.end(null);
