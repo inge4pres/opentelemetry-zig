@@ -10,7 +10,7 @@
 //!
 //! Example usage:
 //! ```zig
-//! const propagator = @import("opentelemetry").baggage.propagator;
+//! const propagator = @import("opentelemetry-sdk").api.baggage.propagator;
 //!
 //! // HTTP Header propagation
 //! var headers = std.StringHashMap([]const u8).init(allocator);
@@ -23,51 +23,7 @@ const EnvMap = std.process.Environ.Map;
 const Baggage = @import("../baggage.zig").Baggage;
 const BaggageEntry = @import("../baggage.zig").BaggageEntry;
 const CommaSeparatedAssignmentIterator = @import("../../sdk/key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
-
-/// Generic interface for getting values from a carrier.
-///
-/// Implementations must provide methods to retrieve propagation data from
-/// carriers like HTTP headers or environment variables.
-pub fn TextMapGetter(comptime Carrier: type) type {
-    return struct {
-        /// Get a single value for a given key.
-        /// Returns null if the key doesn't exist.
-        /// Must be case-insensitive for HTTP carriers.
-        getFn: *const fn (carrier: *const Carrier, key: []const u8) ?[]const u8,
-
-        /// Get all keys available in the carrier.
-        /// Returns a slice of key names.
-        keysFn: *const fn (carrier: *const Carrier) []const []const u8,
-
-        const Self = @This();
-
-        pub fn get(self: Self, carrier: *const Carrier, key: []const u8) ?[]const u8 {
-            return self.getFn(carrier, key);
-        }
-
-        pub fn keys(self: Self, carrier: *const Carrier) []const []const u8 {
-            return self.keysFn(carrier);
-        }
-    };
-}
-
-/// Generic interface for setting values in a carrier.
-///
-/// Implementations must provide a method to inject propagation data into
-/// carriers like HTTP headers or environment variables.
-pub fn TextMapSetter(comptime Carrier: type) type {
-    return struct {
-        /// Set a key-value pair in the carrier.
-        /// Should preserve casing for the key.
-        setFn: *const fn (carrier: *Carrier, key: []const u8, value: []const u8) anyerror!void,
-
-        const Self = @This();
-
-        pub fn set(self: Self, carrier: *Carrier, key: []const u8, value: []const u8) !void {
-            return self.setFn(carrier, key, value);
-        }
-    };
-}
+const propagator = @import("../propagation.zig");
 
 /// W3C Baggage header name
 pub const baggage_header = "baggage";
@@ -136,7 +92,7 @@ pub fn inject(
     allocator: std.mem.Allocator,
     baggage: Baggage,
     carrier: anytype,
-    setter: TextMapSetter(@TypeOf(carrier.*)),
+    setter: propagator.TextMapSetter(@TypeOf(carrier.*)),
 ) !void {
     if (baggage.count() == 0) {
         return; // Nothing to inject
@@ -189,7 +145,7 @@ pub fn inject(
 pub fn extract(
     allocator: std.mem.Allocator,
     carrier: anytype,
-    getter: TextMapGetter(@TypeOf(carrier.*)),
+    getter: propagator.TextMapGetter(@TypeOf(carrier.*)),
 ) !?Baggage {
     const header_value = getter.get(carrier, baggage_header) orelse return null;
 
@@ -234,42 +190,15 @@ pub fn extract(
     return baggage;
 }
 
-// HTTP Header Carriers
+// Carriers (re-exported from the shared propagation module)
 
-/// StringHashMap-based HTTP header carrier getter
-pub fn HttpHeaderGetter(headers: *const std.StringHashMap([]const u8), key: []const u8) ?[]const u8 {
-    // Case-insensitive lookup
-    var it = headers.iterator();
-    while (it.next()) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, key)) {
-            return entry.value_ptr.*;
-        }
-    }
-    return null;
-}
-
-/// Get all keys from HTTP headers (for StringHashMap carrier)
-pub fn HttpHeaderKeys(headers: *const std.StringHashMap([]const u8)) []const []const u8 {
-    _ = headers;
-    // Return empty slice - keys() method not needed for basic propagation
-    return &[_][]const u8{};
-}
-
-/// StringHashMap-based HTTP header carrier setter
-pub fn HttpHeaderSetter(headers: *std.StringHashMap([]const u8), key: []const u8, value: []const u8) !void {
-    try headers.put(key, value);
-}
-
-/// Create a TextMapGetter for StringHashMap-based HTTP headers
-pub const HttpGetter = TextMapGetter(std.StringHashMap([]const u8)){
-    .getFn = HttpHeaderGetter,
-    .keysFn = HttpHeaderKeys,
-};
-
-/// Create a TextMapSetter for StringHashMap-based HTTP headers
-pub const HttpSetter = TextMapSetter(std.StringHashMap([]const u8)){
-    .setFn = HttpHeaderSetter,
-};
+pub const TextMapGetter = propagator.TextMapGetter;
+pub const TextMapSetter = propagator.TextMapSetter;
+pub const HttpHeaderGetter = propagator.HttpHeaderGetter;
+pub const HttpHeaderKeys = propagator.HttpHeaderKeys;
+pub const HttpHeaderSetter = propagator.HttpHeaderSetter;
+pub const HttpGetter = propagator.HttpGetter;
+pub const HttpSetter = propagator.HttpSetter;
 
 // Environment Variable Carriers
 
@@ -291,13 +220,13 @@ pub fn EnvironmentSetter(env_map: *EnvMap, key: []const u8, value: []const u8) !
 }
 
 /// Create a TextMapGetter for environment variables
-pub const EnvGetter = TextMapGetter(EnvMap){
+pub const EnvGetter = propagator.TextMapGetter(EnvMap){
     .getFn = EnvironmentGetter,
     .keysFn = EnvironmentKeys,
 };
 
 /// Create a TextMapSetter for environment variables
-pub const EnvSetter = TextMapSetter(EnvMap){
+pub const EnvSetter = propagator.TextMapSetter(EnvMap){
     .setFn = EnvironmentSetter,
 };
 

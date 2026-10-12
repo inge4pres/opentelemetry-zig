@@ -378,7 +378,12 @@ pub const BatchingProcessor = struct {
     }
 
     fn cloneSpan(allocator: std.mem.Allocator, span: trace.Span) !trace.Span {
-        var result = trace.Span.init(allocator, span.span_context, span.name, span.kind, span.scope);
+        // The queued copy may outlive the original span, so it owns its TraceState
+        var span_context = span.span_context;
+        span_context.trace_state = try span.span_context.trace_state.clone(allocator);
+
+        var result = trace.Span.init(allocator, span_context, span.name, span.kind, span.scope);
+        result.owns_trace_state = true;
         errdefer result.deinit();
 
         result.start_time_unix_nano = span.start_time_unix_nano;
@@ -633,4 +638,30 @@ test "BatchingProcessor basic functionality" {
     for (mock_exporter.exported_spans.items, 0..) |span, i| {
         try std.testing.expectEqual(@as(u8, @intCast(i + 1)), span.parent_span_id.?.value[0]);
     }
+}
+
+test "BatchingProcessor queued span owns its TraceState" {
+    const allocator = std.testing.allocator;
+
+    var empty = trace.TraceState.init(allocator);
+    defer empty.deinit();
+    var trace_state = try empty.insert(allocator, "rojo", "00f067aa0ba902b7");
+
+    const span_context = trace.SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace.TraceFlags.sampled(),
+        trace_state,
+        false,
+    );
+    var span = trace.Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+
+    var queued = try BatchingProcessor.cloneSpan(allocator, span);
+    defer queued.deinit();
+
+    // Release the original span and its TraceState before the queued copy is read
+    span.deinit();
+    trace_state.deinit();
+
+    try std.testing.expectEqualStrings("00f067aa0ba902b7", queued.span_context.trace_state.get("rojo").?);
 }

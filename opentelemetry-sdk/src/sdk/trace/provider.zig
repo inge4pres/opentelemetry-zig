@@ -302,6 +302,8 @@ pub const Tracer = struct {
                 if (parent_sc.isValid()) parent_span_context = parent_sc;
             }
         }
+        // The deserialized TraceState is only used to seed the span's own copy
+        defer if (parent_span_context) |*parent_sc| parent_sc.trace_state.deinit();
 
         // Determine trace ID based on parent
         if (parent_span_context) |parent_sc| {
@@ -313,13 +315,13 @@ pub const Tracer = struct {
             span_id = ids.span_id;
         }
 
-        // Create trace state - inherit from parent if available
-        var trace_state: trace_api.TraceState = undefined;
-        if (parent_span_context) |parent_sc| {
-            trace_state = parent_sc.trace_state;
-        } else {
-            trace_state = trace_api.TraceState.init(allocator);
-        }
+        // Create trace state - inherit from parent if available. The span owns
+        // a copy, so it outlives the parent context it was extracted from.
+        // Nothing can fail between here and handing it to the span.
+        const trace_state = if (parent_span_context) |parent_sc|
+            try parent_sc.trace_state.clone(allocator)
+        else
+            trace_api.TraceState.init(allocator);
 
         const decision = self.provider.sampler.shouldSample(.{
             .parent = parent_span_context,
@@ -348,6 +350,8 @@ pub const Tracer = struct {
 
         // Create the span with instrumentation scope
         var span = trace_api.Span.init(allocator, span_context, span_name, options.kind, self.scope);
+        span.owns_trace_state = true;
+        errdefer span.deinit();
         span.parent_span_id = if (parent_span_context) |parent_sc|
             (if (parent_sc.span_id.isValid()) parent_sc.span_id else null)
         else

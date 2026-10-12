@@ -19,6 +19,7 @@ pub const Event = @import("trace/span.zig").Span.Event;
 pub const Code = @import("trace/code.zig").Code;
 pub const Link = @import("trace/span.zig").Span.Link;
 pub const TraceFlags = @import("trace/trace_flags.zig").TraceFlags;
+pub const propagator = @import("trace/propagator.zig");
 
 /// Time-related data types
 /// Timestamp represents time elapsed since the Unix epoch in nanoseconds.
@@ -275,6 +276,7 @@ test {
     _ = @import("trace/code.zig");
     _ = @import("trace/config.zig");
     _ = @import("trace/link.zig");
+    _ = @import("trace/propagator.zig");
     _ = @import("trace/span.zig");
     _ = @import("trace/tracer.zig");
     _ = @import("trace/trace_flags.zig");

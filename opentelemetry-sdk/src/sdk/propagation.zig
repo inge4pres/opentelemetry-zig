@@ -12,6 +12,12 @@ const Configuration = @import("config.zig").Configuration;
 const TracePropagator = @import("config.zig").TracePropagator;
 const baggage_propagator = @import("../api/baggage/propagator.zig");
 const Baggage = @import("../api/baggage.zig").Baggage;
+const trace_propagator = @import("../api/trace/propagator.zig");
+const SpanContext = @import("../api/trace.zig").SpanContext;
+const propagation = @import("../api/propagation.zig");
+const trace_api = @import("../api/trace.zig");
+const TracerProvider = @import("trace/provider.zig").TracerProvider;
+const RandomIDGenerator = @import("trace/id_generator.zig").RandomIDGenerator;
 
 // Note: Generic TextMapPropagator interface is challenging in Zig due to
 // limitations with anytype in function pointers. Instead, we use direct
@@ -21,8 +27,8 @@ const Baggage = @import("../api/baggage.zig").Baggage;
 pub const PropagatorRegistry = struct {
     allocator: std.mem.Allocator,
     baggage_enabled: bool,
+    tracecontext_enabled: bool,
     // Future: Add other propagator types here
-    // tracecontext_enabled: bool,
     // b3_enabled: bool,
     // etc.
 
@@ -32,15 +38,13 @@ pub const PropagatorRegistry = struct {
     /// Copies the enabled flags; does not retain the configuration.
     pub fn init(allocator: std.mem.Allocator, config: *const Configuration) !Self {
         var baggage_enabled = false;
+        var tracecontext_enabled = false;
 
         // Check which propagators are configured
         for (config.trace_propagators) |prop| {
             switch (prop) {
                 .baggage => baggage_enabled = true,
-                .tracecontext => {
-                    // TODO: Enable when W3C Trace Context propagator is implemented
-                    std.log.warn("W3C Trace Context propagator not yet implemented", .{});
-                },
+                .tracecontext => tracecontext_enabled = true,
                 .b3, .b3multi => {
                     // TODO: Enable when B3 propagator is implemented
                     std.log.warn("B3 propagator not yet implemented", .{});
@@ -64,6 +68,7 @@ pub const PropagatorRegistry = struct {
         return Self{
             .allocator = allocator,
             .baggage_enabled = baggage_enabled,
+            .tracecontext_enabled = tracecontext_enabled,
         };
     }
 
@@ -132,20 +137,56 @@ pub const CompositePropagator = struct {
         return null;
     }
 
+    /// Inject a SpanContext into HTTP headers carrier as `traceparent` and `tracestate`
+    ///
+    /// The injected header values are allocated with the propagator's allocator
+    /// and owned by the carrier.
+    pub fn injectTraceContext(
+        self: *Self,
+        span_context: SpanContext,
+        carrier: *std.StringHashMap([]const u8),
+    ) !void {
+        if (self.registry.tracecontext_enabled) {
+            try trace_propagator.inject(
+                self.allocator,
+                span_context,
+                carrier,
+                propagation.HttpSetter,
+            );
+        }
+    }
+
+    /// Extract a remote SpanContext from HTTP headers carrier
+    ///
+    /// Returns null when trace context propagation is disabled or the carrier
+    /// has no valid `traceparent`. Release the returned TraceState with
+    /// `trace_state.deinit()`.
+    pub fn extractTraceContext(
+        self: *Self,
+        carrier: *const std.StringHashMap([]const u8),
+    ) !?SpanContext {
+        if (self.registry.tracecontext_enabled) {
+            return try trace_propagator.extract(
+                self.allocator,
+                carrier,
+                propagation.HttpGetter,
+            );
+        }
+        return null;
+    }
+
     /// Get the list of all fields that might be read or written by this propagator
     pub fn fields(self: *Self) ![]const []const u8 {
         var field_list: std.ArrayList([]const u8) = .empty;
         errdefer field_list.deinit(self.allocator);
 
+        if (self.registry.tracecontext_enabled) {
+            try field_list.appendSlice(self.allocator, trace_propagator.fields());
+        }
+
         if (self.registry.baggage_enabled) {
             try field_list.append(self.allocator, baggage_propagator.baggage_header);
         }
-
-        // TODO: Add fields for other propagators when implemented
-        // if (self.registry.tracecontext_enabled) {
-        //     try field_list.append(self.allocator, "traceparent");
-        //     try field_list.append(self.allocator, "tracestate");
-        // }
 
         return try field_list.toOwnedSlice(self.allocator);
     }
@@ -195,6 +236,7 @@ test "PropagatorRegistry initialization with baggage" {
     defer registry.deinit();
 
     try std.testing.expect(registry.baggage_enabled);
+    try std.testing.expect(!registry.tracecontext_enabled);
 }
 
 test "PropagatorRegistry initialization with multiple propagators" {
@@ -216,7 +258,7 @@ test "PropagatorRegistry initialization with multiple propagators" {
     defer registry.deinit();
 
     try std.testing.expect(registry.baggage_enabled);
-    // tracecontext will be false until implemented
+    try std.testing.expect(registry.tracecontext_enabled);
 }
 
 test "PropagatorRegistry with none" {
@@ -238,6 +280,7 @@ test "PropagatorRegistry with none" {
     defer registry.deinit();
 
     try std.testing.expect(!registry.baggage_enabled);
+    try std.testing.expect(!registry.tracecontext_enabled);
 }
 
 test "CompositePropagator inject and extract baggage" {
@@ -383,4 +426,159 @@ test "createGlobalPropagator installs a Configuration when none exists" {
     try std.testing.expect(Configuration.get() != null);
 
     if (before == null) Configuration.deinitGlobal();
+}
+
+fn testConfig(allocator: std.mem.Allocator, propagators: []const TracePropagator) Configuration {
+    return Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = propagators,
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+}
+
+fn freeInjectedHeaders(allocator: std.mem.Allocator, headers: *std.StringHashMap([]const u8)) void {
+    var value_it = headers.valueIterator();
+    while (value_it.next()) |value| {
+        allocator.free(value.*);
+    }
+    headers.deinit();
+}
+
+test "CompositePropagator inject and extract trace context" {
+    const allocator = std.testing.allocator;
+
+    var config = testConfig(allocator, &[_]TracePropagator{.tracecontext});
+    var propagator = try CompositePropagator.initFromConfig(allocator, &config);
+    defer propagator.deinit();
+
+    var trace_state = trace_api.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace_api.SpanContext.init(
+        try trace_api.TraceID.fromHex("0af7651916cd43dd8448eb211c80319c"),
+        try trace_api.SpanID.fromHex("b7ad6b7169203331"),
+        trace_api.TraceFlags.sampled(),
+        trace_state,
+        false,
+    );
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer freeInjectedHeaders(allocator, &headers);
+
+    try propagator.injectTraceContext(span_context, &headers);
+    try std.testing.expectEqualStrings(
+        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        headers.get("traceparent").?,
+    );
+
+    var extracted = (try propagator.extractTraceContext(&headers)).?;
+    defer extracted.trace_state.deinit();
+
+    try std.testing.expectEqualSlices(u8, &span_context.trace_id.value, &extracted.trace_id.value);
+    try std.testing.expectEqualSlices(u8, &span_context.span_id.value, &extracted.span_id.value);
+    try std.testing.expect(extracted.isRemote());
+}
+
+test "CompositePropagator with trace context disabled" {
+    const allocator = std.testing.allocator;
+
+    var config = testConfig(allocator, &[_]TracePropagator{.baggage});
+    var propagator = try CompositePropagator.initFromConfig(allocator, &config);
+    defer propagator.deinit();
+
+    var trace_state = trace_api.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace_api.SpanContext.init(
+        try trace_api.TraceID.fromHex("0af7651916cd43dd8448eb211c80319c"),
+        try trace_api.SpanID.fromHex("b7ad6b7169203331"),
+        trace_api.TraceFlags.sampled(),
+        trace_state,
+        false,
+    );
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer freeInjectedHeaders(allocator, &headers);
+
+    try propagator.injectTraceContext(span_context, &headers);
+    try std.testing.expectEqual(@as(u32, 0), headers.count());
+
+    try headers.put("traceparent", try allocator.dupe(u8, "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"));
+    try std.testing.expect(try propagator.extractTraceContext(&headers) == null);
+}
+
+test "CompositePropagator fields list with trace context and baggage" {
+    const allocator = std.testing.allocator;
+
+    var config = testConfig(allocator, &[_]TracePropagator{ .tracecontext, .baggage });
+    var propagator = try CompositePropagator.initFromConfig(allocator, &config);
+    defer propagator.deinit();
+
+    const field_list = try propagator.fields();
+    defer allocator.free(field_list);
+
+    try std.testing.expectEqual(@as(usize, 3), field_list.len);
+    try std.testing.expectEqualStrings("traceparent", field_list[0]);
+    try std.testing.expectEqualStrings("tracestate", field_list[1]);
+    try std.testing.expectEqualStrings("baggage", field_list[2]);
+}
+
+test "extracted trace context parents a server span that is injected downstream" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var config = testConfig(allocator, &[_]TracePropagator{.tracecontext});
+    var propagator = try CompositePropagator.initFromConfig(allocator, &config);
+    defer propagator.deinit();
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    var provider = try TracerProvider.init(allocator, io, .{ .Random = RandomIDGenerator.init(default_prng.random()) });
+    defer provider.shutdown();
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+
+    // Incoming request from an upstream service
+    var incoming = std.StringHashMap([]const u8).init(allocator);
+    defer incoming.deinit();
+    try incoming.put("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+    try incoming.put("tracestate", "rojo=00f067aa0ba902b7");
+
+    var span = blk: {
+        var remote = (try propagator.extractTraceContext(&incoming)).?;
+        defer remote.trace_state.deinit();
+
+        var parent_context = try trace_api.insertSpanContext(allocator, remote);
+        defer {
+            trace_api.freeSerializedSpanContext(allocator, parent_context);
+            parent_context.deinit();
+        }
+
+        break :blk try tracer.startSpan(allocator, "GET /api", .{ .kind = .Server, .parent_context = parent_context });
+    };
+    // The remote SpanContext and parent context are released; the span keeps its own TraceState
+    defer span.deinit();
+
+    const remote_trace_id = try trace_api.TraceID.fromHex("0af7651916cd43dd8448eb211c80319c");
+    const remote_span_id = try trace_api.SpanID.fromHex("b7ad6b7169203331");
+
+    try std.testing.expectEqualSlices(u8, &remote_trace_id.value, &span.span_context.trace_id.value);
+    try std.testing.expectEqualSlices(u8, &remote_span_id.value, &span.parent_span_id.?.value);
+    try std.testing.expect(span.span_context.trace_flags.isSampled());
+
+    // Outgoing request to a downstream service carries the same trace, with the server span as parent
+    var outgoing = std.StringHashMap([]const u8).init(allocator);
+    defer freeInjectedHeaders(allocator, &outgoing);
+    try propagator.injectTraceContext(span.getContext(), &outgoing);
+
+    var span_id_buf: [16]u8 = undefined;
+    const expected = try std.fmt.allocPrint(allocator, "00-0af7651916cd43dd8448eb211c80319c-{s}-01", .{span.span_context.span_id.toHex(&span_id_buf)});
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, outgoing.get("traceparent").?);
+    try std.testing.expectEqualStrings("rojo=00f067aa0ba902b7", outgoing.get("tracestate").?);
+
+    // Ended spans are non-recording, and must still release their TraceState
+    span.end(null);
 }

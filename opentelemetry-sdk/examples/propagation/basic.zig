@@ -27,7 +27,8 @@ pub fn main(init: std.process.Init) !void {
     defer sdk.config.deinitGlobal();
 
     std.debug.print("Propagator initialized from configuration\n", .{});
-    std.debug.print("Baggage propagation enabled: {}\n\n", .{propagator.registry.baggage_enabled});
+    std.debug.print("Baggage propagation enabled: {}\n", .{propagator.registry.baggage_enabled});
+    std.debug.print("Trace context propagation enabled: {}\n\n", .{propagator.registry.tracecontext_enabled});
 
     // Create some baggage to propagate
     var baggage = sdk.api.baggage.Baggage.init();

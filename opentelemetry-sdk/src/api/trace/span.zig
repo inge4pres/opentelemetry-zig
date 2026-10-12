@@ -63,9 +63,14 @@ pub const SpanContext = struct {
 };
 
 /// TraceState carries tracing-system-specific trace identification data
+///
+/// Keys and values are borrowed by default. A TraceState returned by `clone`
+/// owns them, and `deinit` releases them together with the entries.
 pub const TraceState = struct {
     entries: StringArrayHashMap([]const u8),
     allocator: std.mem.Allocator,
+    /// Backing storage for keys and values of a cloned TraceState
+    owned_strings: []u8 = &.{},
 
     const Self = @This();
 
@@ -78,6 +83,45 @@ pub const TraceState = struct {
 
     pub fn deinit(self: *Self) void {
         self.entries.deinit(self.allocator);
+        self.allocator.free(self.owned_strings);
+    }
+
+    /// Deep copy the TraceState. The copy owns its keys and values, so it stays
+    /// valid after the original and the strings it borrows are released.
+    ///
+    /// TraceStates returned by insert, update and delete on the copy borrow its
+    /// strings, so the copy must outlive them.
+    pub fn clone(self: Self, allocator: std.mem.Allocator) !Self {
+        var strings_len: usize = 0;
+        for (self.entries.keys(), self.entries.values()) |key, value| {
+            strings_len += key.len + value.len;
+        }
+
+        const strings = try allocator.alloc(u8, strings_len);
+        errdefer allocator.free(strings);
+
+        var entries: StringArrayHashMap([]const u8) = .empty;
+        errdefer entries.deinit(allocator);
+        try entries.ensureTotalCapacity(allocator, self.entries.count());
+
+        var offset: usize = 0;
+        for (self.entries.keys(), self.entries.values()) |key, value| {
+            const owned_key = strings[offset..][0..key.len];
+            @memcpy(owned_key, key);
+            offset += key.len;
+
+            const owned_value = strings[offset..][0..value.len];
+            @memcpy(owned_value, value);
+            offset += value.len;
+
+            entries.putAssumeCapacity(owned_key, owned_value);
+        }
+
+        return Self{
+            .entries = entries,
+            .allocator = allocator,
+            .owned_strings = strings,
+        };
     }
 
     /// Get value for a given key
@@ -211,6 +255,9 @@ pub const Span = struct {
     allocator: std.mem.Allocator,
     scope: InstrumentationScope,
     resource: ?[]const attribute.Attribute = null,
+    /// True when `span_context.trace_state` was allocated for this span, e.g. by
+    /// the SDK tracer, and must be released by `deinit`
+    owns_trace_state: bool = false,
     /// The Tracer that started this Span, set by the SDK so that end() can
     /// notify it. Null for spans created through the API alone, and for the
     /// copies handed over to span processors.
@@ -304,6 +351,13 @@ pub const Span = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // The TraceState has its own allocator, and ended spans are non-recording,
+        // so release it before the early return below
+        if (self.owns_trace_state) {
+            self.span_context.trace_state.deinit();
+            self.owns_trace_state = false;
+        }
+
         // Don't try to deinit if this is a non-recording span with a dummy allocator
         if (!self.is_recording and self.attributes.count() == 0 and self.events.items.len == 0 and self.links.items.len == 0) {
             return;
@@ -536,6 +590,65 @@ test "TraceState operations" {
     defer new_state.entries.deinit(allocator);
 
     try std.testing.expectEqualStrings("value1", new_state.get("key1").?);
+}
+
+test "TraceState clone owns its strings" {
+    const allocator = std.testing.allocator;
+
+    // Strings that are released before the clone is read
+    const key = try allocator.dupe(u8, "rojo");
+    const value = try allocator.dupe(u8, "00f067aa0ba902b7");
+
+    var empty = TraceState.init(allocator);
+    defer empty.deinit();
+    var original = try empty.insert(allocator, key, value);
+
+    var copy = try original.clone(allocator);
+    defer copy.deinit();
+
+    original.deinit();
+    allocator.free(key);
+    allocator.free(value);
+
+    try std.testing.expectEqual(@as(usize, 1), copy.entries.count());
+    try std.testing.expectEqualStrings("00f067aa0ba902b7", copy.get("rojo").?);
+}
+
+test "TraceState clone of empty state" {
+    const allocator = std.testing.allocator;
+
+    var empty = TraceState.init(allocator);
+    defer empty.deinit();
+
+    var copy = try empty.clone(allocator);
+    defer copy.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), copy.entries.count());
+}
+
+test "Span releases owned TraceState after end" {
+    const allocator = std.testing.allocator;
+
+    var empty = TraceState.init(allocator);
+    defer empty.deinit();
+    var borrowed = try empty.insert(allocator, "rojo", "00f067aa0ba902b7");
+    defer borrowed.deinit();
+
+    const span_context = SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace.TraceFlags.sampled(),
+        try borrowed.clone(allocator),
+        false,
+    );
+
+    var span = Span.init(allocator, span_context, "test-span", .Server, .{ .name = "test" });
+    span.owns_trace_state = true;
+
+    // Ended spans are non-recording; the testing allocator reports a leak if
+    // deinit skips the TraceState
+    span.end(null);
+    span.deinit();
 }
 
 test "Span with InstrumentationScope" {
