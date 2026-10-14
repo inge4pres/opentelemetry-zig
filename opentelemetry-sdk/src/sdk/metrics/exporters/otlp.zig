@@ -273,6 +273,8 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
             .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(clock.nanoTimestamp()),
             .count = dp.value.count,
             .sum = dp.value.sum,
+            .min = dp.value.min,
+            .max = dp.value.max,
             .bucket_counts = std.ArrayList(u64).fromOwnedSlice(try allocator.dupe(u64, dp.value.bucket_counts)),
             .explicit_bounds = std.ArrayList(f64).fromOwnedSlice(bounds),
             // TODO support exemplars
@@ -382,6 +384,8 @@ test "exporters/otlp conversion for HistogramDataPoint" {
         data_points[i] = try DataPoint(HistogramPoint).new(allocator, HistogramPoint{
             .count = i,
             .sum = @as(f64, @floatFromInt(i * 2)),
+            .min = 1.0,
+            .max = @as(f64, @floatFromInt(i)),
             // The bucket counts are cloned as they are set independently for each data point,
             .bucket_counts = try allocator.dupe(u64, &bucket_counts),
             // while the explicit bounds are referenced from the instrument, as they are constant.
@@ -408,6 +412,8 @@ test "exporters/otlp conversion for HistogramDataPoint" {
 
     try std.testing.expectEqual(99, metric.data.?.histogram.data_points.items[99].count);
     try std.testing.expectEqual(198, metric.data.?.histogram.data_points.items[99].sum);
+    try std.testing.expectEqual(1.0, metric.data.?.histogram.data_points.items[99].min);
+    try std.testing.expectEqual(99.0, metric.data.?.histogram.data_points.items[99].max);
 
     const attrs = Attributes.with(data_points[0].attributes);
 

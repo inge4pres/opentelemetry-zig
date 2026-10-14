@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
 fn explicitBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: *MeterProvider) !void {
     // Create a view for histogram instruments with explicit bucket aggregation
     const histogram_view = view.View{
-        .instrument_selector = .{ .kind = .Histogram },
+        .instrument_selector = .{ .kind = .Histogram, .name = "http_request_duration_seconds" },
         .aggregation = .{ .ExplicitBucketHistogram = .{
             .buckets = &.{ 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0 },
         } },
