@@ -273,12 +273,16 @@ pub const BatchingLogRecordProcessor = struct {
     fn shutdown(ctx: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        // Signal shutdown
+        // Apply the mutex, so a wake cannot arrive between exportLoop's shutdown check and wake.reset().
+        self.mutex.lockUncancelable(self.io);
         self.should_shutdown.store(true, .release);
+        self.wake.set(self.io);
+        self.mutex.unlock(self.io);
 
-        // Cancel the background task (unblocks its wait and waits for it to finish)
+        // Wait instead of cancelling: a pending cancellation is delivered downstream
+        // inside the final export, dropping it.
         if (self.export_task) |*task| {
-            task.cancel(self.io);
+            task.await(self.io);
             self.export_task = null;
         }
     }
@@ -638,6 +642,59 @@ test "BatchingLogRecordProcessor basic functionality" {
     // Verify log records were exported (at least one batch)
     const export_count = mock_exporter.export_count.load(.monotonic);
     try std.testing.expect(export_count > 0);
+}
+
+test "BatchingLogRecordProcessor shutdown exports pending records" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const record_count = 6;
+
+    // The exporter hits a cancelation point, so a canceled export task loses the batch.
+    const CountingExporter = struct {
+        io: std.Io,
+        exported: usize = 0,
+
+        pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            try std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(1), .awake);
+            self.exported += log_records.len;
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var counting = CountingExporter{ .io = io };
+    var processor = try BatchingLogRecordProcessor.init(allocator, io, counting.asLogRecordExporter(), .{
+        // Keep the background loop asleep so shutdown is what drives the export.
+        .max_export_batch_size = record_count + 1,
+        .scheduled_delay_millis = 60_000,
+    });
+    defer processor.deinit();
+
+    const log_processor = processor.asLogRecordProcessor();
+    for (0..record_count) |_| {
+        var log_record: logs.ReadWriteLogRecord = .{
+            .scope = InstrumentationScope{ .name = "test-logger" },
+            .observed_timestamp = 0,
+            .body = .{ .string = "pending log message" },
+            .severity_number = 9,
+        };
+        defer log_record.deinit(allocator);
+        log_processor.onEmit(&log_record, context.Context.init());
+    }
+
+    try log_processor.shutdown();
+    try std.testing.expectEqual(@as(usize, record_count), counting.exported);
 }
 
 test "integration: multiple processors in pipeline" {

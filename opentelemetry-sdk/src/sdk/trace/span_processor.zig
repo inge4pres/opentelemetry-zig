@@ -271,12 +271,16 @@ pub const BatchingProcessor = struct {
     fn shutdown(ctx: *anyopaque) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
-        // Signal shutdown
+        // Apply the mutex, so a wake cannot arrive between exportLoop's shutdown check and wake.reset().
+        self.mutex.lockUncancelable(self.io);
         self.should_shutdown.store(true, .release);
+        self.wake.set(self.io);
+        self.mutex.unlock(self.io);
 
-        // Cancel the background task (unblocks its wait and waits for it to finish)
+        // Wait instead of cancelling: a pending cancellation is delivered downstream
+        // inside the final export, dropping it.
         if (self.export_task) |*task| {
-            task.cancel(self.io);
+            task.await(self.io);
             self.export_task = null;
         }
     }
@@ -544,6 +548,61 @@ test "BatchingProcessor bounds export with export_timeout_millis" {
     try std.testing.expect(stalling.canceled.load(.acquire));
     // The exporter would have blocked for 5s; the deadline is 100ms.
     try std.testing.expect(elapsed_ms < 2000);
+}
+
+test "BatchingProcessor shutdown exports pending spans" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const span_count = 6;
+
+    // The exporter has cancellation, so export task loses the batch.
+    const CountingExporter = struct {
+        io: std.Io,
+        exported: usize = 0,
+
+        pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            try std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(1), .awake);
+            self.exported += spans.len;
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asSpanExporter(self: *@This()) SpanExporter {
+            return SpanExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportSpansFn = exportSpans,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var counting = CountingExporter{ .io = io };
+    var processor = try BatchingProcessor.init(allocator, io, counting.asSpanExporter(), .{
+        // Keep the background loop asleep so shutdown is what drives the export.
+        .max_export_batch_size = span_count + 1,
+        .scheduled_delay_millis = 60_000,
+    });
+    defer processor.deinit();
+
+    const span_processor = processor.asSpanProcessor();
+
+    const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+    var trace_state = trace.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    for (0..span_count) |_| {
+        var test_span = trace.Span.init(allocator, span_context, "pending-span", .Internal, scope);
+        defer test_span.deinit();
+        span_processor.onEnd(test_span);
+    }
+
+    try span_processor.shutdown();
+    try std.testing.expectEqual(@as(usize, span_count), counting.exported);
 }
 
 test "BatchingProcessor basic functionality" {
