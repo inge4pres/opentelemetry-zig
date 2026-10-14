@@ -589,7 +589,7 @@ pub const AggregatedMetrics = struct {
         return allocator.dupe(DataPoint(T), deduped.values());
     }
 
-    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation_type: view.Aggregation) !?MeasurementsData {
+    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation_type: view.Aggregation, record_sum: bool) !?MeasurementsData {
         // If there are no data points, we can return early.
         if (data_points.isEmpty()) return null;
 
@@ -632,7 +632,7 @@ pub const AggregatedMetrics = struct {
                 .int => blk: {
                     const config = aggregation_type.ExplicitBucketHistogram;
                     const buckets = config.buckets;
-                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, buckets, config.record_min_max);
+                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, buckets, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
                         dp.timestamps = .{ .time_ns = current_time };
                     }
@@ -641,7 +641,7 @@ pub const AggregatedMetrics = struct {
                 .double => blk: {
                     const config = aggregation_type.ExplicitBucketHistogram;
                     const buckets = config.buckets;
-                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, buckets, config.record_min_max);
+                    const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, buckets, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
                         dp.timestamps = .{ .time_ns = current_time };
                     }
@@ -662,7 +662,7 @@ pub const AggregatedMetrics = struct {
                 .histogram => null,
                 .int => blk: {
                     const config = aggregation_type.ExponentialBucketHistogram;
-                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, config.max_scale, config.max_size, config.record_min_max);
+                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, config.max_scale, config.max_size, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
                         dp.timestamps = .{ .time_ns = current_time };
                     }
@@ -670,7 +670,7 @@ pub const AggregatedMetrics = struct {
                 },
                 .double => blk: {
                     const config = aggregation_type.ExponentialBucketHistogram;
-                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, config.max_scale, config.max_size, config.record_min_max);
+                    const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, config.max_scale, config.max_size, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
                         dp.timestamps = .{ .time_ns = current_time };
                     }
@@ -694,8 +694,9 @@ pub const AggregatedMetrics = struct {
     /// Fetch the aggreagted metrics from the meter.
     /// Each instrument is an entry of the slice.
     /// Caller owns the returned memory and it should be freed using the AggregatedMetrics allocator.
-    /// If aggregation_override is provided, it takes precedence over the view system.
-    pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, views: []const view.View, aggregation_override: ?view.AggregationSelector) ![]Measurements {
+    /// Matching views take precedence; default_aggregation applies to instruments no view matches,
+    /// falling back to the instrument kind default when null.
+    pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, views: []const view.View, agg_selector: ?view.AggregationSelector) ![]Measurements {
         meter.mx.lockUncancelable(meter.io);
         defer meter.mx.unlock(meter.io);
 
@@ -710,18 +711,25 @@ pub const AggregatedMetrics = struct {
 
         var iter = meter.instruments.valueIterator();
         while (iter.next()) |instr| {
-            // Determine aggregation: override takes precedence over view system
-            const aggregation_type = if (aggregation_override) |override_fn|
-                override_fn(instr.*.kind)
-            else
-                view.aggregationForViews(views, instr.*, &meter.scope);
+            const aggregation_type = view.aggregationForViews(
+                views,
+                instr.*,
+                &meter.scope,
+                agg_selector orelse view.DefaultAggregation,
+            );
 
             try aggregation_type.validate();
 
             // Get the data points from the instrument and reset their state,
             const data_points: MeasurementsData = try instr.*.getInstrumentsData(allocator);
 
-            const aggregated_data = try aggregate(allocator, data_points, aggregation_type);
+            // Histogram sum is not collected for instruments that can record negative values.
+            // See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation
+            const record_sum = switch (instr.*.kind) {
+                .Counter, .ObservableCounter, .Histogram => true,
+                .UpDownCounter, .ObservableUpDownCounter, .Gauge, .ObservableGauge => false,
+            };
+            const aggregated_data = try aggregate(allocator, data_points, aggregation_type, record_sum);
             // then fill the result with the aggregated data points
             // only if there are data points.
             if (aggregated_data) |agg| {
@@ -756,7 +764,7 @@ test "aggregated metrics deduplicated from meter without attributes" {
 
     const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
 
-    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum);
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum, true);
     defer switch (deduped.?) {
         inline else => |m| std.testing.allocator.free(m),
     };
@@ -788,7 +796,7 @@ test "aggregated metrics deduplicated from meter with attributes" {
 
     const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
 
-    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum);
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum, true);
     defer switch (deduped.?) {
         inline else => |m| {
             for (deduped.?.int) |*dp| {
@@ -879,6 +887,46 @@ test "fetch validates exponential histogram max_size" {
         try std.testing.expectEqual(1, arr[0].data.exponential_histogram.len);
         try std.testing.expectEqual(2, arr[0].data.exponential_histogram[0].value.count);
         try std.testing.expectEqual(3, arr[0].data.exponential_histogram[0].value.sum);
+    }
+}
+
+test "fetch records histogram sum only for instruments without negative values" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.shutdown();
+
+    try mp.addView(.{
+        .instrument_selector = .{ .name = "test-updown" },
+        .aggregation = .{ .ExplicitBucketHistogram = .{} },
+        .temporality = .Cumulative,
+    });
+
+    const meter = try mp.getMeter(.{ .name = "test" });
+    var histogram = try meter.createHistogram(i64, .{ .name = "test-histogram" });
+    try histogram.record(4, .{});
+    try histogram.record(6, .{});
+    var updown = try meter.createUpDownCounter(i64, .{ .name = "test-updown" });
+    try updown.add(4, .{});
+    try updown.add(-6, .{});
+
+    const result = try AggregatedMetrics.fetch(std.testing.allocator, meter, mp.views.items, null);
+    defer {
+        for (result) |m| {
+            var data = m;
+            data.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(result);
+    }
+
+    try std.testing.expectEqual(2, result.len);
+    for (result) |m| {
+        const dp = m.data.histogram[0].value;
+        try std.testing.expectEqual(2, dp.count);
+        switch (m.instrumentKind) {
+            .Histogram => try std.testing.expectEqual(10, dp.sum),
+            .UpDownCounter => try std.testing.expectEqual(null, dp.sum),
+            else => return error.UnexpectedInstrument,
+        }
     }
 }
 
@@ -1099,12 +1147,12 @@ test "view associated with meter provider" {
     try std.testing.expect(counter_instr != null);
 
     // The histogram should get the custom aggregation from the view
-    const hist_aggregation = view.aggregationForViews(mp.views.items, hist_instr.?, &meter.scope);
+    const hist_aggregation = view.aggregationForViews(mp.views.items, hist_instr.?, &meter.scope, view.DefaultAggregation);
     try std.testing.expectEqual(view.AggregationType.ExplicitBucketHistogram, hist_aggregation.getType());
     try std.testing.expectEqual(@as(usize, 3), hist_aggregation.ExplicitBucketHistogram.buckets.len);
 
     // The counter should get the default aggregation (no view matches)
-    const counter_aggregation = view.aggregationForViews(mp.views.items, counter_instr.?, &meter.scope);
+    const counter_aggregation = view.aggregationForViews(mp.views.items, counter_instr.?, &meter.scope, view.DefaultAggregation);
     try std.testing.expectEqual(view.AggregationType.Sum, counter_aggregation.getType());
 
     // Test temporality as well

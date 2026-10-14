@@ -36,6 +36,7 @@ pub fn aggregateExplicitBucketHistogram(
     data_points: []DataPoint(T),
     buckets: []const f64,
     record_min_max: bool,
+    record_sum: bool,
 ) ![]DataPoint(HistogramDataPoint) {
     if (data_points.len == 0) return &[_]DataPoint(HistogramDataPoint){};
 
@@ -91,15 +92,8 @@ pub fn aggregateExplicitBucketHistogram(
             else => unreachable,
         };
 
-        // addition will fail in (the unlikely) case of overflow
-        // sum
-        state_entry.sum = switch (T) {
-            // we don't set sum when the value can be negative
-            i16, i32, i64 => null,
-            u16, u32, u64, f32, f64 => if (state_entry.sum) |curr| curr + f64_val else f64_val,
-            else => unreachable,
-        };
-        // total count of observations
+        if (record_sum) state_entry.sum = (state_entry.sum orelse 0) + f64_val;
+        // total count of observations, addition will fail in (the unlikely) case of overflow
         state_entry.count = try std.math.add(u64, state_entry.count, 1);
         // min and max
         if (record_min_max) {
@@ -155,6 +149,7 @@ pub fn aggregateExponentialBucketHistogram(
     max_scale: i32,
     max_size: u32,
     record_min_max: bool,
+    record_sum: bool,
 ) ![]DataPoint(ExponentialHistogramDataPoint) {
     if (data_points.len == 0) return &[_]DataPoint(ExponentialHistogramDataPoint){};
 
@@ -192,7 +187,7 @@ pub fn aggregateExponentialBucketHistogram(
             else => unreachable,
         };
 
-        try result.value_ptr.addValue(allocator, f64_val, max_size, record_min_max, T);
+        try result.value_ptr.addValue(allocator, f64_val, max_size, record_min_max, record_sum);
     }
 
     // Convert aggregated state to final data points
@@ -249,7 +244,7 @@ const ExponentialHistogramState = struct {
         value: f64,
         max_size: u32,
         record_min_max: bool,
-        comptime T: type,
+        record_sum: bool,
     ) !void {
         // Handle zero values
         if (value == 0.0) {
@@ -294,11 +289,7 @@ const ExponentialHistogramState = struct {
             result.value_ptr.* += 1;
         }
         // Update basic statistics
-        self.sum = switch (T) {
-            i16, i32, i64 => null, // don't set sum when value can be negative
-            u16, u32, u64, f32, f64 => if (self.sum) |curr| curr + value else value,
-            else => unreachable,
-        };
+        if (record_sum) self.sum = (self.sum orelse 0) + value;
         self.count += 1;
 
         if (record_min_max) {
@@ -435,7 +426,7 @@ test "explicit bucket histogram aggregation" {
 
     const buckets = &[_]f64{ 1.0, 10.0, 100.0, 1000.0, std.math.inf(f64) };
 
-    const result = try aggregateExplicitBucketHistogram(u32, allocator, &data_points, buckets, true);
+    const result = try aggregateExplicitBucketHistogram(u32, allocator, &data_points, buckets, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);
@@ -466,7 +457,7 @@ test "exponential bucket histogram aggregation" {
         .{ .value = 4, .attributes = null },
     };
 
-    const result = try aggregateExponentialBucketHistogram(u32, allocator, &data_points, 4, 160, true);
+    const result = try aggregateExponentialBucketHistogram(u32, allocator, &data_points, 4, 160, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);
@@ -502,7 +493,8 @@ test "exponential bucket histogram aggregation e2e" {
     // Test exponential bucket histogram aggregation
     const exponential_result = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points, 20, // scale
         1024, // max size
-        true // record min/max
+        true, // record min/max
+        true // record sum
     );
     defer {
         for (exponential_result) |*dp| {
@@ -521,7 +513,8 @@ test "exponential bucket histogram aggregation e2e" {
 
     // Test explicit bucket histogram aggregation
     const buckets = [_]f64{ 1.0, 2.0, 3.0, 5.0 };
-    const explicit_result = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points, &buckets, true // record min/max
+    const explicit_result = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points, &buckets, true, // record min/max
+        true // record sum
     );
     defer {
         for (explicit_result) |*dp| {
@@ -556,7 +549,7 @@ test "exponential bucket histogram respects max size" {
         .{ .value = 6, .attributes = null },
     };
 
-    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true);
+    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);
@@ -585,7 +578,7 @@ test "exponential bucket histogram downscale multiple times to respects max size
         .{ .value = 24, .attributes = null },
     };
 
-    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true);
+    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);
@@ -616,7 +609,7 @@ test "exponential bucket histogram downscale with mixed positive and negative va
         .{ .value = 6, .attributes = null },
     };
 
-    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true);
+    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);
@@ -654,7 +647,7 @@ test "exponential histograms scale down independently per attribute" {
         .{ .value = 6, .attributes = &attrs_b },
     };
 
-    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true);
+    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, 0, 2, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);
@@ -691,14 +684,14 @@ test "clean up after a memory allocation failure while shrinking the exponential
     defer state.deinit(allocator);
 
     for ([_]f64{ -0.375, -0.75, 1.5 }) |v| {
-        try state.addValue(allocator, v, 2, true, f64);
+        try state.addValue(allocator, v, 2, true, true);
     }
     // Allow allocation of the positive temporary map, then fail the negative one
     failing.fail_index = failing.alloc_index + 1;
 
     try std.testing.expectError(
         error.OutOfMemory,
-        state.addValue(allocator, 6, 2, true, f64),
+        state.addValue(allocator, 6, 2, true, true),
     );
 
     try std.testing.expect(state.scale == 0);
@@ -720,7 +713,7 @@ test "exponential histogram scale does not fall below lower limit" {
         .{ .value = 0x1p-1074, .attributes = null },
     };
 
-    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, -9, 2, true);
+    const result = try aggregateExponentialBucketHistogram(f64, allocator, &data_points, -9, 2, true, true);
     defer {
         for (result) |*dp| {
             dp.deinit(allocator);

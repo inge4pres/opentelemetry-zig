@@ -376,6 +376,49 @@ test "metric reader cumulative aggregation survives freeing exported measurement
     }
 }
 
+test "metric reader applies view aggregation over the exporter default" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.shutdown();
+
+    try mp.addView(.{
+        .instrument_selector = .{ .kind = .Histogram },
+        .aggregation = .{ .ExplicitBucketHistogram = .{ .buckets = &.{ 1.0, 2.0, 3.0 } } },
+        .temporality = .Cumulative,
+    });
+
+    // The exporter falls back to the default aggregation selector.
+    const me = try MetricExporter.InMemory(allocator, io, null, null);
+    defer me.in_memory.deinit();
+
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.shutdown();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var hist = try meter.createHistogram(u64, .{ .name = "payload-size" });
+    try hist.record(5, .{});
+    try hist.record(10, .{});
+
+    try reader.collect();
+
+    const data = try me.in_memory.fetch(allocator);
+    defer {
+        for (data) |*d| d.deinit(allocator);
+        allocator.free(data);
+    }
+
+    try std.testing.expectEqual(1, data.len);
+    const dp = data[0].data.histogram[0].value;
+    try std.testing.expectEqualSlices(f64, &.{ 1.0, 2.0, 3.0 }, dp.explicit_bounds);
+    try std.testing.expectEqualSlices(u64, &.{ 0, 0, 0, 2 }, dp.bucket_counts);
+    try std.testing.expectEqual(15, dp.sum);
+    try std.testing.expectEqual(5, dp.min);
+    try std.testing.expectEqual(10, dp.max);
+}
+
 fn deltaTemporality(_: Kind) view.Temporality {
     return .Delta;
 }
@@ -515,12 +558,8 @@ test "metric reader cumulative histogram across collection" {
             const dp = result[0].data.histogram[0];
             const value = dp.value;
             try std.testing.expectEqual(@as(u64, if (cycle == 0) 1 else 2), value.count);
-            if (T == f64) {
-                try std.testing.expectEqual(@as(f64, if (cycle == 0) 0.25 else 0.75), value.sum.?);
-            } else {
-                // Signed integer histogram aggregation omits sum.
-                try std.testing.expectEqual(null, value.sum);
-            }
+            const expected_sum: f64 = if (T == f64) (if (cycle == 0) 0.25 else 0.75) else (if (cycle == 0) 1 else 7);
+            try std.testing.expectEqual(expected_sum, value.sum.?);
             const expected_min: f64 = if (T == f64) first else @floatFromInt(first);
             const expected_max: f64 = if (cycle == 0) expected_min else if (T == f64) second else @floatFromInt(second);
             try std.testing.expectEqual(expected_min, value.min.?);
@@ -809,11 +848,8 @@ test "metric reader cumulative exponential histogram across collection" {
             try std.testing.expectEqual(1, dp.len);
             try std.testing.expectEqual(@as(u64, if (cycle == 0) 1 else 2), dp[0].value.count);
 
-            if (T == f64) {
-                try std.testing.expectEqual(@as(f64, if (cycle == 0) -1.5 else 1.5), dp[0].value.sum.?);
-            } else if (T == i64) {
-                try std.testing.expectEqual(null, dp[0].value.sum);
-            }
+            const expected_sum: f64 = if (T == f64) (if (cycle == 0) -1.5 else 1.5) else (if (cycle == 0) -3 else 3);
+            try std.testing.expectEqual(expected_sum, dp[0].value.sum.?);
 
             const expected_min: f64 = if (T == f64) first else @floatFromInt(first);
             const expected_max: f64 = if (cycle == 0) expected_min else if (T == f64) second else @floatFromInt(second);

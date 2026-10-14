@@ -320,8 +320,8 @@ pub const CombinedViewConfig = struct {
         }
     }
 
-    pub fn combinedAggregation(self: Self) Aggregation {
-        return self.aggregation orelse DefaultAggregation(self.default_kind);
+    pub fn combinedAggregation(self: Self, default: AggregationSelector) Aggregation {
+        return self.aggregation orelse default(self.default_kind);
     }
 
     pub fn combinedTemporality(self: Self) Temporality {
@@ -347,7 +347,14 @@ pub const CombinedViewConfig = struct {
 
 /// Get the aggregation to use for the given instrument and meter scope from a views slice.
 /// Uses the view system to determine the appropriate aggregation, applying all matching views additively.
-pub fn aggregationForViews(views: []const View, instr: *const Instrument, scope: *const InstrumentationScope) Aggregation {
+/// When no view matches, the default selector (usually the MetricReader's) decides.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#measurement-processing
+pub fn aggregationForViews(
+    views: []const View,
+    instr: *const Instrument,
+    scope: *const InstrumentationScope,
+    default: AggregationSelector,
+) Aggregation {
     var combined_config = CombinedViewConfig.init(instr.kind);
 
     for (views) |*v| {
@@ -356,7 +363,7 @@ pub fn aggregationForViews(views: []const View, instr: *const Instrument, scope:
         }
     }
 
-    return combined_config.combinedAggregation();
+    return combined_config.combinedAggregation(default);
 }
 
 /// Get the temporality to use for the given instrument and meter scope from a views slice.
