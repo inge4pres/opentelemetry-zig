@@ -121,12 +121,9 @@ fn processCumulativeDataPoints(
     datapoints: [*]DataPoint(T),
     array_len: usize,
 ) !void {
-    // Gauges use LastValue semantics: even under cumulative temporality they must
-    // report the latest observation, not a running total.
-    const keep_last_value = switch (measurements.instrumentKind) {
-        .Gauge, .ObservableGauge => true,
-        else => false,
-    };
+    // LastValue data must report the latest observation even under cumulative
+    // temporality, not a running total.
+    const keep_last_value = measurements.isLastValue();
     for (0..array_len) |idx| {
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{

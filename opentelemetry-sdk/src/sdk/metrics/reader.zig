@@ -419,6 +419,49 @@ test "metric reader applies view aggregation over the exporter default" {
     try std.testing.expectEqual(10, dp.max);
 }
 
+test "metric reader exports last value views as gauges" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.shutdown();
+
+    try mp.addView(.{
+        .instrument_selector = .{ .name = "queue-depth" },
+        .aggregation = .LastValue,
+        .temporality = .Cumulative,
+    });
+
+    const me = try MetricExporter.InMemory(allocator, io, view.TemporalityCumulative, null);
+    defer me.in_memory.deinit();
+
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.shutdown();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try meter.createCounter(u64, .{ .name = "queue-depth" });
+
+    // Cumulative temporality must keep the last value, not add it to the previous one.
+    for ([_]u64{ 5, 3 }) |value| {
+        try counter.add(value, .{});
+        try reader.collect();
+
+        const data = try me.in_memory.fetch(allocator);
+        defer {
+            for (data) |*d| d.deinit(allocator);
+            allocator.free(data);
+        }
+
+        try std.testing.expectEqual(1, data.len);
+        try std.testing.expectEqual(@as(i64, @intCast(value)), data[0].data.int[0].value);
+
+        var metric = try @import("exporters/otlp.zig").toProtobufMetric(allocator, data[0], reader.temporality);
+        defer metric.deinit(allocator);
+        try std.testing.expectEqual(@as(i64, @intCast(value)), metric.data.?.gauge.data_points.items[0].value.?.as_int);
+    }
+}
+
 fn deltaTemporality(_: Kind) view.Temporality {
     return .Delta;
 }

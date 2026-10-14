@@ -5,6 +5,7 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
+const AggregationType = @import("../../sdk/metrics/view.zig").AggregationType;
 
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
@@ -270,8 +271,20 @@ pub const Measurements = struct {
     instrumentOptions: InstrumentOptions,
 
     data: MeasurementsData,
+    /// Aggregation that produced `data`, null when unknown (e.g. measurements built by hand).
+    aggregation: ?AggregationType = null,
 
     resource: ?[]const Attribute = null,
+
+    /// Numeric data is either a Sum or a LastValue result.
+    /// Without a known aggregation, gauges are assumed to be LastValue.
+    pub fn isLastValue(self: Measurements) bool {
+        if (self.aggregation) |a| return a == .LastValue;
+        return switch (self.instrumentKind) {
+            .Gauge, .ObservableGauge => true,
+            else => false,
+        };
+    }
 
     pub fn deinit(self: *Measurements, allocator: std.mem.Allocator) void {
         switch (self.data) {

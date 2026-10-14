@@ -154,45 +154,34 @@ pub fn toProtobufMetric(
         .name = try allocator.dupe(u8, instrument_opts.name),
         .description = if (instrument_opts.description) |d| try allocator.dupe(u8, d) else try allocator.dupe(u8, ""),
         .unit = if (instrument_opts.unit) |u| try allocator.dupe(u8, u) else try allocator.dupe(u8, ""),
-        .data = switch (kind) {
-            .Counter, .UpDownCounter, .ObservableCounter, .ObservableUpDownCounter => |k| pbmetrics.Metric.data_union{
-                .sum = pbmetrics.Sum{
-                    .data_points = .fromOwnedSlice(try numberDataPoints(allocator, i64, measurements.data.int)),
+        // Views can apply any aggregation to any instrument, so the metric type follows the aggregated data.
+        .data = switch (measurements.data) {
+            inline .int, .double => |data_points, tag| blk: {
+                const points = std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(
+                    try numberDataPoints(allocator, if (tag == .int) i64 else f64, data_points),
+                );
+                break :blk if (measurements.isLastValue()) pbmetrics.Metric.data_union{
+                    .gauge = pbmetrics.Gauge{ .data_points = points },
+                } else pbmetrics.Metric.data_union{
+                    .sum = pbmetrics.Sum{
+                        .data_points = points,
+                        .aggregation_temporality = temporailty(kind).toProto(),
+                        .is_monotonic = kind.isMonotonic(),
+                    },
+                };
+            },
+            .histogram => |data_points| pbmetrics.Metric.data_union{
+                .histogram = pbmetrics.Histogram{
+                    .data_points = try histogramDataPoints(allocator, data_points),
                     .aggregation_temporality = temporailty(kind).toProto(),
-                    // Only .Counter is guaranteed to be monotonic.
-                    .is_monotonic = k == .Counter,
                 },
             },
-
-            .Histogram => switch (measurements.data) {
-                .histogram => pbmetrics.Metric.data_union{
-                    .histogram = pbmetrics.Histogram{
-                        .data_points = try histogramDataPoints(allocator, measurements.data.histogram),
-                        .aggregation_temporality = temporailty(kind).toProto(),
-                    },
-                },
-                .exponential_histogram => pbmetrics.Metric.data_union{
-                    .exponential_histogram = pbmetrics.ExponentialHistogram{
-                        .data_points = try exponentialHistogramDataPoints(allocator, measurements.data.exponential_histogram),
-                        .aggregation_temporality = temporailty(kind).toProto(),
-                    },
-                },
-                .int, .double => unreachable, // Histogram instruments should not produce int/double data at export time
-            },
-
-            .Gauge, .ObservableGauge => pbmetrics.Metric.data_union{
-                .gauge = pbmetrics.Gauge{
-                    .data_points = switch (measurements.data) {
-                        .int => std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(try numberDataPoints(allocator, i64, measurements.data.int)),
-                        .double => std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(try numberDataPoints(allocator, f64, measurements.data.double)),
-                        // No support to export histogram data points as gauge.
-                        // TODO we should probably return an error?
-                        .histogram, .exponential_histogram => std.ArrayList(pbmetrics.NumberDataPoint).empty,
-                    },
+            .exponential_histogram => |data_points| pbmetrics.Metric.data_union{
+                .exponential_histogram = pbmetrics.ExponentialHistogram{
+                    .data_points = try exponentialHistogramDataPoints(allocator, data_points),
+                    .aggregation_temporality = temporailty(kind).toProto(),
                 },
             },
-            // TODO: add other instruments here.
-            // When they are first added to Kind, a compiler error will be thrown here.
         },
         // Metadata used for internal translations, we can discard for now.
         // Consumers of SDK should not rely on this field.
@@ -498,6 +487,54 @@ test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
         anyval,
         first_dp.attributes.items[0].value.?.value.?.string_value,
     );
+}
+
+test "exporters/otlp metric type follows the aggregated data" {
+    const allocator = std.testing.allocator;
+
+    // A view can aggregate a counter into a histogram.
+    var bucket_counts = [_]u64{ 1, 0 };
+    var histogram_points = [_]DataPoint(HistogramPoint){.{ .value = .{
+        .count = 1,
+        .sum = 0.5,
+        .bucket_counts = &bucket_counts,
+        .explicit_bounds = &.{1.0},
+    } }};
+    var counter_metric = try toProtobufMetric(allocator, .{
+        .scope = .{ .name = "test-meter" },
+        .instrumentKind = .Counter,
+        .instrumentOptions = .{ .name = "counter-as-histogram" },
+        .data = .{ .histogram = &histogram_points },
+    }, view.DefaultTemporality);
+    defer counter_metric.deinit(allocator);
+
+    try std.testing.expectEqual(1, counter_metric.data.?.histogram.data_points.items.len);
+    try std.testing.expectEqual(0.5, counter_metric.data.?.histogram.data_points.items[0].sum);
+
+    // A view can aggregate a histogram into a sum.
+    var sum_points = [_]DataPoint(i64){.{ .value = 42 }};
+    var histogram_metric = try toProtobufMetric(allocator, .{
+        .scope = .{ .name = "test-meter" },
+        .instrumentKind = .Histogram,
+        .instrumentOptions = .{ .name = "histogram-as-sum" },
+        .data = .{ .int = &sum_points },
+    }, view.DefaultTemporality);
+    defer histogram_metric.deinit(allocator);
+
+    try std.testing.expect(histogram_metric.data.?.sum.is_monotonic);
+    try std.testing.expectEqual(42, histogram_metric.data.?.sum.data_points.items[0].value.?.as_int);
+
+    // Observable counters are monotonic sums.
+    var observed_points = [_]DataPoint(i64){.{ .value = 7 }};
+    var observable_metric = try toProtobufMetric(allocator, .{
+        .scope = .{ .name = "test-meter" },
+        .instrumentKind = .ObservableCounter,
+        .instrumentOptions = .{ .name = "observable-counter" },
+        .data = .{ .int = &observed_points },
+    }, view.DefaultTemporality);
+    defer observable_metric.deinit(allocator);
+
+    try std.testing.expect(observable_metric.data.?.sum.is_monotonic);
 }
 
 test "exporters/otlp init/deinit" {

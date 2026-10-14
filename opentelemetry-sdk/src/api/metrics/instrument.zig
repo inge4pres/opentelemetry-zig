@@ -35,6 +35,15 @@ pub const Kind = enum {
             .ObservableGauge => "ObservableGauge",
         };
     }
+
+    /// Instruments that only record non-negative increments.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#sum-aggregation
+    pub fn isMonotonic(self: Kind) bool {
+        return switch (self) {
+            .Counter, .ObservableCounter, .Histogram => true,
+            .UpDownCounter, .ObservableUpDownCounter, .Gauge, .ObservableGauge => false,
+        };
+    }
 };
 
 const instrumentData = union(enum) {

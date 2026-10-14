@@ -725,11 +725,7 @@ pub const AggregatedMetrics = struct {
 
             // Histogram sum is not collected for instruments that can record negative values.
             // See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation
-            const record_sum = switch (instr.*.kind) {
-                .Counter, .ObservableCounter, .Histogram => true,
-                .UpDownCounter, .ObservableUpDownCounter, .Gauge, .ObservableGauge => false,
-            };
-            const aggregated_data = try aggregate(allocator, data_points, aggregation_type, record_sum);
+            const aggregated_data = try aggregate(allocator, data_points, aggregation_type, instr.*.kind.isMonotonic());
             // then fill the result with the aggregated data points
             // only if there are data points.
             if (aggregated_data) |agg| {
@@ -743,6 +739,7 @@ pub const AggregatedMetrics = struct {
                     .instrumentKind = instr.*.kind,
                     .instrumentOptions = instr.*.opts,
                     .data = agg,
+                    .aggregation = aggregation_type.getType(),
                 });
             }
         }
