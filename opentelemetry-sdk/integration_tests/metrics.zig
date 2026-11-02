@@ -32,14 +32,14 @@ fn testMetrics(
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
 
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
-    defer mr.shutdown();
+    // mr.deinit() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test" });
@@ -88,14 +88,14 @@ fn testMetricsWithCompression(
     config.compression = .gzip;
 
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
-    defer mr.shutdown();
+    // mr.deinit() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test-compression" });

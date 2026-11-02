@@ -1111,7 +1111,7 @@ test "PrometheusExporter e2e" {
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Create Prometheus exporter using factory function
     const result = try MetricExporter.Prometheus(allocator, io, .{
@@ -1126,7 +1126,7 @@ test "PrometheusExporter e2e" {
 
     // The reader owns the exporter: shutting the reader down also shuts the exporter down.
     const reader = try MetricReader.init(allocator, io, result.exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const meter = try mp.getMeter(.{

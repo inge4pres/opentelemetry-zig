@@ -21,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
 
 fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !void {
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const result = try MetricExporter.Prometheus(allocator, io, .{
         .host = "127.0.0.1",
@@ -34,8 +34,8 @@ fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !
     defer result.prometheus.deinit();
 
     const reader = try MetricReader.init(allocator, io, result.exporter);
-    // reader.shutdown() also shuts down the underlying MetricExporter.
-    defer reader.shutdown();
+    // reader.deinit() also shuts down the underlying MetricExporter.
+    defer reader.deinit();
     try mp.addReader(reader);
 
     try result.prometheus.start();

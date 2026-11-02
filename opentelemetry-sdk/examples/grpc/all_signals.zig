@@ -41,11 +41,11 @@ pub fn main(init: std.process.Init) !void {
     // ── Metrics ──────────────────────────────────────────────────────────────
 
     const mp = try sdk.metrics.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const me = try sdk.metrics.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
     const mr = try sdk.metrics.MetricReader.init(allocator, io, me.exporter);
-    defer mr.shutdown();
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "grpc-example", .version = "1.0.0" });

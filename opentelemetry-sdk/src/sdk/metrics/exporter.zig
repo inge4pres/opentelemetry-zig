@@ -318,14 +318,14 @@ test "metric exporter is called by metric reader" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var mock = ExporterImpl{ .exportFn = mockExporter };
 
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &mock);
 
     var rdr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
-    defer rdr.shutdown();
+    defer rdr.deinit();
 
     try mp.addReader(rdr);
 
@@ -442,7 +442,7 @@ test "metric exporter builder in memory" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const metric_exporter = try MetricExporter.InMemory(
         std.testing.allocator,
@@ -454,7 +454,7 @@ test "metric exporter builder in memory" {
     defer metric_exporter.in_memory.deinit();
     // The reader owns the exporter: shutting the reader down also shuts the exporter down.
     const metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter.exporter);
-    defer metric_reader.shutdown();
+    defer metric_reader.deinit();
 
     try mp.addReader(metric_reader);
 
@@ -483,7 +483,7 @@ test "metric exporter builder stdout" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const metric_exporter = try MetricExporter.Stdout(
         allocator,
@@ -497,7 +497,7 @@ test "metric exporter builder stdout" {
     }
 
     const metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter.exporter);
-    defer metric_reader.shutdown();
+    defer metric_reader.deinit();
 
     try mp.addReader(metric_reader);
     // We can't colect any metrics because usage of stdout is blocked by zig build.
@@ -576,6 +576,10 @@ pub const PeriodicExportingReader = struct {
             .exportTimeoutMillis = timeout,
             .shared = .{ .io = io },
         };
+        reader.shutdown_hook = .{
+            .ctx = s,
+            .shutdownFn = stopWorkerHook,
+        };
         try mp.addReader(s.reader);
 
         s.collectThread = try std.Thread.spawn(
@@ -586,14 +590,26 @@ pub const PeriodicExportingReader = struct {
         return s;
     }
 
-    pub fn shutdown(self: *Self) void {
+    fn stopWorkerHook(ctx: *anyopaque) void {
+        const s: *Self = @ptrCast(@alignCast(ctx));
+        s.stopWorker();
+    }
+
+    pub fn stopWorker(self: *Self) void {
         self.shared.lock.lockUncancelable(self.shared.io);
+        if (self.shared.shuttingDown) {
+            self.shared.lock.unlock(self.shared.io);
+            return;
+        }
         self.shared.shuttingDown = true;
         self.shared.lock.unlock(self.shared.io);
         self.shared.wake.set(self.shared.io);
         self.collectThread.join();
+    }
 
-        self.reader.shutdown();
+    pub fn shutdown(self: *Self) void {
+        self.stopWorker();
+        self.reader.deinit();
 
         // Only when the background collector has stopped we can destroy.
         self.allocator.destroy(self);
@@ -635,7 +651,7 @@ test "e2e periodic exporting metric reader" {
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const waiting_ms: u64 = 100;
 

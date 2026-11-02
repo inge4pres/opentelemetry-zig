@@ -264,6 +264,14 @@ otel_status_t otel_meter_provider_add_reader(
     otel_meter_provider_t* provider,
     otel_metric_reader_t* reader);
 
+/**
+ * @brief Force flush all registered MetricReaders.
+ *
+ * @param provider The MeterProvider handle.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_meter_provider_force_flush(otel_meter_provider_t* provider);
+
 /* ============================================================================
  * Counter API (u64)
  * ============================================================================ */
@@ -500,6 +508,16 @@ otel_metric_reader_t* otel_metric_reader_create(otel_metric_exporter_t* exporter
  * @return Status code indicating success or failure.
  */
 otel_status_t otel_metric_reader_collect(otel_metric_reader_t* reader);
+
+/**
+ * @brief Force flush unexported metrics to the exporter.
+ *
+ * Performs a collection and calls force flush on the underlying exporter.
+ *
+ * @param reader The MetricReader handle.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_metric_reader_force_flush(otel_metric_reader_t* reader);
 
 /**
  * @brief Shutdown the MetricReader and release resources.

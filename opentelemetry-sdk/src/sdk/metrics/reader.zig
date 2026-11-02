@@ -68,9 +68,16 @@ pub const MetricReader = struct {
     // Optional timeout for export operations (in milliseconds)
     exportTimeout: ?u64 = null,
 
+    shutdown_hook: ?ShutdownHook = null,
+
     // Signal that shutdown has been called.
     hasShutDown: bool = false,
     mx: std.Io.Mutex = std.Io.Mutex.init,
+
+    pub const ShutdownHook = struct {
+        ctx: *anyopaque,
+        shutdownFn: *const fn (ctx: *anyopaque) void,
+    };
 
     const Self = @This();
 
@@ -93,6 +100,10 @@ pub const MetricReader = struct {
             // When shutdown has already been called, collect is a no-op.
             return;
         }
+        return self.collectInternal();
+    }
+
+    fn collectInternal(self: *Self) !void {
         if (!self.mx.tryLock()) {
             return MetricReadError.ConcurrentCollectNotAllowed;
         }
@@ -271,12 +282,38 @@ pub const MetricReader = struct {
         }
     }
 
+    /// Force flush any unexported metrics to the exporter.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#metricreader-forceflush
+    pub fn forceFlush(self: *Self) !void {
+        if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
+            return;
+        }
+        try self.collect();
+        const timeout = self.exportTimeout orelse 30_000;
+        try self.exporter.forceFlush(timeout);
+    }
+
     pub fn shutdown(self: *Self) void {
-        @atomicStore(bool, &self.hasShutDown, true, .release);
-        self.collect() catch |e| {
-            log.err("shutdown: error while collecting metrics: {}", .{e});
+        if (@atomicRmw(bool, &self.hasShutDown, .Xchg, true, .acq_rel)) {
+            return;
+        }
+        if (self.shutdown_hook) |hook| {
+            hook.shutdownFn(hook.ctx);
+        }
+        self.collectInternal() catch |e| {
+            if (e != MetricReadError.CollectFailedOnMissingMeterProvider) {
+                log.err("shutdown: error while collecting metrics: {}", .{e});
+            }
         };
+        if (self.meterProvider) |mp| {
+            mp.detachReader(self);
+            self.meterProvider = null;
+        }
         self.exporter.shutdown();
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.shutdown();
         self.temporal_aggregation.deinit();
         self.allocator.destroy(self);
     }
@@ -287,8 +324,14 @@ test "metric reader shutdown prevents collect() to execute" {
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
     var metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter);
+    defer metric_reader.deinit();
+
     const e = metric_reader.collect();
     try std.testing.expectEqual(MetricReadError.CollectFailedOnMissingMeterProvider, e);
+    metric_reader.shutdown();
+    // Subsequent collect calls are no-ops
+    try metric_reader.collect();
+    // Subsequent shutdown calls are no-ops
     metric_reader.shutdown();
 }
 
@@ -297,7 +340,7 @@ test "metric reader collects data from meter provider" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
@@ -305,7 +348,7 @@ test "metric reader collects data from meter provider" {
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
 
     var reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
 
     try mp.addReader(reader);
 
@@ -341,7 +384,7 @@ test "metric reader cumulative aggregation survives freeing exported measurement
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
@@ -349,7 +392,7 @@ test "metric reader cumulative aggregation survives freeing exported measurement
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
 
     var reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const meter = try mp.getMeter(.{ .name = "reproduce.metrics.temporality" });
@@ -381,7 +424,7 @@ test "metric reader applies view aggregation over the exporter default" {
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     try mp.addView(.{
         .instrument_selector = .{ .kind = .Histogram },
@@ -394,7 +437,7 @@ test "metric reader applies view aggregation over the exporter default" {
     defer me.in_memory.deinit();
 
     const reader = try MetricReader.init(allocator, io, me.exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -424,7 +467,7 @@ test "metric reader exports last value views as gauges" {
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     try mp.addView(.{
         .instrument_selector = .{ .name = "queue-depth" },
@@ -436,7 +479,7 @@ test "metric reader exports last value views as gauges" {
     defer me.in_memory.deinit();
 
     const reader = try MetricReader.init(allocator, io, me.exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -475,7 +518,7 @@ test "metric reader custom temporality and aggregation" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
@@ -485,7 +528,7 @@ test "metric reader custom temporality and aggregation" {
     metric_exporter.aggregation = dropAll;
 
     var reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
 
     std.debug.assert(reader.temporality(.Counter) == .Delta);
     std.debug.assert(reader.aggregation(.Histogram) == .Drop);
@@ -515,7 +558,7 @@ test "metric reader correctness exporting cumulative temporality" {
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
@@ -523,7 +566,7 @@ test "metric reader correctness exporting cumulative temporality" {
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
 
     var reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
 
     // Generate data
@@ -572,12 +615,12 @@ test "metric reader cumulative histogram across collection" {
 
     inline for (.{ f64, i64 }) |T| {
         const mp = try MeterProvider.init(allocator, io);
-        defer mp.shutdown();
+        defer mp.deinit();
         var inMem = try InMemoryExporter.init(allocator, io);
         defer inMem.deinit();
         const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
         const reader = try MetricReader.init(allocator, io, metric_exporter);
-        defer reader.shutdown();
+        defer reader.deinit();
         try mp.addReader(reader);
         const meter = try mp.getMeter(.{ .name = "test" });
         const histogram = try meter.createHistogram(T, .{ .name = "test-histogram" });
@@ -660,7 +703,7 @@ test "metric reader frees pending histograms on collection failure" {
             const io = std.testing.io;
 
             const mp = try MeterProvider.init(allocator, io);
-            defer mp.shutdown();
+            defer mp.deinit();
 
             var sink = Sink{ .allocator = allocator };
             const metric_exporter = try MetricExporter.new(allocator, io, &sink.exporter);
@@ -670,7 +713,7 @@ test "metric reader frees pending histograms on collection failure" {
             }
 
             const reader = try MetricReader.init(allocator, io, metric_exporter);
-            defer reader.shutdown();
+            defer reader.deinit();
             try mp.addReader(reader);
 
             const meter = try mp.getMeter(.{ .name = "test" });
@@ -721,7 +764,7 @@ test "metric reader cumulative histograms retain inactive series" {
 
     inline for (.{ .histogram, .exponential_histogram }) |data_kind| {
         const mp = try MeterProvider.init(allocator, io);
-        defer mp.shutdown();
+        defer mp.deinit();
 
         var inMem = try InMemoryExporter.init(allocator, io);
         defer inMem.deinit();
@@ -732,7 +775,7 @@ test "metric reader cumulative histograms retain inactive series" {
         }
 
         var reader = try MetricReader.init(allocator, io, metric_exporter);
-        defer reader.shutdown();
+        defer reader.deinit();
         try mp.addReader(reader);
 
         const meter = try mp.getMeter(.{ .name = "test" });
@@ -790,12 +833,12 @@ test "metric reader cumulative histogram separates instrument options" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
     const reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
     const meter = try mp.getMeter(.{ .name = "test" });
     const ms = try meter.createHistogram(f64, .{ .name = "duration", .unit = "ms" });
@@ -842,7 +885,7 @@ test "metric reader cumulative exponential histogram across collection" {
 
     inline for (.{ f64, i64 }) |T| {
         const mp = try MeterProvider.init(allocator, io);
-        defer mp.shutdown();
+        defer mp.deinit();
 
         var inMem = try InMemoryExporter.init(allocator, io);
         defer inMem.deinit();
@@ -851,7 +894,7 @@ test "metric reader cumulative exponential histogram across collection" {
         metric_exporter.temporality = view.TemporalityCumulative;
         metric_exporter.aggregation = exponentialAggregationScaleZero;
         const reader = try MetricReader.init(allocator, io, metric_exporter);
-        defer reader.shutdown();
+        defer reader.deinit();
 
         const histogram_name = "test-exponential-histogram";
         const meter = try mp.getMeter(.{ .name = "test" });
@@ -926,7 +969,7 @@ test "metric reader cumulative exponential histogram merges buckets at the same 
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
@@ -935,7 +978,7 @@ test "metric reader cumulative exponential histogram merges buckets at the same 
     metric_exporter.temporality = view.TemporalityCumulative;
     metric_exporter.aggregation = exponentialAggregationScaleZero;
     const reader = try MetricReader.init(allocator, io, metric_exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
 
     const histogram_name = "test-exponential-histogram";
     const meter = try mp.getMeter(.{ .name = "test" });

@@ -530,7 +530,7 @@ const MeterProvider = @import("meter.zig").MeterProvider;
 test "counter with unsupported type does not leak" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const err = meter.createCounter(u1, .{ .name = "a-counter" });
     try std.testing.expectError(spec.FormatError.UnsupportedValueType, err);
@@ -539,7 +539,7 @@ test "counter with unsupported type does not leak" {
 test "meter can create counter instrument and record increase without attributes" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
@@ -550,7 +550,7 @@ test "meter can create counter instrument and record increase without attributes
 test "meter can create counter instrument and record increase with attributes" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{
         .name = "a-counter",
@@ -576,7 +576,7 @@ test "meter can create counter instrument and record increase with attributes" {
 test "histogram records value without explicit buckets" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
 
@@ -604,7 +604,7 @@ test "histogram records value without explicit buckets" {
 test "histogram records value with explicit buckets" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
@@ -634,7 +634,7 @@ test "histogram records value with explicit buckets" {
 test "histogram keeps track of bucket counts by attribute" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
@@ -664,7 +664,7 @@ test "histogram keeps track of bucket counts by attribute" {
 test "histogram keeps track of count, sum and min/max by attribute" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
@@ -709,7 +709,7 @@ test "histogram keeps track of count, sum and min/max by attribute" {
 test "gauge instrument records value without attributes" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
 
@@ -722,7 +722,7 @@ test "gauge instrument records value without attributes" {
 test "upDownCounter instrument records and stores value" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
 
@@ -747,7 +747,7 @@ test "upDownCounter instrument records and stores value" {
 test "instrument in meter and instrument in data are the same" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const name = "test-instrument";
 
@@ -778,7 +778,7 @@ test "instrument in meter and instrument in data are the same" {
 test "instrument fetches measurements from inner" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const name = "test-instrument";
 
@@ -812,7 +812,7 @@ test "instrument fetches measurements from inner" {
 test "counter thread-safety between datapoints collection and recording" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const name = "test-instrument";
 
@@ -862,7 +862,7 @@ fn testCounterCollect(counter: *Counter(u64)) !void {
 test "histogram thread-safety" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const name = "test-instrument";
 
@@ -911,7 +911,7 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
 test "instrument cleans up internal state when datapoints are fetched" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const name = "test-instrument";
 
@@ -938,7 +938,7 @@ const MetricObserveError = AsyncInstrument.MetricObserveError;
 test "async instrument registered in meter" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const background = struct {
         fn observe(_: AsyncInstrument.ObservedContext, _: std.mem.Allocator) MetricObserveError!MeasurementsData {
