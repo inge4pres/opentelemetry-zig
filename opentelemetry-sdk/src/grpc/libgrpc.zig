@@ -53,7 +53,10 @@ pub fn send(
         .value = header.value,
     };
 
-    const deadline: grpc.Deadline = .{ .duration = .fromSeconds(@intCast(config.timeout_sec)) };
+    const deadline: grpc.Deadline = if (config.timeout_sec == 0)
+        .infinite
+    else
+        .{ .duration = .fromSeconds(@intCast(config.timeout_sec)) };
     switch (try grpc.client.rawUnaryCall(gpa, &channel, &queue, path, data, .{ .deadline = deadline, .metadata = metadata })) {
         // TODO: handle partial success.
         // See https://opentelemetry.io/docs/specs/otlp/#partial-success

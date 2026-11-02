@@ -72,6 +72,31 @@ test "otlp HTTPClient send honors ConfigOptions.timeout_sec" {
     try std.testing.expectError(otlp.ExportError.Timeout, result);
 }
 
+test "otlp HTTPClient send with zero timeout succeeds without deadline" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try HTTPTestServer.init(allocator, io, assertUncompressedProtobufMetricsBodyCanBeParsed);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+    config.timeout_sec = 0;
+
+    var dummy = try emptyMetricsExportRequest(allocator);
+    defer dummy.deinit(std.testing.allocator);
+
+    try otlp.Export(allocator, io, config, otlp.Signal.Data{ .metrics = dummy });
+}
+
 test "otlp HTTPClient send retries on retryable error" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
