@@ -20,6 +20,7 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 const MeasurementsData = @import("../../api/metrics/measurement.zig").MeasurementsData;
 const DataPoint = @import("../../api/metrics/measurement.zig").DataPoint;
+const AsyncInstrument = @import("../../api/metrics/async_instrument.zig");
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 const view = @import("view.zig");
@@ -502,6 +503,75 @@ test "metric reader exports last value views as gauges" {
         var metric = try @import("exporters/otlp.zig").toProtobufMetric(allocator, data[0], reader.temporality);
         defer metric.deinit(allocator);
         try std.testing.expectEqual(@as(i64, @intCast(value)), metric.data.?.gauge.data_points.items[0].value.?.as_int);
+    }
+}
+
+test "metric reader exports observable counter totals" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const observer = struct {
+        fn observeTotal(
+            context: AsyncInstrument.ObservedContext,
+            alloc: std.mem.Allocator,
+        ) AsyncInstrument.MetricObserveError!MeasurementsData {
+            const data = try alloc.alloc(DataPoint(i64), 1);
+            data[0] = .{ .value = context.into(i64).?.* };
+            return .{ .int = data };
+        }
+    };
+
+    // The drop to 4 resets the monotonic counter, while the up-down counter just decreases.
+    const totals = [_]i64{ 10, 15, 15, 4, 6 };
+    const reset_index = 3;
+    const cases = &.{
+        .{ view.TemporalityCumulative, [_]i64{ 10, 15, 15, 4, 6 }, [_]i64{ 10, 15, 15, 4, 6 } },
+        .{ view.TemporalityDelta, [_]i64{ 10, 5, 0, 4, 2 }, [_]i64{ 10, 5, 0, -11, 2 } },
+    };
+
+    inline for (cases) |case| {
+        const mp = try MeterProvider.init(allocator, io);
+        defer mp.shutdown();
+
+        const me = try MetricExporter.InMemory(allocator, io, case[0], null);
+        defer me.in_memory.deinit();
+
+        const reader = try MetricReader.init(allocator, io, me.exporter);
+        defer reader.shutdown();
+        try mp.addReader(reader);
+
+        const meter = try mp.getMeter(.{ .name = "my-meter" });
+        var total: i64 = 0;
+        var callbacks = [_]AsyncInstrument.ObserveMeasures{observer.observeTotal};
+        _ = try meter.createObservableCounter(.{ .name = "cpu-time" }, .from(&total), &callbacks);
+        _ = try meter.createObservableUpDownCounter(.{ .name = "queue-size" }, .from(&total), &callbacks);
+
+        var previous_counter_time: u64 = 0;
+        for (totals, case[1], case[2], 0..) |observed, want_counter, want_updown, i| {
+            total = observed;
+            try reader.collect();
+
+            const data = try me.in_memory.fetch(allocator);
+            defer {
+                for (data) |*d| d.deinit(allocator);
+                allocator.free(data);
+            }
+
+            try std.testing.expectEqual(2, data.len);
+            for (data) |m| {
+                const dp = m.data.int[0];
+                switch (m.instrumentKind) {
+                    .ObservableCounter => {
+                        try std.testing.expectEqual(want_counter, dp.value);
+                        // Under both temporalities the reset point starts at the previous collection.
+                        if (i == reset_index) try std.testing.expectEqual(previous_counter_time, dp.timestamps.?.start_time_ns.?);
+                        previous_counter_time = dp.timestamps.?.time_ns;
+                    },
+                    .ObservableUpDownCounter => try std.testing.expectEqual(want_updown, dp.value),
+                    else => return error.UnexpectedInstrument,
+                }
+            }
+        }
     }
 }
 
