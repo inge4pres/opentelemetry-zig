@@ -287,7 +287,7 @@ fn getContextStack(allocator: std.mem.Allocator) !*ContextStack {
 /// ## Returns
 /// The current Context from the top of the stack, or an empty context.
 pub fn getCurrentContext() Context {
-    const stack = (getContextStack(std.heap.page_allocator) catch return Context.init());
+    const stack = context_stack orelse return Context.init();
     return stack.current();
 }
 
@@ -560,4 +560,12 @@ test "runtime key creation thread safety" {
         const result = try seen.getOrPut(key.id);
         try std.testing.expect(!result.found_existing);
     }
+}
+
+test "exemplar eligibility reads do not allocate unused context storage" {
+    cleanup();
+    defer cleanup();
+    try std.testing.expectEqual(null, context_stack);
+    try std.testing.expectEqual(null, getCurrentContext().entries);
+    try std.testing.expectEqual(null, context_stack);
 }

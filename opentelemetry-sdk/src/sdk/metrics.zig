@@ -25,3 +25,6 @@ test {
     _ = @import("metrics/temporality.zig");
     _ = @import("metrics/aggregation.zig");
 }
+
+pub const exemplar = @import("metrics/exemplar.zig");
+pub const Exemplar = exemplar.Exemplar;

@@ -172,7 +172,11 @@ pub const Attributes = struct {
             var compared: usize = 0;
             for (aAttrs) |aAttr| {
                 for (bAttrs) |bAttr| {
-                    if (std.mem.eql(u8, aAttr.key, bAttr.key) and std.meta.eql(aAttr.value, bAttr.value)) {
+                    const same_value = if (aAttr.value == .string and bAttr.value == .string)
+                        std.mem.eql(u8, aAttr.value.string, bAttr.value.string)
+                    else
+                        std.meta.eql(aAttr.value, bAttr.value);
+                    if (std.mem.eql(u8, aAttr.key, bAttr.key) and same_value) {
                         compared += 1;
                     }
                 }

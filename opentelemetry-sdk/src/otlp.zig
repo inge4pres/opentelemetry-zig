@@ -1416,3 +1416,36 @@ test "otlp http_json encodes trace and span IDs as lowercase hex" {
 test {
     _ = @import("otlp_test.zig");
 }
+
+test "exemplar/otlp JSON exports hexadecimal IDs and original measurement values" {
+    const allocator = std.testing.allocator;
+    var filtered = [_]pbcommon.KeyValue{.{ .key = "request_id", .value = .{ .value = .{ .string_value = "abc" } } }};
+    var samples = [_]pbmetrics.Exemplar{.{
+        .value = .{ .as_int = 7 },
+        .time_unix_nano = 150,
+        .trace_id = &@as([16]u8, @splat(1)),
+        .span_id = &@as([8]u8, @splat(2)),
+        .filtered_attributes = .fromOwnedSlice(&filtered),
+    }};
+    var points = [_]pbmetrics.NumberDataPoint{.{ .value = .{ .as_int = 8 }, .exemplars = .fromOwnedSlice(&samples) }};
+    const metric = pbmetrics.Metric{ .name = "example", .data = .{ .sum = .{ .data_points = .fromOwnedSlice(&points) } } };
+    var metrics = [_]pbmetrics.Metric{metric};
+    var scopes = [_]pbmetrics.ScopeMetrics{.{ .metrics = .fromOwnedSlice(&metrics) }};
+    var resources = [_]pbmetrics.ResourceMetrics{.{ .scope_metrics = .fromOwnedSlice(&scopes) }};
+    const payload = try (Signal.Data{ .metrics = .{ .resource_metrics = .fromOwnedSlice(&resources) } }).toOwnedSlice(allocator, .http_json);
+    defer allocator.free(payload);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const resource = parsed.value.object.get("resourceMetrics").?.array.items[0];
+    const scope = resource.object.get("scopeMetrics").?.array.items[0];
+    const data = scope.object.get("metrics").?.array.items[0].object.get("sum").?;
+    const point = data.object.get("dataPoints").?.array.items[0];
+    const sample = point.object.get("exemplars").?.array.items[0];
+    try std.testing.expectEqualStrings("01010101010101010101010101010101", sample.object.get("traceId").?.string);
+    try std.testing.expectEqualStrings("0202020202020202", sample.object.get("spanId").?.string);
+    try std.testing.expectEqualStrings("7", sample.object.get("asInt").?.string);
+    try std.testing.expectEqualStrings("150", sample.object.get("timeUnixNano").?.string);
+    const attribute = sample.object.get("filteredAttributes").?.array.items[0];
+    try std.testing.expectEqualStrings("request_id", attribute.object.get("key").?.string);
+    try std.testing.expectEqualStrings("abc", attribute.object.get("value").?.object.get("stringValue").?.string);
+}

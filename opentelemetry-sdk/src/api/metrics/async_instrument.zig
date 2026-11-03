@@ -1,7 +1,10 @@
 const std = @import("std");
+const clock = @import("clock");
 
 const Kind = @import("instrument.zig").Kind;
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
+const ExemplarFilter = @import("../../sdk/metrics/exemplar.zig").ExemplarFilter;
+
 const DataPoint = @import("measurement.zig").DataPoint;
 
 const Attributes = @import("../../attributes.zig").Attributes;
@@ -94,6 +97,8 @@ pub fn ObservableInstrument(K: Kind) type {
                 /// Functions are called by the Meter when it observes the instrument (e.g. when Metricreader collects metrics).
                 callbacks: std.ArrayList(ObserveMeasures) = .empty,
                 context: ObservedContext,
+                exemplar_filter: ExemplarFilter = .trace_based,
+                collection_start_ns: u64 = 0,
 
                 pub fn init(allocator: std.mem.Allocator, io: std.Io, ctx: ?ObservedContext) Self {
                     return Self{
@@ -101,6 +106,7 @@ pub fn ObservableInstrument(K: Kind) type {
                         .io = io,
                         .callbacks = .empty,
                         .context = ctx orelse .{},
+                        .collection_start_ns = @intCast(clock.nanoTimestamp()),
                     };
                 }
 
@@ -140,49 +146,56 @@ pub fn ObservableInstrument(K: Kind) type {
                     self.lock.lockUncancelable(self.io);
                     defer self.lock.unlock(self.io);
 
-                    if (self.callbacks.items.len == 0) return null;
-
-                    var m = try allocator.alloc(MeasurementsData, self.callbacks.items.len);
-                    defer allocator.free(m);
-
-                    for (self.callbacks.items, 0..) |callback, idx| {
-                        var result = try callback(self.context, allocator);
-                        // If we encounter an error while observing, we need to clear the memory allocated for the current
-                        // callback execution, as well as the previously allocated measurements.
-                        // A failure in one callback affects all the others.
-                        errdefer {
-                            result.deinit(allocator);
-                            for (m[0..idx]) |*mes| {
-                                mes.deinit(allocator);
-                            }
+                    if (self.callbacks.items.len > 0) {
+                        const c = self.callbacks.items;
+                        if (c.len == 0) return null;
+                        const m = try allocator.alloc(MeasurementsData, c.len);
+                        var initialized: usize = 0;
+                        defer {
+                            for (m[0..initialized]) |*data| data.deinit(allocator);
+                            allocator.free(m);
                         }
-                        // We need to ensure that all callbacks return the same type of data points,
-                        // because we are merging them into a single MeasurementsData.
-                        if (idx > 0) {
-                            if (std.meta.activeTag(result) != std.meta.activeTag(m[idx - 1])) {
+                        for (c, 0..) |callback, idx| {
+                            var result = try callback(self.context, allocator);
+                            errdefer result.deinit(allocator);
+                            if (idx > 0 and std.meta.activeTag(result) != std.meta.activeTag(m[0]))
                                 return MetricObserveError.NonUniformMeasurementsDataType;
+                            switch (result) {
+                                inline .int, .double => |points| {
+                                    // A callback observes all its values at one logical instant.
+                                    var observed_at: ?u64 = null;
+                                    for (points) |*point| {
+                                        try point.captureExemplar(allocator, self.exemplar_filter);
+                                        if (point.exemplar_candidate) |*sample| {
+                                            if (observed_at == null) observed_at = sample.time_ns;
+                                            sample.time_ns = observed_at.?;
+                                        }
+                                    }
+                                },
+                                else => return MetricObserveError.UnsupportedDataPointTypeReturnedByCallback,
                             }
+                            m[idx] = result;
+                            initialized += 1;
                         }
-                        switch (result) {
-                            .int, .double => {},
-                            else => return MetricObserveError.UnsupportedDataPointTypeReturnedByCallback,
+                        var uniqueData = m[0];
+                        m[0] = .{ .int = &.{} };
+                        errdefer uniqueData.deinit(allocator);
+                        for (m[1..]) |*data| {
+                            try uniqueData.join(data.*, allocator);
+                            data.* = .{ .int = &.{} };
                         }
-                        m[idx] = result;
+                        try uniqueData.dedupByAttributes(allocator);
+                        // Observation and its collection cut share the same lock.
+                        const collection_time: u64 = @intCast(clock.nanoTimestamp());
+                        switch (uniqueData) {
+                            inline else => |points| for (points) |*point| {
+                                point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
+                            },
+                        }
+                        self.collection_start_ns = collection_time;
+                        return uniqueData;
                     }
-
-                    // Join all data points from the callbacks into a single MeasurementsData.
-                    // We need to find first the type of data points we are dealing with.
-                    var uniqueData: MeasurementsData = m[0];
-                    if (m.len > 1) {
-                        for (1..m.len) |i| {
-                            try uniqueData.join(m[i], allocator);
-                        }
-                    }
-
-                    // De-duplicate data points with the same attributes.
-                    try uniqueData.dedupByAttributes(allocator);
-
-                    return uniqueData;
+                    return null; // No callbacks registered, nothing to observe.
                 }
 
                 /// Observes the instrument and returns the measurements collected by the callbacks.
@@ -438,4 +451,67 @@ test "observable instrument unregisterCallback to empty with failing allocator" 
     // Unregister last callback without allocating
     try std.testing.expect(instrument.unregisterCallback(testCallbackWithAttrs));
     try std.testing.expectEqual(@as(usize, 0), instrument.callbacks.items.len);
+}
+
+test "exemplar/observable instruments capture a single callback instant" {
+    inline for (.{ Kind.ObservableCounter, Kind.ObservableUpDownCounter, Kind.ObservableGauge }) |kind| {
+        var instrument = ObservableInstrument(kind).init(std.testing.allocator, std.testing.io, null);
+        defer instrument.deinit();
+        instrument.exemplar_filter = .always_on;
+        try instrument.registerCallback(exemplarCallback);
+        var data = try instrument.measurementsData(std.testing.allocator);
+        defer data.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, 2), data.int.len);
+        const first = data.int[0].exemplar_candidate.?;
+        const second = data.int[1].exemplar_candidate.?;
+        try std.testing.expectEqual(first.time_ns, second.time_ns);
+        try std.testing.expectEqual(data.int[0].value, first.value.int);
+        try std.testing.expectEqual(data.int[1].value, second.value.int);
+    }
+}
+
+test "exemplar/observable duplicate callbacks and allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, exemplarObservableAllocationFailure, .{});
+}
+
+fn exemplarObservableAllocationFailure(allocator: std.mem.Allocator) !void {
+    var instrument = ObservableInstrument(.ObservableCounter).init(allocator, std.testing.io, null);
+    defer instrument.deinit();
+    instrument.exemplar_filter = .always_on;
+    for (0..3) |_| try instrument.registerCallback(exemplarCallback);
+    var data = try instrument.measurementsData(allocator);
+    defer data.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), data.int.len);
+    for (data.int) |point| try std.testing.expect(point.exemplar_candidate != null);
+}
+
+fn exemplarCallback(_: ObservedContext, allocator: std.mem.Allocator) MetricObserveError!MeasurementsData {
+    const points = try allocator.alloc(DataPoint(i64), 2);
+    errdefer allocator.free(points);
+    points[0] = try DataPoint(i64).new(allocator, 7, .{ "sensor", @as([]const u8, "one") });
+    errdefer points[0].deinit(allocator);
+    points[1] = try DataPoint(i64).new(allocator, 9, .{ "sensor", @as([]const u8, "two") });
+    return .{ .int = points };
+}
+
+test "exemplar observable collection timestamps precede the next observation" {
+    inline for (.{ Kind.ObservableCounter, Kind.ObservableUpDownCounter, Kind.ObservableGauge }) |kind| {
+        var instrument = ObservableInstrument(kind).init(std.testing.allocator, std.testing.io, null);
+        defer instrument.deinit();
+        instrument.exemplar_filter = .always_on;
+        try instrument.registerCallback(exemplarCallback);
+        var first = try instrument.measurementsData(std.testing.allocator);
+        defer first.deinit(std.testing.allocator);
+        var second = try instrument.measurementsData(std.testing.allocator);
+        defer second.deinit(std.testing.allocator);
+        try std.testing.expect(first.int[0].timestamps != null);
+        const end = first.int[0].timestamps.?.time_ns;
+        for (first.int) |point| {
+            try std.testing.expectEqual(end, point.timestamps.?.time_ns);
+            try std.testing.expect(point.timestamps.?.start_time_ns != null);
+            try std.testing.expect(point.timestamps.?.start_time_ns.? <= point.exemplar_candidate.?.time_ns);
+            try std.testing.expect(point.exemplar_candidate.?.time_ns <= end);
+        }
+        for (second.int) |point| try std.testing.expect(end <= point.exemplar_candidate.?.time_ns);
+    }
 }

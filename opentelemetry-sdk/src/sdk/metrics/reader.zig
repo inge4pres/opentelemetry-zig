@@ -33,6 +33,7 @@ const ExporterIface = exporter.ExporterImpl;
 const ExportResult = exporter.ExportResult;
 const Temporality = @import("temporality.zig");
 const clock = @import("clock");
+const Exemplar = @import("exemplar.zig").Exemplar;
 const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
 const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
 
@@ -238,7 +239,11 @@ pub const MetricReader = struct {
                 return Temporality.TemporalAggregationError.MissingTimestampTimeUnixNano;
             var dp = try entry.value_ptr.deepCopy(self.allocator);
             errdefer dp.deinit(self.allocator);
-            dp.attributes = try Attributes.with(entry.key_ptr.datapoint_attributes).dupe(self.allocator);
+            dp.attributes = if (entry.key_ptr.datapoint_attributes) |attrs|
+                try Exemplar.copyAttributes(self.allocator, attrs)
+            else
+                null;
+            dp.attributes_owned = true;
             dp.timestamps = .{
                 .start_time_ns = timestamps.start_time_ns,
                 .time_ns = collection_time,
@@ -531,13 +536,13 @@ test "metric reader exports observable counter totals" {
 
     inline for (cases) |case| {
         const mp = try MeterProvider.init(allocator, io);
-        defer mp.shutdown();
+        defer mp.deinit();
 
         const me = try MetricExporter.InMemory(allocator, io, case[0], null);
         defer me.in_memory.deinit();
 
         const reader = try MetricReader.init(allocator, io, me.exporter);
-        defer reader.shutdown();
+        defer reader.deinit();
         try mp.addReader(reader);
 
         const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -641,7 +646,9 @@ test "metric reader correctness exporting cumulative temporality" {
 
     // Generate data
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    const before_creation: u64 = @intCast(clock.nanoTimestamp());
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    const after_creation: u64 = @intCast(clock.nanoTimestamp());
     try counter.add(1, .{});
     try counter.add(2, .{});
 
@@ -657,6 +664,8 @@ test "metric reader correctness exporting cumulative temporality" {
     }
 
     try std.testing.expectEqual(3, result[0].data.int[0].value);
+    const initial_start = result[0].data.int[0].timestamps.?.start_time_ns.?;
+    try std.testing.expect(initial_start >= before_creation and initial_start <= after_creation);
 
     try counter.add(1, .{});
     try counter.add(2, .{});
@@ -675,7 +684,7 @@ test "metric reader correctness exporting cumulative temporality" {
     // Assert value is actually summed up with .Cumulative
     try std.testing.expectEqual(6, result2[0].data.int[0].value);
     // and that timestamp is preserved in a long-running series
-    try std.testing.expectEqual(result[0].data.int[0].timestamps.?.time_ns, result2[0].data.int[0].timestamps.?.start_time_ns);
+    try std.testing.expectEqual(result[0].data.int[0].timestamps.?.start_time_ns, result2[0].data.int[0].timestamps.?.start_time_ns);
 }
 
 test "metric reader cumulative histogram across collection" {
@@ -693,7 +702,9 @@ test "metric reader cumulative histogram across collection" {
         defer reader.deinit();
         try mp.addReader(reader);
         const meter = try mp.getMeter(.{ .name = "test" });
+        const before_creation: u64 = @intCast(clock.nanoTimestamp());
         const histogram = try meter.createHistogram(T, .{ .name = "test-histogram" });
+        const after_creation: u64 = @intCast(clock.nanoTimestamp());
         const first: T = if (T == f64) 0.25 else 1;
         const second: T = if (T == f64) 0.5 else 6;
         var start_time: ?u64 = null;
@@ -728,7 +739,8 @@ test "metric reader cumulative histogram across collection" {
             const timestamps = dp.timestamps.?;
             if (cycle == 0) {
                 start_time = timestamps.start_time_ns;
-                try std.testing.expectEqual(timestamps.time_ns, start_time);
+                try std.testing.expect(start_time != null);
+                try std.testing.expect(start_time.? >= before_creation and start_time.? <= after_creation);
             }
             try std.testing.expectEqual(start_time, timestamps.start_time_ns);
             try std.testing.expect(timestamps.time_ns >= before and timestamps.time_ns <= after);
@@ -969,7 +981,9 @@ test "metric reader cumulative exponential histogram across collection" {
         const histogram_name = "test-exponential-histogram";
         const meter = try mp.getMeter(.{ .name = "test" });
         try mp.addReader(reader);
+        const before_creation: u64 = @intCast(clock.nanoTimestamp());
         const exponential_histogram = try meter.createHistogram(T, .{ .name = histogram_name });
+        const after_creation: u64 = @intCast(clock.nanoTimestamp());
         const first = switch (T) {
             f64 => -1.5,
             i64 => -3,
@@ -1026,7 +1040,8 @@ test "metric reader cumulative exponential histogram across collection" {
             const timestamps = dp[0].timestamps.?;
             if (cycle == 0) {
                 start_time = timestamps.start_time_ns;
-                try std.testing.expectEqual(timestamps.time_ns, start_time);
+                try std.testing.expect(start_time != null);
+                try std.testing.expect(start_time.? >= before_creation and start_time.? <= after_creation);
             }
             try std.testing.expectEqual(start_time, timestamps.start_time_ns);
             try std.testing.expect(timestamps.time_ns >= before and timestamps.time_ns <= after);
@@ -1147,4 +1162,60 @@ test "metric reader cumulative exponential histogram merges buckets at the same 
     try std.testing.expectEqual(0, dp4[0].value.sum.?);
     try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp4[0].value.positive_bucket_counts);
     try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp4[0].value.negative_bucket_counts);
+}
+
+test "exemplar cumulative collection retains values after exported attributes are freed" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const provider = try MeterProvider.init(allocator, io);
+    defer provider.deinit();
+    const memory = try MetricExporter.InMemory(allocator, io, null, null);
+    defer memory.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, memory.exporter);
+    defer reader.deinit();
+    try provider.addReader(reader);
+    const meter = try provider.getMeter(.{ .name = "exemplar-reader" });
+    const counter = try meter.createCounter(u64, .{ .name = "requests" });
+    counter.exemplar_filter = .always_on;
+    const region: []const u8 = "west";
+    for ([_]u64{ 1, 2 }, [_]i64{ 1, 3 }) |increment, total| {
+        try counter.add(increment, .{ "region", region });
+        try reader.collect();
+        const collected = try memory.in_memory.fetch(allocator);
+        defer {
+            for (collected) |*measurement| measurement.deinit(allocator);
+            allocator.free(collected);
+        }
+        const point = collected[0].data.int[0];
+        try std.testing.expectEqual(total, point.value);
+        try std.testing.expectEqual(@as(usize, 1), point.exemplars.len);
+        try std.testing.expectEqual(@as(i64, @intCast(increment)), point.exemplars[0].value.int);
+    }
+}
+
+test "exemplar cumulative histograms do not replay samples on idle collection" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const provider = try MeterProvider.init(allocator, io);
+    defer provider.deinit();
+    const memory = try MetricExporter.InMemory(allocator, io, null, null);
+    defer memory.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, memory.exporter);
+    defer reader.deinit();
+    try provider.addReader(reader);
+    const meter = try provider.getMeter(.{ .name = "exemplar-reader" });
+    const histogram = try meter.createHistogram(f64, .{ .name = "latency" });
+    histogram.exemplar_filter = .always_on;
+    try histogram.record(1.5, .{});
+    for ([_]usize{ 1, 0 }) |expected_samples| {
+        try reader.collect();
+        const collected = try memory.in_memory.fetch(allocator);
+        defer {
+            for (collected) |*measurement| measurement.deinit(allocator);
+            allocator.free(collected);
+        }
+        const point = collected[0].data.histogram[0];
+        try std.testing.expectEqual(@as(u64, 1), point.value.count);
+        try std.testing.expectEqual(expected_samples, point.exemplars.len);
+    }
 }

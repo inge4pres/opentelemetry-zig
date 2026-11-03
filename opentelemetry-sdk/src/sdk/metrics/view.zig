@@ -8,6 +8,8 @@ const Instrument = instrument.Instrument;
 const spec = @import("../../api/metrics/spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
+const exemplar = @import("exemplar.zig");
+
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 /// Instrument selector criteria for matching instruments to views
@@ -65,7 +67,7 @@ pub const AttributeFilter = struct {
     pub fn apply(self: AttributeFilter, allocator: std.mem.Allocator, attributes: ?Attributes) !?Attributes {
         if (attributes == null) return null;
 
-        const attrs = attributes.?;
+        const attrs = attributes.?.attributes orelse return null;
         var filtered = std.ArrayList(Attribute).empty;
         defer filtered.deinit(allocator);
 
@@ -99,7 +101,7 @@ pub const AttributeFilter = struct {
         }
 
         if (filtered.items.len == 0) return null;
-        return try allocator.dupe(Attribute, filtered.items);
+        return Attributes.with(try filtered.toOwnedSlice(allocator));
     }
 };
 
@@ -114,6 +116,8 @@ pub const View = struct {
     description: ?[]const u8 = null,
     /// Attribute filter for selecting which attributes to include
     attribute_filter: ?AttributeFilter = null,
+    /// Optional factory, instantiated once per resulting timeseries.
+    exemplar_reservoir: ?exemplar.ReservoirFactory = null,
     /// Aggregation to apply to matching instruments
     aggregation: Aggregation,
     /// Temporality to apply to matching instruments
@@ -267,6 +271,8 @@ pub const CombinedViewConfig = struct {
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
     attribute_filter: ?AttributeFilter = null,
+    /// Optional factory, instantiated once per resulting timeseries.
+    exemplar_reservoir: ?exemplar.ReservoirFactory = null,
     default_kind: instrument.Kind,
 
     const Self = @This();
@@ -310,6 +316,8 @@ pub const CombinedViewConfig = struct {
                 if (new_desc.len > existing_desc.len) self.description = new_desc;
             } else self.description = new_desc;
         }
+
+        if (v.exemplar_reservoir) |factory| self.exemplar_reservoir = factory;
 
         // Apply attribute filter (last one wins, could be enhanced to merge filters)
         if (v.attribute_filter) |new_filter| {

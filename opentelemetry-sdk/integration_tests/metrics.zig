@@ -8,6 +8,11 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
+    const sdk_config = try sdk.config.Configuration.init(allocator, io, init.environ_map);
+    defer sdk_config.deinit();
+    sdk_config.metrics_config.exemplar_filter = .always_on;
+    sdk.config.Configuration.set(sdk_config);
+
     var ctx = try common.setupTestContext(allocator, io, "metrics");
     defer common.cleanupTestContext(&ctx, io);
 
@@ -61,6 +66,9 @@ fn testMetrics(
 
     const json_content = try common.readJsonFile(allocator, io, tmp_dir, "metrics.json");
     defer allocator.free(json_content);
+
+    if (std.mem.indexOf(u8, json_content, "\"exemplars\"") == null)
+        return error.ExemplarsNotReceivedByCollector;
 
     const has_test_counter = std.mem.indexOf(u8, json_content, "test_counter") != null;
     const has_resource_metrics = std.mem.indexOf(u8, json_content, "resourceMetrics") != null or

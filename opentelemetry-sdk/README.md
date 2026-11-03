@@ -50,6 +50,24 @@ const sdk = @import("opentelemetry-sdk");
 
 ## Features
 
+### Metric exemplars
+
+Exemplars retain a measurement's value, time and trace context alongside an
+aggregated data point. By default, measurements from sampled spans are eligible.
+Initialize `sdk.config.Configuration` to read `OTEL_METRICS_EXEMPLAR_FILTER`;
+its values are `trace_based`, `always_on` and `always_off`.
+
+Collected points expose `exemplars`, including attributes removed by a View.
+OTLP exports them in protobuf and JSON. Views can supply a custom
+`exemplar_reservoir` factory; the SDK creates one reservoir per time series.
+
+The [exemplar example](examples/metrics/exemplars.zig) records within a span and
+collects after it ends. Run it without a collector:
+
+```bash
+zig build sdk-run-examples -Dexamples-filter=exemplars
+```
+
 ### `std.log` Bridge for Seamless Migration
 
 The SDK includes a bridge that allows you to route Zig's standard `std.log` calls to OpenTelemetry without refactoring your entire codebase. This is perfect for gradual adoption of observability.

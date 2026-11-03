@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 // NOTE: API-surface mutex operations use lockUncancelable so that user-facing
 // methods do not introduce cancellation points. This is safe with Io.Threaded
@@ -16,9 +15,13 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 const DataPoint = @import("measurement.zig").DataPoint;
+const Timestamps = @import("measurement.zig").Timestamps;
+const metrics_temporality = @import("../../sdk/metrics/temporality.zig");
 const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
 const aggregation = @import("../../sdk/metrics/aggregation.zig");
 const ExponentialHistogramDataPoint = aggregation.ExponentialHistogramDataPoint;
+
+const exemplar = @import("../../sdk/metrics/exemplar.zig");
 
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 const Measurements = @import("measurement.zig").Measurements;
@@ -192,6 +195,8 @@ pub const MeterProvider = struct {
             .instruments = .empty,
             .allocator = self.allocator,
             .io = self.io,
+            .exemplar_filter = if (self.sdk_disabled) .always_off else if (self.config) |cfg| cfg.metrics_config.exemplar_filter else .trace_based,
+            .exemplar_sampler = .{ .allocator = self.allocator },
         };
 
         const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
@@ -251,6 +256,8 @@ pub const Meter = struct {
     instruments: std.StringHashMapUnmanaged(*Instrument),
     allocator: std.mem.Allocator,
     io: std.Io,
+    exemplar_filter: exemplar.ExemplarFilter = .trace_based,
+    exemplar_sampler: exemplar.Sampler = .{},
 
     mx: std.Io.Mutex = std.Io.Mutex.init,
 
@@ -265,6 +272,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        c.exemplar_filter = self.exemplar_filter;
         try self.registerInstrument(i);
 
         return c;
@@ -279,6 +287,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        c.exemplar_filter = self.exemplar_filter;
         try self.registerInstrument(i);
 
         return c;
@@ -293,6 +302,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        h.exemplar_filter = self.exemplar_filter;
         try self.registerInstrument(i);
 
         return h;
@@ -308,6 +318,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        g.exemplar_filter = self.exemplar_filter;
         try self.registerInstrument(i);
 
         return g;
@@ -327,6 +338,7 @@ pub const Meter = struct {
             self.allocator.destroy(i);
             return err;
         };
+        c.exemplar_filter = self.exemplar_filter;
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -347,6 +359,7 @@ pub const Meter = struct {
             self.allocator.destroy(i);
             return err;
         };
+        c.exemplar_filter = self.exemplar_filter;
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -366,6 +379,7 @@ pub const Meter = struct {
             self.allocator.destroy(i);
             return err;
         };
+        g.exemplar_filter = self.exemplar_filter;
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -399,6 +413,7 @@ pub const Meter = struct {
     }
 
     fn deinit(self: *Self) void {
+        self.exemplar_sampler.deinit(self.allocator);
         var instrs = self.instruments.iterator();
         while (instrs.next()) |i| {
             // Instrument.deinit() will free up the memory allocated for the instrument,
@@ -718,7 +733,7 @@ const view = @import("../../sdk/metrics/view.zig");
 /// MeterProvider's view configured by users or falling back to the
 /// MetricReader's temporality and aggregation functions.
 pub const AggregatedMetrics = struct {
-    fn sum(comptime T: type, data_points: []DataPoint(T), current_time: u64, allocator: std.mem.Allocator) ![]DataPoint(T) {
+    fn sum(comptime T: type, data_points: []DataPoint(T), collection_timestamps: Timestamps, allocator: std.mem.Allocator) ![]DataPoint(T) {
         var deduped = std.ArrayHashMapUnmanaged(
             Attributes,
             DataPoint(T),
@@ -727,18 +742,24 @@ pub const AggregatedMetrics = struct {
         ).empty;
         // No need to cleanup the keys, they are reference to the same Attribute slices from data_points.
         defer deduped.deinit(allocator);
+        errdefer for (deduped.values()) |*point| point.deinit(allocator);
 
         for (data_points) |dp| {
             const key = Attributes.with(dp.attributes);
             const gop = try deduped.getOrPut(allocator, key);
-            if (!gop.found_existing) gop.value_ptr.* = try dp.deepCopy(allocator) else gop.value_ptr.*.value += dp.value;
+            if (!gop.found_existing) {
+                gop.value_ptr.* = dp.deepCopy(allocator) catch |err| {
+                    _ = deduped.swapRemove(key);
+                    return err;
+                };
+            } else gop.value_ptr.value += dp.value;
             // Add timestamps that will be used in temporal aggregation.
-            gop.value_ptr.*.timestamps = .{ .start_time_ns = current_time, .time_ns = current_time };
+            gop.value_ptr.*.timestamps = collection_timestamps;
         }
         return allocator.dupe(DataPoint(T), deduped.values());
     }
 
-    fn lastValue(comptime T: type, data_points: []DataPoint(T), current_time: u64, allocator: std.mem.Allocator) ![]DataPoint(T) {
+    fn lastValue(comptime T: type, data_points: []DataPoint(T), collection_timestamps: Timestamps, allocator: std.mem.Allocator) ![]DataPoint(T) {
         var deduped = std.ArrayHashMapUnmanaged(
             Attributes,
             DataPoint(T),
@@ -746,18 +767,28 @@ pub const AggregatedMetrics = struct {
             true,
         ).empty;
         defer deduped.deinit(allocator);
+        errdefer for (deduped.values()) |*point| point.deinit(allocator);
 
         for (data_points) |dp| {
             var duped = try dp.deepCopy(allocator);
+            errdefer duped.deinit(allocator);
             // Add timestamps that will be used in temporal aggregation.
-            duped.timestamps = .{ .start_time_ns = current_time, .time_ns = current_time };
+            duped.timestamps = collection_timestamps;
 
-            try deduped.put(allocator, Attributes.with(dp.attributes), duped);
+            const gop = try deduped.getOrPut(allocator, Attributes.with(dp.attributes));
+            if (gop.found_existing) gop.value_ptr.deinit(allocator);
+            gop.value_ptr.* = duped;
         }
         return allocator.dupe(DataPoint(T), deduped.values());
     }
 
-    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation_type: view.Aggregation, record_sum: bool) !?MeasurementsData {
+    const ExemplarContext = struct {
+        meter: *Meter,
+        instrument_id: usize,
+        factory: ?exemplar.ReservoirFactory,
+    };
+
+    fn aggregate(allocator: std.mem.Allocator, data_points: MeasurementsData, aggregation_type: view.Aggregation, record_sum: bool, exemplar_context: ?ExemplarContext) !?MeasurementsData {
         // If there are no data points, we can return early.
         if (data_points.isEmpty()) return null;
 
@@ -774,22 +805,24 @@ pub const AggregatedMetrics = struct {
             }
         }
 
-        const current_time: u64 = @intCast(clock.nanoTimestamp());
+        const collection_timestamps = switch (data_points) {
+            inline else => |points| points[0].timestamps orelse return error.MissingCollectionTimestamp,
+        };
 
         // Processing pipeline is split by aggregation type
         const aggregated: ?MeasurementsData = switch (aggregation_type.getType()) {
             .Drop => null,
             .Sum => switch (data_points) {
-                .int => MeasurementsData{ .int = try sum(i64, data_points.int, current_time, allocator) },
-                .double => MeasurementsData{ .double = try sum(f64, data_points.double, current_time, allocator) },
+                .int => MeasurementsData{ .int = try sum(i64, data_points.int, collection_timestamps, allocator) },
+                .double => MeasurementsData{ .double = try sum(f64, data_points.double, collection_timestamps, allocator) },
                 // Sum aggregation is not supported for histograms data points.
                 // FIXME we should probably return an error here.
                 // Specification does not seem to be clear...
                 .histogram, .exponential_histogram => null,
             },
             .LastValue => switch (data_points) {
-                .int => MeasurementsData{ .int = try lastValue(i64, data_points.int, current_time, allocator) },
-                .double => MeasurementsData{ .double = try lastValue(f64, data_points.double, current_time, allocator) },
+                .int => MeasurementsData{ .int = try lastValue(i64, data_points.int, collection_timestamps, allocator) },
+                .double => MeasurementsData{ .double = try lastValue(f64, data_points.double, collection_timestamps, allocator) },
                 // LastValue aggregation is not supported for histograms data points.
                 // FIXME we should probably return an error here.
                 // Specification does not seem to be clear...
@@ -802,7 +835,7 @@ pub const AggregatedMetrics = struct {
                     const buckets = config.buckets;
                     const aggregated = try aggregation.aggregateExplicitBucketHistogram(i64, allocator, data_points.int, buckets, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
-                        dp.timestamps = .{ .time_ns = current_time };
+                        dp.timestamps = collection_timestamps;
                     }
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
@@ -811,7 +844,7 @@ pub const AggregatedMetrics = struct {
                     const buckets = config.buckets;
                     const aggregated = try aggregation.aggregateExplicitBucketHistogram(f64, allocator, data_points.double, buckets, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
-                        dp.timestamps = .{ .time_ns = current_time };
+                        dp.timestamps = collection_timestamps;
                     }
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
@@ -820,7 +853,7 @@ pub const AggregatedMetrics = struct {
                     const ret = try allocator.alloc(DataPoint(HistogramDataPoint), data_points.histogram.len);
                     for (data_points.histogram, 0..) |dp, i| {
                         var d = try dp.deepCopy(allocator);
-                        d.timestamps = .{ .time_ns = current_time };
+                        d.timestamps = collection_timestamps;
                         ret[i] = d;
                     }
                     break :blk MeasurementsData{ .histogram = ret };
@@ -832,7 +865,7 @@ pub const AggregatedMetrics = struct {
                     const config = aggregation_type.ExponentialBucketHistogram;
                     const aggregated = try aggregation.aggregateExponentialBucketHistogram(i64, allocator, data_points.int, config.max_scale, config.max_size, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
-                        dp.timestamps = .{ .time_ns = current_time };
+                        dp.timestamps = collection_timestamps;
                     }
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
@@ -840,7 +873,7 @@ pub const AggregatedMetrics = struct {
                     const config = aggregation_type.ExponentialBucketHistogram;
                     const aggregated = try aggregation.aggregateExponentialBucketHistogram(f64, allocator, data_points.double, config.max_scale, config.max_size, config.record_min_max, record_sum);
                     for (aggregated) |*dp| {
-                        dp.timestamps = .{ .time_ns = current_time };
+                        dp.timestamps = collection_timestamps;
                     }
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
@@ -849,14 +882,89 @@ pub const AggregatedMetrics = struct {
                     const ret = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), data_points.exponential_histogram.len);
                     for (data_points.exponential_histogram, 0..) |dp, i| {
                         var d = try dp.deepCopy(allocator);
-                        d.timestamps = .{ .time_ns = current_time };
+                        d.timestamps = collection_timestamps;
                         ret[i] = d;
                     }
                     break :blk MeasurementsData{ .exponential_histogram = ret };
                 },
             },
         };
-        return aggregated orelse null;
+        const result = aggregated orelse return null;
+        errdefer {
+            var failed = result;
+            failed.deinit(allocator);
+        }
+        // Buffered ownership survives changes to the filters before collection.
+        switch (data_points) {
+            inline .int, .double => |raw| {
+                var captured = false;
+                for (raw) |point| if (point.attributes_owned or point.exemplar_candidate != null) {
+                    captured = true;
+                    break;
+                };
+                if (captured) switch (result) {
+                    inline else => |points| for (points) |*point| {
+                        try point.ownAttributes(allocator);
+                        if (point.exemplar_candidate) |*sample| sample.deinit(allocator);
+                        point.exemplar_candidate = null;
+                    },
+                };
+            },
+            .histogram, .exponential_histogram => {},
+        }
+        if (exemplar_context) |ctx| {
+            const options: exemplar.ReservoirOptions = switch (aggregation_type) {
+                .ExplicitBucketHistogram => |config| if (config.buckets.len > 0) .{ .aligned = config.buckets } else .{ .fixed_size = 1 },
+                .ExponentialBucketHistogram => |config| .{ .fixed_size = @min(@as(usize, 20), config.max_size) },
+                else => .{ .fixed_size = 1 },
+            };
+            const stream = exemplar.StreamIdentity{
+                .instrument_id = ctx.instrument_id,
+                .aggregation = switch (aggregation_type) {
+                    .LastValue => .last_value,
+                    .ExplicitBucketHistogram => .explicit_histogram,
+                    .ExponentialBucketHistogram => .exponential_histogram,
+                    else => .sum,
+                },
+                .max_scale = if (aggregation_type == .ExponentialBucketHistogram) aggregation_type.ExponentialBucketHistogram.max_scale else 0,
+                .max_size = if (aggregation_type == .ExponentialBucketHistogram) aggregation_type.ExponentialBucketHistogram.max_size else 0,
+                .record_min_max = switch (aggregation_type) {
+                    .ExplicitBucketHistogram => |config| config.record_min_max,
+                    .ExponentialBucketHistogram => |config| config.record_min_max,
+                    else => false,
+                },
+            };
+            switch (data_points) {
+                inline .int, .double => |raw| switch (result) {
+                    inline else => |points| try ctx.meter.exemplar_sampler.attach(allocator, ctx.meter.io, stream, options, ctx.factory, raw, points),
+                },
+                .histogram, .exponential_histogram => {},
+            }
+        }
+        return result;
+    }
+
+    fn filterAttributes(allocator: std.mem.Allocator, points: MeasurementsData, filter: view.AttributeFilter) !void {
+        switch (points) {
+            inline else => |list| for (list) |*point| {
+                const filtered = try filter.apply(allocator, Attributes.with(point.attributes));
+                const attrs = if (filtered) |attributes| attributes.attributes else null;
+                errdefer if (attrs) |attributes| allocator.free(attributes);
+                const owned = if (point.attributes_owned and attrs != null)
+                    try exemplar.Exemplar.copyAttributes(allocator, attrs.?)
+                else
+                    attrs;
+                if (point.attributes) |original| {
+                    if (point.attributes_owned) for (original) |attr| {
+                        allocator.free(attr.key);
+                        if (attr.value == .string) allocator.free(attr.value.string);
+                    };
+                    allocator.free(original);
+                }
+                if (point.attributes_owned) if (attrs) |attributes| allocator.free(attributes);
+                point.attributes = owned;
+            },
+        }
     }
 
     /// Fetch the aggreagted metrics from the meter.
@@ -867,6 +975,9 @@ pub const AggregatedMetrics = struct {
     pub fn fetch(allocator: std.mem.Allocator, meter: *Meter, views: []const view.View, agg_selector: ?view.AggregationSelector) ![]Measurements {
         meter.mx.lockUncancelable(meter.io);
         defer meter.mx.unlock(meter.io);
+
+        if (meter.exemplar_filter != .always_off) meter.exemplar_sampler.beginCollection();
+        defer if (meter.exemplar_filter != .always_off) meter.exemplar_sampler.endCollection();
 
         var results = std.ArrayList(Measurements).empty;
 
@@ -879,25 +990,29 @@ pub const AggregatedMetrics = struct {
 
         var iter = meter.instruments.valueIterator();
         while (iter.next()) |instr| {
-            const aggregation_type = view.aggregationForViews(
-                views,
-                instr.*,
-                &meter.scope,
-                agg_selector orelse view.DefaultAggregation,
-            );
+            var config = view.CombinedViewConfig.init(instr.*.kind);
+            for (views) |*v| if (v.matches(instr.*, &meter.scope)) config.applyView(v);
+            const aggregation_type = config.combinedAggregation(agg_selector orelse view.DefaultAggregation);
 
             try aggregation_type.validate();
 
             // Get the data points from the instrument and reset their state,
             const data_points: MeasurementsData = try instr.*.getInstrumentsData(allocator);
+            var consumed = false;
+            errdefer if (!consumed) {
+                var failed = data_points;
+                failed.deinit(allocator);
+            };
+            if (config.attribute_filter) |filter| try filterAttributes(allocator, data_points, filter);
 
             // Histogram sum is not collected for instruments that can record negative values.
             // See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation
-            const aggregated_data = try aggregate(allocator, data_points, aggregation_type, instr.*.kind.isMonotonic());
+            consumed = true;
+            const aggregated_data = try aggregate(allocator, data_points, aggregation_type, instr.*.kind.isMonotonic(), if (meter.exemplar_filter != .always_off) .{ .meter = meter, .instrument_id = @intFromPtr(instr.*), .factory = config.exemplar_reservoir } else null);
             // then fill the result with the aggregated data points
             // only if there are data points.
             if (aggregated_data) |agg| {
-                try results.append(allocator, Measurements{
+                var measurement = Measurements{
                     .scope = .{
                         .name = meter.scope.name,
                         .version = meter.scope.version,
@@ -908,7 +1023,9 @@ pub const AggregatedMetrics = struct {
                     .instrumentOptions = instr.*.opts,
                     .data = agg,
                     .aggregation = aggregation_type.getType(),
-                });
+                };
+                errdefer measurement.deinit(allocator);
+                try results.append(allocator, measurement);
             }
         }
         return try results.toOwnedSlice(allocator);
@@ -929,7 +1046,7 @@ test "aggregated metrics deduplicated from meter without attributes" {
 
     const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
 
-    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum, true);
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum, true, null);
     defer switch (deduped.?) {
         inline else => |m| std.testing.allocator.free(m),
     };
@@ -961,7 +1078,7 @@ test "aggregated metrics deduplicated from meter with attributes" {
 
     const data_points = try instr.*.getInstrumentsData(std.testing.allocator);
 
-    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum, true);
+    const deduped = try AggregatedMetrics.aggregate(std.testing.allocator, data_points, .Sum, true, null);
     defer switch (deduped.?) {
         inline else => |m| {
             for (deduped.?.int) |*dp| {
@@ -1381,4 +1498,297 @@ test "view is additive processing with conflicts" {
     try std.testing.expectEqual(1, result.len);
     // Data should be present
     try std.testing.expect(result[0].data.histogram.len > 0);
+}
+
+test "exemplar aggregation samples the series after View attribute filtering" {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "exemplar-test" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const counter = try meter.createCounter(u64, .{ .name = "requests" });
+    counter.exemplar_filter = .always_on;
+    const region: []const u8 = "west";
+    const first: []const u8 = "one";
+    const second: []const u8 = "two";
+    try counter.add(7, .{ "region", region, "request_id", first });
+    try counter.add(9, .{ "region", region, "request_id", second });
+    const views = [_]view.View{.{ .instrument_selector = .{ .name = "requests" }, .aggregation = .Sum, .temporality = .Cumulative, .attribute_filter = .{ .include_keys = &.{"region"} } }};
+    const collected = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+    defer {
+        for (collected) |*measurement| measurement.deinit(allocator);
+        allocator.free(collected);
+    }
+    const points = collected[0].data.int;
+    try std.testing.expectEqual(@as(usize, 1), points.len);
+    try std.testing.expectEqual(@as(i64, 16), points[0].value);
+    try std.testing.expectEqual(@as(usize, 1), points[0].exemplars.len);
+    const sample = points[0].exemplars[0];
+    try std.testing.expect(sample.value.int == 7 or sample.value.int == 9);
+    try std.testing.expectEqual(@as(usize, 1), sample.filtered_attributes.len);
+    try std.testing.expectEqualStrings("request_id", sample.filtered_attributes[0].key);
+    try std.testing.expectEqualStrings(if (sample.value.int == 7) "one" else "two", sample.filtered_attributes[0].value.string);
+}
+
+test "exemplar aggregation aligns histogram samples with bucket boundaries" {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "exemplar-test" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const histogram = try meter.createHistogram(f64, .{ .name = "latency" });
+    histogram.exemplar_filter = .always_on;
+    for ([_]f64{ -1, 0, 5, 10, 11 }) |value| try histogram.record(value, .{});
+    const views = [_]view.View{.{ .instrument_selector = .{ .name = "latency" }, .aggregation = .{ .ExplicitBucketHistogram = .{ .buckets = &.{ 0, 10 } } }, .temporality = .Cumulative }};
+    const collected = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+    defer {
+        for (collected) |*measurement| measurement.deinit(allocator);
+        allocator.free(collected);
+    }
+    const samples = collected[0].data.histogram[0].exemplars;
+    try std.testing.expectEqual(@as(usize, 3), samples.len);
+    try std.testing.expectEqual(@as(f64, 0), samples[0].value.double);
+    try std.testing.expectEqual(@as(f64, 10), samples[1].value.double);
+    try std.testing.expectEqual(@as(f64, 11), samples[2].value.double);
+}
+
+test "exemplar aggregation bounds exponential histogram reservoirs" {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "exemplar-test" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const histogram = try meter.createHistogram(u64, .{ .name = "sizes" });
+    histogram.exemplar_filter = .always_on;
+    for ([_]u64{ 1, 2, 3, 4 }) |value| try histogram.record(value, .{});
+    const views = [_]view.View{.{ .instrument_selector = .{ .name = "sizes" }, .aggregation = .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{ .max_size = 2 }) }, .temporality = .Cumulative }};
+    const collected = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+    defer {
+        for (collected) |*measurement| measurement.deinit(allocator);
+        allocator.free(collected);
+    }
+    const point = collected[0].data.exponential_histogram[0];
+    try std.testing.expectEqual(@as(u64, 4), point.value.count);
+    try std.testing.expectEqual(@as(usize, 2), point.exemplars.len);
+    for (point.exemplars) |sample| try std.testing.expect(sample.value.int >= 1 and sample.value.int <= 4);
+}
+
+test "exemplar custom reservoir changes with aggregation configuration" {
+    const allocator = std.testing.allocator;
+    const Factory = struct {
+        var calls: usize = 0;
+        fn create(a: std.mem.Allocator, io: std.Io, options: exemplar.ReservoirOptions) !exemplar.ExemplarReservoir {
+            calls += 1;
+            return exemplar.SimpleFixedSizeExemplarReservoir.init(a, io, options.fixed_size);
+        }
+    };
+    Factory.calls = 0;
+    var meter = Meter{ .scope = .{ .name = "exemplar-streams" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const counter = try meter.createCounter(u64, .{ .name = "requests" });
+    counter.exemplar_filter = .always_on;
+    const aggregations = [_]view.Aggregation{
+        .Sum,                                                                                                                  .LastValue,
+        .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{ .max_size = 2, .max_scale = 5 }) }, .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{ .max_size = 2, .max_scale = 6 }) },
+    };
+    for (aggregations, 0..) |aggregation_type, index| {
+        try counter.add(1, .{});
+        const views = [_]view.View{.{ .instrument_selector = .{ .name = "requests" }, .aggregation = aggregation_type, .temporality = .Cumulative, .exemplar_reservoir = Factory.create }};
+        const collected = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+        defer {
+            for (collected) |*measurement| measurement.deinit(allocator);
+            allocator.free(collected);
+        }
+        try std.testing.expectEqual(index + 1, Factory.calls);
+    }
+}
+
+test "exemplar reservoirs retire inactive series between collections" {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "exemplar-retirement" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const Factory = struct {
+        var calls: usize = 0;
+        fn create(a: std.mem.Allocator, io: std.Io, options: exemplar.ReservoirOptions) !exemplar.ExemplarReservoir {
+            calls += 1;
+            return exemplar.AlignedHistogramBucketExemplarReservoir.init(a, io, options.aligned);
+        }
+    };
+    Factory.calls = 0;
+    const views = [_]view.View{.{
+        .instrument_selector = .{},
+        .aggregation = .{ .ExplicitBucketHistogram = .{} },
+        .temporality = .Delta,
+        .exemplar_reservoir = Factory.create,
+    }};
+    const histogram = try meter.createHistogram(u64, .{ .name = "requests" });
+    histogram.exemplar_filter = .always_on;
+    for (0..8) |index| {
+        for (0..2) |_| {
+            try histogram.record(1, .{ "series", @as(u64, index) });
+            const collected = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+            defer {
+                for (collected) |*measurement| measurement.deinit(allocator);
+                allocator.free(collected);
+            }
+            try std.testing.expectEqual(@as(usize, 1), meter.exemplar_sampler.reservoirs.count());
+        }
+        try std.testing.expectEqual(index + 1, Factory.calls);
+    }
+    const idle = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+    defer allocator.free(idle);
+    try std.testing.expectEqual(@as(usize, 0), meter.exemplar_sampler.reservoirs.count());
+}
+
+test "exemplar collection time stays at the drain boundary during delayed aggregation" {
+    inline for (.{ .{ Kind.Counter, u64 }, .{ Kind.UpDownCounter, i64 }, .{ Kind.Histogram, u64 }, .{ Kind.Histogram, f64 }, .{ Kind.Gauge, i64 }, .{ Kind.Gauge, f64 } }) |case|
+        try checkExemplarDrainBoundary(case[0], case[1]);
+}
+
+fn checkExemplarDrainBoundary(comptime kind: Kind, comptime T: type) !void {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "exemplar-boundary" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const instrument = try Instrument.new(kind, .{ .name = "boundary" }, allocator);
+    defer instrument.deinit();
+    const typed = switch (kind) {
+        .Counter => try instrument.counter(std.testing.io, T),
+        .UpDownCounter => try instrument.upDownCounter(std.testing.io, T),
+        .Histogram => try instrument.histogram(std.testing.io, T),
+        .Gauge => try instrument.gauge(std.testing.io, T),
+        else => unreachable,
+    };
+    typed.exemplar_filter = .always_on;
+    if (kind == .Counter or kind == .UpDownCounter) try typed.add(1, .{}) else try typed.record(1, .{});
+    var first_raw = try instrument.getInstrumentsData(allocator);
+    var first_owned = true;
+    defer if (first_owned) first_raw.deinit(allocator);
+    if (kind == .Counter or kind == .UpDownCounter) try typed.add(2, .{}) else try typed.record(2, .{});
+    var second_raw = try instrument.getInstrumentsData(allocator);
+    var second_owned = true;
+    defer if (second_owned) second_raw.deinit(allocator);
+    const aggregation_type: view.Aggregation = switch (kind) {
+        .Gauge => .LastValue,
+        .Histogram => .{ .ExplicitBucketHistogram = .{} },
+        else => .Sum,
+    };
+    const ctx = AggregatedMetrics.ExemplarContext{ .meter = &meter, .instrument_id = @intFromPtr(instrument), .factory = null };
+    first_owned = false;
+    var first = (try AggregatedMetrics.aggregate(allocator, first_raw, aggregation_type, kind.isMonotonic(), ctx)).?;
+    defer first.deinit(allocator);
+    second_owned = false;
+    var second = (try AggregatedMetrics.aggregate(allocator, second_raw, aggregation_type, kind.isMonotonic(), ctx)).?;
+    defer second.deinit(allocator);
+    for ([_]MeasurementsData{ first, second }) |batch| switch (batch) {
+        inline else => |points| for (points) |point| {
+            try std.testing.expectEqual(@as(usize, 1), point.exemplars.len);
+            const timestamps = point.timestamps.?;
+            try std.testing.expect(timestamps.start_time_ns != null);
+            try std.testing.expect(timestamps.start_time_ns.? <= point.exemplars[0].time_ns);
+            try std.testing.expect(point.exemplars[0].time_ns <= timestamps.time_ns);
+        },
+    };
+    const first_end = switch (first) {
+        inline else => |points| points[0].timestamps.?.time_ns,
+    };
+    const second_time = switch (second) {
+        inline else => |points| blk: {
+            try std.testing.expectEqual(@as(usize, 1), points[0].exemplars.len);
+            break :blk points[0].exemplars[0].time_ns;
+        },
+    };
+    try std.testing.expect(first_end <= second_time);
+}
+
+test "exemplar filter combinations preserve attributes and respect meter suppression" {
+    const filters = [_]exemplar.ExemplarFilter{ .always_off, .always_on, .trace_based };
+    const aggregations = [_]view.Aggregation{ .{ .ExplicitBucketHistogram = .{} }, .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{}) }, .Sum, .LastValue };
+    for (filters) |meter_filter| for (filters) |instrument_filter| for (aggregations) |aggregation_type| {
+        try checkExemplarFilterCombination(std.testing.allocator, meter_filter, instrument_filter, aggregation_type, false);
+    };
+}
+
+test "exemplar conflicting filters clean up failed numeric collections" {
+    for ([_]view.Aggregation{ .Sum, .LastValue }) |aggregation_type|
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, checkExemplarFilterCombination, .{ exemplar.ExemplarFilter.always_off, exemplar.ExemplarFilter.always_on, aggregation_type, false });
+}
+
+fn checkExemplarFilterCombination(allocator: std.mem.Allocator, meter_filter: exemplar.ExemplarFilter, instrument_filter: exemplar.ExemplarFilter, aggregation_type: view.Aggregation, disable_after_recording: bool) !void {
+    var meter = Meter{ .scope = .{ .name = "exemplar-filter-conflict" }, .instruments = .empty, .allocator = std.testing.allocator, .io = std.testing.io, .exemplar_filter = meter_filter };
+    defer meter.deinit();
+    const counter = try meter.createCounter(u64, .{ .name = "requests" });
+    counter.exemplar_filter = instrument_filter;
+    var key = "route".*;
+    var value = "/first".*;
+    var attrs = [_]Attribute{.{ .key = &key, .value = .{ .string = &value } }};
+    try counter.addWithSlice(7, &attrs);
+    if (disable_after_recording) {
+        counter.exemplar_filter = .always_off;
+        meter.exemplar_filter = .always_off;
+    }
+    if (instrument_filter == .always_on) {
+        @memcpy(&key, "other");
+        @memcpy(&value, "/later");
+    }
+    const views = [_]view.View{.{ .instrument_selector = .{}, .aggregation = aggregation_type, .temporality = .Cumulative }};
+    const collected = try AggregatedMetrics.fetch(allocator, &meter, &views, null);
+    defer {
+        for (collected) |*measurement| measurement.deinit(allocator);
+        allocator.free(collected);
+    }
+    try std.testing.expectEqual(@as(usize, 1), collected.len);
+    switch (collected[0].data) {
+        inline else => |points| {
+            try std.testing.expectEqual(@as(usize, 1), points.len);
+            if (instrument_filter == .always_on) try std.testing.expect(points[0].attributes_owned);
+            try std.testing.expectEqual(@as(usize, 1), points[0].attributes.?.len);
+            try std.testing.expectEqualStrings("route", points[0].attributes.?[0].key);
+            try std.testing.expectEqualStrings("/first", points[0].attributes.?[0].value.string);
+            try std.testing.expect(points[0].exemplar_candidate == null);
+            try std.testing.expectEqual(@as(usize, if (instrument_filter == .always_on and meter.exemplar_filter != .always_off) 1 else 0), points[0].exemplars.len);
+        },
+    }
+    if (meter.exemplar_filter == .always_off) try std.testing.expectEqual(@as(usize, 0), meter.exemplar_sampler.reservoirs.count());
+}
+
+test "exemplar collection windows stay stable across delta cumulative and idle cycles" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |cumulative| for ([_]bool{ false, true }) |sample_first| {
+        var meter = Meter{ .scope = .{ .name = "exemplar-cycles" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io, .exemplar_filter = .always_on };
+        defer meter.deinit();
+        const counter = try meter.createCounter(u64, .{ .name = "requests" });
+        const temporal = try metrics_temporality.init(allocator);
+        defer temporal.deinit();
+        var initial_start: ?u64 = null;
+        var previous_end: ?u64 = null;
+        var total: i64 = 0;
+        for (0..3) |cycle| {
+            counter.exemplar_filter = if (cycle == 0 and !sample_first) .always_off else .always_on;
+            const value: u64 = cycle + 1;
+            total += @intCast(value);
+            try counter.add(value, .{ "series", @as(u64, 1) });
+            const data = try AggregatedMetrics.fetch(allocator, &meter, &.{}, null);
+            defer {
+                for (data) |*measurement| measurement.deinit(allocator);
+                allocator.free(data);
+            }
+            try std.testing.expectEqual(@as(usize, 1), data.len);
+            try temporal.process(&data[0], if (cumulative) view.TemporalityCumulative else view.TemporalityDelta);
+            const point = data[0].data.int[0];
+            try std.testing.expectEqual(if (cumulative) total else @as(i64, @intCast(value)), point.value);
+            const timestamps = point.timestamps.?;
+            if (initial_start == null) initial_start = timestamps.start_time_ns;
+            if (cumulative) try std.testing.expectEqual(initial_start, timestamps.start_time_ns) else if (previous_end) |end| try std.testing.expectEqual(end, timestamps.start_time_ns.?);
+            try std.testing.expectEqual(@as(usize, if (cycle == 0 and !sample_first) 0 else 1), point.exemplars.len);
+            for (point.exemplars) |sample| {
+                try std.testing.expect(timestamps.start_time_ns.? <= sample.time_ns);
+                try std.testing.expect(sample.time_ns <= timestamps.time_ns);
+            }
+            previous_end = timestamps.time_ns;
+            const idle = try AggregatedMetrics.fetch(allocator, &meter, &.{}, null);
+            defer allocator.free(idle);
+            try std.testing.expectEqual(@as(usize, 0), idle.len);
+        }
+    };
+}
+
+test "exemplar disabling an instrument after recording preserves buffered ownership" {
+    const aggregations = [_]view.Aggregation{ .{ .ExplicitBucketHistogram = .{} }, .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{}) }, .Sum, .LastValue };
+    for ([_]exemplar.ExemplarFilter{ .always_off, .always_on, .trace_based }) |filter| for (aggregations) |aggregation_type| {
+        try checkExemplarFilterCombination(std.testing.allocator, filter, .always_on, aggregation_type, true);
+    };
 }

@@ -13,6 +13,7 @@ const Measurements = @import("../../api/metrics/measurement.zig").Measurements;
 const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
 const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
 const view = @import("view.zig");
+const Exemplar = @import("exemplar.zig").Exemplar;
 
 const TemporalAggregator = @This();
 
@@ -27,6 +28,7 @@ pub const ScopedDataPoint = struct {
     instrument_options: sdk_instrument.InstrumentOptions,
     instrument_kind: Kind,
     datapoint_attributes: ?[]Attribute,
+    attributes_owned: bool = false,
 
     pub fn eql(a: ScopedDataPoint, b: ScopedDataPoint) bool {
         const ctx = InstrumentationScope.HashContext{};
@@ -87,24 +89,20 @@ pub fn init(allocator: std.mem.Allocator) !*TemporalAggregator {
 pub fn deinit(self: *TemporalAggregator) void {
     var int_keys = self.ints.keyIterator();
     while (int_keys.next()) |key| {
-        if (key.datapoint_attributes) |attrs| self.memory.free(attrs);
+        freeKeyAttributes(self.memory, key.*);
     }
     var double_keys = self.doubles.keyIterator();
     while (double_keys.next()) |key| {
-        if (key.datapoint_attributes) |attrs| self.memory.free(attrs);
+        freeKeyAttributes(self.memory, key.*);
     }
     var histogram_entries = self.histograms.iterator();
     while (histogram_entries.next()) |entry| {
-        if (entry.key_ptr.datapoint_attributes) |attrs| {
-            self.memory.free(attrs);
-        }
+        freeKeyAttributes(self.memory, entry.key_ptr.*);
         entry.value_ptr.deinit(self.memory);
     }
     var exponential_histogram_entries = self.exponential_histogram.iterator();
     while (exponential_histogram_entries.next()) |entry| {
-        if (entry.key_ptr.datapoint_attributes) |attrs| {
-            self.memory.free(attrs);
-        }
+        freeKeyAttributes(self.memory, entry.key_ptr.*);
         entry.value_ptr.deinit(self.memory);
     }
     self.ints.deinit();
@@ -112,6 +110,20 @@ pub fn deinit(self: *TemporalAggregator) void {
     self.histograms.deinit();
     self.exponential_histogram.deinit();
     self.memory.destroy(self);
+}
+
+fn copyKeyAttributes(allocator: std.mem.Allocator, attributes: ?[]Attribute) !?[]Attribute {
+    return if (attributes) |attrs| try Exemplar.copyAttributes(allocator, attrs) else null;
+}
+
+fn freeKeyAttributes(allocator: std.mem.Allocator, key: ScopedDataPoint) void {
+    if (key.datapoint_attributes) |attrs| {
+        if (key.attributes_owned) for (attrs) |attr| {
+            allocator.free(attr.key);
+            if (attr.value == .string) allocator.free(attr.value.string);
+        };
+        allocator.free(attrs);
+    }
 }
 
 /// Asynchronous instruments observe the current total instead of an increment.
@@ -302,11 +314,11 @@ fn processCumulativeDataPoints(
         } else {
             errdefer _ = map.remove(identity);
 
-            // The key owns the attribute slice so it survives output deinitialization.
-            const attrs = try Attributes.with(dp.attributes).dupe(map.allocator);
-            errdefer {
-                if (attrs) |a| map.allocator.free(a);
-            }
+            // The key owns its strings as well as the slice after export.
+            var owned_key = identity;
+            owned_key.datapoint_attributes = try copyKeyAttributes(map.allocator, dp.attributes);
+            owned_key.attributes_owned = true;
+            errdefer freeKeyAttributes(map.allocator, owned_key);
 
             const stored_value = switch (T) {
                 HistogramDataPoint => blk: {
@@ -329,7 +341,7 @@ fn processCumulativeDataPoints(
                 else => @compileError("unsupported cumulative data point type"),
             };
 
-            gop.key_ptr.datapoint_attributes = attrs;
+            gop.key_ptr.* = owned_key;
             gop.value_ptr.* = .{
                 .value = stored_value,
                 .attributes = null,
@@ -486,10 +498,12 @@ fn processDeltaDataPoints(
         } else {
             // The map outlives the measurements: their attributes are owned by the
             // exporter and freed after export, so the key must own its own copy.
-            gop.key_ptr.datapoint_attributes = Attributes.with(dp.attributes).dupe(map.allocator) catch |err| {
+            gop.key_ptr.datapoint_attributes = copyKeyAttributes(map.allocator, dp.attributes) catch |err| {
                 _ = map.remove(identity);
                 return err;
             };
+            gop.key_ptr.attributes_owned = true;
+            gop.value_ptr.* = .{ .value = dp.value };
         }
         dp.timestamps = .{ .start_time_ns = start_time, .time_ns = dp_time };
         // Update map with this latest datapoint
@@ -990,5 +1004,26 @@ test "cumulative exponential histogram cleans up on allocation failure" {
                 break;
             }
         }
+    }
+}
+
+test "exemplar temporal aggregation preserves established collection bounds" {
+    const allocator = std.testing.allocator;
+    inline for (.{ false, true }) |cumulative| {
+        const temporal = try TemporalAggregator.init(allocator);
+        defer temporal.deinit();
+        var points = [_]DataPoint(i64){.{ .value = 1, .timestamps = .{ .start_time_ns = 200, .time_ns = 200 } }};
+        var measurement = Measurements{
+            .scope = .{ .name = "exemplar-period" },
+            .instrumentKind = .Counter,
+            .instrumentOptions = .{ .name = "requests" },
+            .data = .{ .int = &points },
+        };
+        if (cumulative) try processCumulativeDataPoints(i64, &temporal.ints, &measurement, &points, 1) else try processDeltaDataPoints(i64, &temporal.ints, &measurement, &points, 1);
+        var samples = [_]Exemplar{.{ .value = .{ .int = 1 }, .time_ns = 190 }};
+        points[0] = .{ .value = 1, .timestamps = .{ .start_time_ns = 190, .time_ns = 300 }, .exemplars = &samples };
+        if (cumulative) try processCumulativeDataPoints(i64, &temporal.ints, &measurement, &points, 1) else try processDeltaDataPoints(i64, &temporal.ints, &measurement, &points, 1);
+        try std.testing.expectEqual(@as(u64, 200), points[0].timestamps.?.start_time_ns.?);
+        try std.testing.expectEqual(@as(u64, 300), points[0].timestamps.?.time_ns);
     }
 }
