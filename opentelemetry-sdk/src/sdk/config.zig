@@ -13,6 +13,7 @@ const CommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zi
 const EnvMap = std.process.Environ.Map;
 
 const Sampler = @import("trace/sampler.zig").Sampler;
+const percentDecode = @import("resource.zig").percentDecode;
 
 /// Log level for SDK internal logging
 pub const LogLevel = enum {
@@ -360,18 +361,21 @@ pub fn deinitGlobal() void {
 fn resolveServiceName(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) ![]const u8 {
     if (env_map.get("OTEL_SERVICE_NAME")) |name| return allocator.dupe(u8, name);
     if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |attrs| {
-        if (serviceNameFromResourceAttributes(attrs)) |name| return allocator.dupe(u8, name);
+        if (try serviceNameFromResourceAttributes(allocator, attrs)) |name| return name;
     }
     return defaultServiceName(allocator, io);
 }
 
 /// Extract the service.name value from OTEL_RESOURCE_ATTRIBUTES, if present.
-fn serviceNameFromResourceAttributes(attrs: []const u8) ?[]const u8 {
+fn serviceNameFromResourceAttributes(allocator: std.mem.Allocator, attrs: []const u8) !?[]const u8 {
     var iter: CommaSeparatedAssignmentIterator = .init(attrs);
     while (iter.next()) |entry| {
-        if (!std.mem.eql(u8, entry.name, "service.name")) continue;
+        const raw_val = entry.value orelse continue;
+        const key = try percentDecode(allocator, entry.name);
+        defer allocator.free(key);
+        if (!std.mem.eql(u8, key, "service.name")) continue;
         // A bare `service.name` with no value does not count; keep looking.
-        if (entry.value) |value| return value;
+        return try percentDecode(allocator, raw_val);
     }
     return null;
 }

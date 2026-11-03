@@ -39,8 +39,30 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
     return try attributes.toOwnedSlice(allocator);
 }
 
+/// Decode a percent-encoded string according to RFC 3986.
+/// Decodes triplets like `%20` into their respective byte values using std.Uri.
+/// Literal `+` characters are preserved (not converted to space).
+/// Returns an allocated slice owned by the caller.
+pub fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, input, '%') == null) {
+        return allocator.dupe(u8, input);
+    }
+
+    var stack_buf: [256]u8 = undefined;
+    if (input.len <= stack_buf.len) {
+        const decoded = std.Uri.percentDecodeBackwards(&stack_buf, input);
+        return allocator.dupe(u8, decoded);
+    }
+
+    const temp_buf = try allocator.alloc(u8, input.len);
+    defer allocator.free(temp_buf);
+    const decoded = std.Uri.percentDecodeBackwards(temp_buf, input);
+    return allocator.dupe(u8, decoded);
+}
+
 /// Parse resource attributes from comma-separated key=value pairs
 /// Format: "key1=value1,key2=value2"
+/// Keys and values are percent-decoded according to RFC 3986.
 /// If skip_service_name is true, service.name entries will be skipped (OTEL_SERVICE_NAME takes precedence)
 fn parseResourceAttributes(
     allocator: std.mem.Allocator,
@@ -55,25 +77,39 @@ fn parseResourceAttributes(
 
     var iter: CommaSeparatedAssignmentIterator = .init(attrs_str);
     while (iter.next()) |entry| {
-        const value = entry.value orelse {
+        const raw_value = entry.value orelse {
             std.log.warn("Invalid resource attribute (missing '='): {s}", .{entry.name});
             continue;
         };
 
         if (entry.name.len == 0) {
-            std.log.warn("Invalid resource attribute (empty key): ={s}", .{value});
+            std.log.warn("Invalid resource attribute (empty key): ={s}", .{raw_value});
             continue;
         }
+
+        const key = try percentDecode(allocator, entry.name);
+        errdefer allocator.free(key);
+
+        if (key.len == 0) {
+            allocator.free(key);
+            std.log.warn("Invalid resource attribute (decoded key is empty): {s}", .{entry.name});
+            continue;
+        }
+
+        const value = try percentDecode(allocator, raw_value);
+        errdefer allocator.free(value);
 
         // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
-        if (skip_service_name and std.mem.eql(u8, entry.name, "service.name")) {
+        if (skip_service_name and std.mem.eql(u8, key, "service.name")) {
+            allocator.free(key);
+            allocator.free(value);
             continue;
         }
 
-        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, .{
-            .key = entry.name,
+        attributes.appendAssumeCapacity(.{
+            .key = key,
             .value = .{ .string = value },
-        }));
+        });
     }
 }
 
@@ -429,4 +465,103 @@ test "mergeResources cleanup on allocation failure does not leak" {
 
         _ = mergeResources(allocator, &res1, &res2) catch {};
     }
+}
+
+test "percentDecode RFC 3986 decoding" {
+    const allocator = std.testing.allocator;
+
+    // Normal string without %
+    {
+        const decoded = try percentDecode(allocator, "hello-world_123");
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("hello-world_123", decoded);
+    }
+
+    // %20 space and %2C comma and %3D equal sign
+    {
+        const decoded = try percentDecode(allocator, "foo%20bar%2Cbaz%3Dqux");
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("foo bar,baz=qux", decoded);
+    }
+
+    // Lowercase and uppercase hex digits
+    {
+        const decoded = try percentDecode(allocator, "%2fpath%2Fto%3aitem");
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("/path/to:item", decoded);
+    }
+
+    // RFC 3986 requires literal '+' to NOT be converted to space
+    {
+        const decoded = try percentDecode(allocator, "1+1=2+and+spaces%20here");
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("1+1=2+and+spaces here", decoded);
+    }
+
+    // Invalid or incomplete percent encodings are kept verbatim by std.Uri
+    {
+        const decoded = try percentDecode(allocator, "truncated%and%2plus%ZZ");
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("truncated%and%2plus%ZZ", decoded);
+    }
+}
+
+test "parseResourceAttributes percent-decodes keys and values" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .service_name = null,
+        .resource_attributes = "deployment.environment=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2Fvar%2Flog,math=1+1,literal%2=kept",
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(@as(usize, 6), resource.len);
+    try std.testing.expectEqualStrings("deployment.environment", resource[0].key);
+    try std.testing.expectEqualStrings("prod east", resource[0].value.string);
+
+    try std.testing.expectEqualStrings("custom.tag", resource[1].key);
+    try std.testing.expectEqualStrings("val,1", resource[1].value.string);
+
+    try std.testing.expectEqualStrings("equation", resource[2].key);
+    try std.testing.expectEqualStrings("a=b", resource[2].value.string);
+
+    try std.testing.expectEqualStrings("path", resource[3].key);
+    try std.testing.expectEqualStrings("/var/log", resource[3].value.string);
+
+    try std.testing.expectEqualStrings("math", resource[4].key);
+    try std.testing.expectEqualStrings("1+1", resource[4].value.string);
+
+    try std.testing.expectEqualStrings("literal%2", resource[5].key);
+    try std.testing.expectEqualStrings("kept", resource[5].value.string);
+}
+
+test "service.name percent-decoded from OTEL_RESOURCE_ATTRIBUTES in Configuration.init" {
+    const allocator = std.testing.allocator;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=my%20special%20service,host=localhost");
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer config.deinit();
+
+    try std.testing.expectEqualStrings("my special service", config.service_name.?);
+
+    const resource = try buildFromConfig(allocator, config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(@as(usize, 2), resource.len);
+    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings("my special service", resource[0].value.string);
+    try std.testing.expectEqualStrings("host", resource[1].key);
+    try std.testing.expectEqualStrings("localhost", resource[1].value.string);
 }
