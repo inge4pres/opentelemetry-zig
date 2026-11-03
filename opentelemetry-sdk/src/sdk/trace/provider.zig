@@ -365,10 +365,11 @@ pub const Tracer = struct {
             try span.setAttributes(attrs);
         }
 
-        // Add links if provided
+        // Add links if provided. The span allocates its own link array and attribute maps;
+        // attribute keys and string values are expected to outlive the span.
         if (options.links) |links| {
             for (links) |link| {
-                try span.addLink(link.span_context, null);
+                try span.addLinkFrom(link);
             }
         }
 
@@ -803,7 +804,9 @@ test "TracerProvider end span with links and events" {
     );
     defer link_span_context.trace_state.deinit();
 
-    const link = trace_api.Link.init(allocator, link_span_context);
+    var link = trace_api.Link.init(allocator, link_span_context);
+    defer link.deinit();
+    try link.attributes.put(allocator, "link.key", .{ .string = "link.val" });
 
     const attributes = try Attributes.from(allocator, .{
         "key1", @as([]const u8, "value1"),
@@ -822,4 +825,61 @@ test "TracerProvider end span with links and events" {
     try std.testing.expect(span.is_recording);
     try std.testing.expectEqual(@as(usize, 1), span.links.items.len);
     try std.testing.expectEqual(@as(usize, 2), span.attributes.count());
+    try std.testing.expectEqual(@as(usize, 1), span.links.items[0].attributes.count());
+    try std.testing.expectEqualStrings("link.val", span.links.items[0].attributes.get("link.key").?.string);
+}
+
+test "Tracer.startSpan preserves multiple links and link attributes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var prng = std.Random.DefaultPrng.init(42);
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = RandomIDGenerator.init(prng.random()) });
+    defer provider.deinit();
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+
+    const sc1 = trace_api.SpanContext.init(
+        trace_api.TraceID.init([16]u8{ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 }),
+        trace_api.SpanID.init([8]u8{ 1, 1, 1, 1, 1, 1, 1, 1 }),
+        trace_api.TraceFlags.default(),
+        trace_api.TraceState.init(allocator),
+        false,
+    );
+
+    const sc2 = trace_api.SpanContext.init(
+        trace_api.TraceID.init([16]u8{ 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 }),
+        trace_api.SpanID.init([8]u8{ 2, 2, 2, 2, 2, 2, 2, 2 }),
+        trace_api.TraceFlags.default(),
+        trace_api.TraceState.init(allocator),
+        false,
+    );
+
+    const link1_attrs = [_]Attribute{
+        .{ .key = "msg.id", .value = .{ .string = "msg-101" } },
+        .{ .key = "partition", .value = .{ .int = 3 } },
+    };
+    var link1 = try trace_api.Link.initWithAttributes(allocator, sc1, &link1_attrs);
+    defer link1.deinit();
+
+    var link2 = trace_api.Link.init(allocator, sc2);
+    defer link2.deinit();
+
+    var span = try tracer.startSpan(allocator, "multi-link-span", .{
+        .links = &[_]trace_api.Link{ link1, link2 },
+    });
+    defer span.deinit();
+    defer span.end(null);
+
+    try std.testing.expectEqual(@as(usize, 2), span.links.items.len);
+
+    // Verify first link attributes
+    const l1 = span.links.items[0];
+    try std.testing.expectEqual(@as(usize, 2), l1.attributes.count());
+    try std.testing.expectEqualStrings("msg-101", l1.attributes.get("msg.id").?.string);
+    try std.testing.expectEqual(@as(i64, 3), l1.attributes.get("partition").?.int);
+
+    // Verify second link attributes (empty)
+    const l2 = span.links.items[1];
+    try std.testing.expectEqual(@as(usize, 0), l2.attributes.count());
 }

@@ -303,6 +303,20 @@ pub const Span = struct {
             };
         }
 
+        /// Create a Link initialized with the given attributes slice.
+        ///
+        /// Attribute key and string value slices are stored by reference and are
+        /// expected to outlive the Link, consistent with Span.setAttribute.
+        pub fn initWithAttributes(allocator: std.mem.Allocator, span_context: SpanContext, attrs: []const attribute.Attribute) !Link {
+            var link = Link.init(allocator, span_context);
+            errdefer link.deinit();
+            try link.attributes.ensureTotalCapacity(allocator, attrs.len);
+            for (attrs) |attr| {
+                link.attributes.putAssumeCapacity(attr.key, attr.value);
+            }
+            return link;
+        }
+
         pub fn deinit(self: *Link) void {
             if (self.owns_trace_state) {
                 self.span_context.trace_state.deinit();
@@ -443,6 +457,32 @@ pub const Span = struct {
         }
 
         try self.links.append(self.allocator, link);
+    }
+
+    /// Add an existing Link to this Span, copying its attributes into this Span's allocator.
+    ///
+    /// The span allocates and owns its internal Link and attribute hash map, but the
+    /// attribute key and string value slices are stored by reference and are expected
+    /// to outlive the Span, consistent with Span.setAttribute and Span.addEvent.
+    pub fn addLinkFrom(self: *Self, link: Link) !void {
+        if (!self.is_recording) return;
+
+        // Check if we should record this link according to the spec
+        const should_record = link.span_context.trace_id.isValid() or link.span_context.span_id.isValid() or
+            link.attributes.count() > 0 or
+            link.span_context.trace_state.entries.count() > 0;
+
+        if (!should_record) return;
+
+        var new_link = Link.init(self.allocator, link.span_context);
+        errdefer new_link.deinit();
+
+        try new_link.attributes.ensureTotalCapacity(self.allocator, link.attributes.count());
+        for (link.attributes.keys(), link.attributes.values()) |key, val| {
+            new_link.attributes.putAssumeCapacity(key, val);
+        }
+
+        try self.links.append(self.allocator, new_link);
     }
 
     /// Set the status of the Span according to the OpenTelemetry specification:
@@ -926,4 +966,37 @@ test "Span.setStatus follows OpenTelemetry specification precedence" {
     try std.testing.expect(!span.isRecording());
     span.setStatus(Status.error_with_description("after end"));
     try std.testing.expectEqual(.Ok, span.status.?.code);
+}
+
+test "Link.initWithAttributes and addLinkFrom" {
+    const allocator = std.testing.allocator;
+
+    const span_context = SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace.TraceFlags.sampled(),
+        TraceState.init(allocator),
+        false,
+    );
+
+    const attrs = [_]attribute.Attribute{
+        .{ .key = "service", .value = .{ .string = "auth" } },
+        .{ .key = "retry_count", .value = .{ .int = 2 } },
+    };
+
+    var source_link = try Span.Link.initWithAttributes(allocator, span_context, &attrs);
+    defer source_link.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), source_link.attributes.count());
+
+    var span = Span.init(allocator, span_context, "parent-span", .Internal, .{ .name = "test" });
+    defer span.deinit();
+
+    try span.addLinkFrom(source_link);
+
+    try std.testing.expectEqual(@as(usize, 1), span.links.items.len);
+    const recorded_link = span.links.items[0];
+    try std.testing.expectEqual(@as(usize, 2), recorded_link.attributes.count());
+    try std.testing.expectEqualStrings("auth", recorded_link.attributes.get("service").?.string);
+    try std.testing.expectEqual(@as(i64, 2), recorded_link.attributes.get("retry_count").?.int);
 }
