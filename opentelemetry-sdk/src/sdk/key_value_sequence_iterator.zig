@@ -67,6 +67,62 @@ pub fn KeyValueSequenceIterator(comptime separator: u8, comptime kv_separator: u
 /// `OTEL_EXPORTER_OTLP_HEADERS`, W3C `tracestate` and `baggage` entries.
 pub const CommaSeparatedAssignmentIterator = KeyValueSequenceIterator(',', '=');
 
+/// A `KeyValueSequenceIterator` that percent-decodes (RFC 3986) each name and
+/// value before yielding it, so an encoded separator (`%2C`, `%3D`) can appear
+/// in either without splitting the entry. Whitespace is trimmed *before*
+/// decoding, so an encoded one (`%20`) at either end of a name or value is kept.
+///
+/// A literal `+` is left alone rather than turned into a space, and a malformed
+/// escape (`%`, `%2`, `%ZZ`) is passed through verbatim.
+///
+/// The input is never modified: decoded names and values are written into the
+/// `buffer` passed to `init`. Decoding never grows a string, so a buffer of
+/// `input.len` bytes always suffices. The yielded slices point into it and are
+/// only valid until the next call to `next` or `reset`; callers that keep an
+/// entry must copy it.
+pub fn PercentDecodedKeyValueSequenceIterator(comptime separator: u8, comptime kv_separator: u8) type {
+    return struct {
+        iterator: Inner,
+        buffer: []u8,
+
+        const Self = @This();
+        const Inner = KeyValueSequenceIterator(separator, kv_separator);
+
+        pub const Entry = Inner.Entry;
+
+        pub fn init(input: []const u8, buffer: []u8) Self {
+            return .{ .iterator = .init(input), .buffer = buffer };
+        }
+
+        /// Returns the next decoded entry, or null once the input is exhausted.
+        /// Fails with `error.NoSpaceLeft` if the entry's name and value together
+        /// do not fit in the buffer.
+        pub fn next(self: *Self) error{NoSpaceLeft}!?Entry {
+            const entry = self.iterator.next() orelse return null;
+            const value_len = if (entry.value) |value| value.len else 0;
+            if (entry.name.len + value_len > self.buffer.len) return error.NoSpaceLeft;
+
+            const name_buffer = self.buffer[0..entry.name.len];
+            const name = std.Uri.percentDecodeBackwards(name_buffer, entry.name);
+            const value = if (entry.value) |encoded|
+                std.Uri.percentDecodeBackwards(self.buffer[name_buffer.len..][0..encoded.len], encoded)
+            else
+                null;
+            return .{ .name = name, .value = value };
+        }
+
+        /// Rewinds the iterator to the start of the input.
+        pub fn reset(self: *Self) void {
+            self.iterator.reset();
+        }
+    };
+}
+
+/// Percent-decoding counterpart of `CommaSeparatedAssignmentIterator`, for the
+/// variables whose names and values are percent-encoded, such as
+/// `OTEL_RESOURCE_ATTRIBUTES`.
+pub const PercentDecodedCommaSeparatedAssignmentIterator = PercentDecodedKeyValueSequenceIterator(',', '=');
+
 fn expectEntry(
     expected_name: []const u8,
     expected_value: ?[]const u8,
@@ -147,4 +203,68 @@ test "reset rewinds the iterator" {
 
     it.reset();
     try expectEntry("foo", "bar", it.next());
+}
+
+test PercentDecodedCommaSeparatedAssignmentIterator {
+    const input = "deployment.environment=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2fvar%2Flog";
+    var buffer: [input.len]u8 = undefined;
+
+    var it: PercentDecodedCommaSeparatedAssignmentIterator = .init(input, &buffer);
+    try expectEntry("deployment.environment", "prod east", try it.next());
+    try expectEntry("custom.tag", "val,1", try it.next());
+    try expectEntry("equation", "a=b", try it.next());
+    try expectEntry("path", "/var/log", try it.next());
+    try std.testing.expectEqual(null, try it.next());
+}
+
+test "percent-decoding leaves the input untouched" {
+    var input_buffer = "foo%20bar=baz%3Dqux".*;
+    var buffer: [input_buffer.len]u8 = undefined;
+
+    var it: PercentDecodedCommaSeparatedAssignmentIterator = .init(&input_buffer, &buffer);
+    try expectEntry("foo bar", "baz=qux", try it.next());
+    try std.testing.expectEqualStrings("foo%20bar=baz%3Dqux", &input_buffer);
+}
+
+test "percent-decoding keeps a literal plus and malformed escapes verbatim" {
+    const input = "1+1=2+and+spaces%20here,truncated%and%2plus%ZZ=ok";
+    var buffer: [input.len]u8 = undefined;
+
+    var it: PercentDecodedCommaSeparatedAssignmentIterator = .init(input, &buffer);
+    try expectEntry("1+1", "2+and+spaces here", try it.next());
+    try expectEntry("truncated%and%2plus%ZZ", "ok", try it.next());
+    try std.testing.expectEqual(null, try it.next());
+}
+
+test "percent-decoding applies after splitting and trimming" {
+    // An encoded separator does not split the entry, and an encoded space at
+    // the edge survives the trim of the raw whitespace around it.
+    const input = " a%2Cb%3Dc = %20d%20 , novalue%2C ,=orphan%20";
+    var buffer: [input.len]u8 = undefined;
+
+    var it: PercentDecodedCommaSeparatedAssignmentIterator = .init(input, &buffer);
+    try expectEntry("a,b=c", " d ", try it.next());
+    try expectEntry("novalue,", null, try it.next());
+    try expectEntry("", "orphan ", try it.next());
+    try std.testing.expectEqual(null, try it.next());
+}
+
+test "percent-decoded iterator reports a buffer that is too small" {
+    var buffer: [5]u8 = undefined;
+
+    var it: PercentDecodedCommaSeparatedAssignmentIterator = .init("ab=cd,e=f,toolong=value", &buffer);
+    try expectEntry("ab", "cd", try it.next());
+    try expectEntry("e", "f", try it.next());
+    try std.testing.expectError(error.NoSpaceLeft, it.next());
+}
+
+test "percent-decoded iterator reset rewinds" {
+    var buffer: [16]u8 = undefined;
+
+    var it: PercentDecodedCommaSeparatedAssignmentIterator = .init("a=1%2C", &buffer);
+    try expectEntry("a", "1,", try it.next());
+    try std.testing.expectEqual(null, try it.next());
+
+    it.reset();
+    try expectEntry("a", "1,", try it.next());
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const Attribute = @import("../attributes.zig").Attribute;
 const Configuration = @import("config.zig").Configuration;
-const CommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
+const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
 
 /// Build resource attributes from configuration
 /// Combines OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
@@ -39,27 +39,6 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
     return try attributes.toOwnedSlice(allocator);
 }
 
-/// Decode a percent-encoded string according to RFC 3986.
-/// Decodes triplets like `%20` into their respective byte values using std.Uri.
-/// Literal `+` characters are preserved (not converted to space).
-/// Returns an allocated slice owned by the caller.
-pub fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    if (std.mem.indexOfScalar(u8, input, '%') == null) {
-        return allocator.dupe(u8, input);
-    }
-
-    var stack_buf: [256]u8 = undefined;
-    if (input.len <= stack_buf.len) {
-        const decoded = std.Uri.percentDecodeBackwards(&stack_buf, input);
-        return allocator.dupe(u8, decoded);
-    }
-
-    const temp_buf = try allocator.alloc(u8, input.len);
-    defer allocator.free(temp_buf);
-    const decoded = std.Uri.percentDecodeBackwards(temp_buf, input);
-    return allocator.dupe(u8, decoded);
-}
-
 /// Parse resource attributes from comma-separated key=value pairs
 /// Format: "key1=value1,key2=value2"
 /// Keys and values are percent-decoded according to RFC 3986.
@@ -75,41 +54,30 @@ fn parseResourceAttributes(
     // below infallible, so a duped attribute is never orphaned mid-append.
     try attributes.ensureUnusedCapacity(allocator, std.mem.countScalar(u8, attrs_str, ',') + 1);
 
-    var iter: CommaSeparatedAssignmentIterator = .init(attrs_str);
-    while (iter.next()) |entry| {
-        const raw_value = entry.value orelse {
+    // Decoding never grows a string, so `attrs_str.len` bytes is always enough
+    // room for the decoded name and value of any one entry.
+    const scratch = try allocator.alloc(u8, attrs_str.len);
+    defer allocator.free(scratch);
+
+    var iter: PercentDecodedCommaSeparatedAssignmentIterator = .init(attrs_str, scratch);
+    while (iter.next() catch unreachable) |entry| {
+        const value = entry.value orelse {
             std.log.warn("Invalid resource attribute (missing '='): {s}", .{entry.name});
             continue;
         };
 
         if (entry.name.len == 0) {
-            std.log.warn("Invalid resource attribute (empty key): ={s}", .{raw_value});
+            std.log.warn("Invalid resource attribute (empty key): ={s}", .{value});
             continue;
         }
-
-        const key = try percentDecode(allocator, entry.name);
-        errdefer allocator.free(key);
-
-        if (key.len == 0) {
-            allocator.free(key);
-            std.log.warn("Invalid resource attribute (decoded key is empty): {s}", .{entry.name});
-            continue;
-        }
-
-        const value = try percentDecode(allocator, raw_value);
-        errdefer allocator.free(value);
 
         // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
-        if (skip_service_name and std.mem.eql(u8, key, "service.name")) {
-            allocator.free(key);
-            allocator.free(value);
-            continue;
-        }
+        if (skip_service_name and std.mem.eql(u8, entry.name, "service.name")) continue;
 
-        attributes.appendAssumeCapacity(.{
-            .key = key,
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, .{
+            .key = entry.name,
             .value = .{ .string = value },
-        });
+        }));
     }
 }
 
@@ -464,45 +432,6 @@ test "mergeResources cleanup on allocation failure does not leak" {
         const allocator = failing.allocator();
 
         _ = mergeResources(allocator, &res1, &res2) catch {};
-    }
-}
-
-test "percentDecode RFC 3986 decoding" {
-    const allocator = std.testing.allocator;
-
-    // Normal string without %
-    {
-        const decoded = try percentDecode(allocator, "hello-world_123");
-        defer allocator.free(decoded);
-        try std.testing.expectEqualStrings("hello-world_123", decoded);
-    }
-
-    // %20 space and %2C comma and %3D equal sign
-    {
-        const decoded = try percentDecode(allocator, "foo%20bar%2Cbaz%3Dqux");
-        defer allocator.free(decoded);
-        try std.testing.expectEqualStrings("foo bar,baz=qux", decoded);
-    }
-
-    // Lowercase and uppercase hex digits
-    {
-        const decoded = try percentDecode(allocator, "%2fpath%2Fto%3aitem");
-        defer allocator.free(decoded);
-        try std.testing.expectEqualStrings("/path/to:item", decoded);
-    }
-
-    // RFC 3986 requires literal '+' to NOT be converted to space
-    {
-        const decoded = try percentDecode(allocator, "1+1=2+and+spaces%20here");
-        defer allocator.free(decoded);
-        try std.testing.expectEqualStrings("1+1=2+and+spaces here", decoded);
-    }
-
-    // Invalid or incomplete percent encodings are kept verbatim by std.Uri
-    {
-        const decoded = try percentDecode(allocator, "truncated%and%2plus%ZZ");
-        defer allocator.free(decoded);
-        try std.testing.expectEqualStrings("truncated%and%2plus%ZZ", decoded);
     }
 }
 
