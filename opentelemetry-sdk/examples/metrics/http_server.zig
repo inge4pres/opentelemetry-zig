@@ -12,9 +12,9 @@ pub fn main(init: std.process.Init) !void {
 
     const otel = try setupTelemetry(allocator, io);
     defer {
-        otel.metric_reader.shutdown();
-        otel.meter_provider.shutdown();
+        otel.metric_reader.deinit();
         otel.in_memory_exporter.deinit();
+        otel.meter_provider.deinit();
     }
 
     const ip = "127.0.0.1";
@@ -110,7 +110,7 @@ const OTel = struct {
 
 fn setupTelemetry(allocator: std.mem.Allocator, io: std.Io) !OTel {
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    errdefer mp.shutdown();
+    errdefer mp.deinit();
 
     // Create a view for histogram instruments with explicit bucket aggregation
     const http_latency_view = view.View{

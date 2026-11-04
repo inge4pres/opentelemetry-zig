@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Use the builtin meter provider
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/sample",
     });
@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Create an exporter and a a metric reader to aggregate the metrics
     const mr = try metrics_sdk.MetricReader.init(fba.allocator(), io, me.exporter);
-    defer mr.shutdown();
+    defer mr.deinit();
 
     // Register the metric reader to the meter provider
     try mp.addReader(mr);

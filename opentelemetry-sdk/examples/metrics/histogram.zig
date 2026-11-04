@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Create meter provider
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Example 1: Histogram with Explicit Bucket Aggregation
     try explicitBucketHistogramExample(allocator, io, mp);
@@ -57,7 +57,7 @@ fn explicitBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: 
     defer me.in_memory.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    defer mr.shutdown();
+    defer mr.deinit();
 
     // Register the metric reader to the meter provider
     try mp.addReader(mr);
@@ -145,7 +145,7 @@ fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, m
     defer me.in_memory.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    defer mr.shutdown();
+    defer mr.deinit();
 
     // Register the metric reader to the meter provider
     try mp.addReader(mr);

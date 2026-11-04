@@ -12,7 +12,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Create the meter provider
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Create Prometheus exporter using factory function
     const result = try MetricExporter.Prometheus(allocator, io, .{
