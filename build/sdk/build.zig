@@ -413,9 +413,15 @@ fn buildExamples(
                 .optimize = info.optimize,
                 .imports = try helpers.ImportsFromBuildModules(b.allocator, mods, &dep_names),
             });
+            // Wrap the execution of example main so that a memory leak reports a failing error code.
             try exes.append(b.allocator, b.addExecutable(.{
                 .name = name,
-                .root_module = b_mod,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("build/sdk/example_runner.zig"),
+                    .target = info.target,
+                    .optimize = info.optimize,
+                    .imports = &.{.{ .name = "example", .module = b_mod }},
+                }),
             }));
         }
     }
