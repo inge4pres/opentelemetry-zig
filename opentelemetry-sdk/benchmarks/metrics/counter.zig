@@ -24,7 +24,7 @@ const bench_config = benchmark.Config{
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*metrics.MeterProvider {
     const mp = try MeterProvider.init(allocator, io);
-    errdefer mp.shutdown();
+    errdefer mp.deinit();
     return mp;
 }
 
@@ -76,7 +76,7 @@ test "Counter_Add_W/O_Attributes" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -110,7 +110,7 @@ test "Counter_Add_Sorted" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -158,7 +158,7 @@ test "Counter_Add_Unsorted" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -206,7 +206,7 @@ test "Counter_Add_Non_Static_Values" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -269,7 +269,7 @@ test "Counter_Overflow" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter.overflow",
@@ -320,7 +320,7 @@ test "Counter_Concurrent" {
     const io = threaded.io();
 
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark-concurrent",
     });

@@ -24,7 +24,7 @@ const bench_config = benchmark.Config{
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*MeterProvider {
     const mp = try MeterProvider.init(allocator, io);
-    errdefer mp.shutdown();
+    errdefer mp.deinit();
     return mp;
 }
 
@@ -39,7 +39,7 @@ test "Histogram_Record" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Add a view with custom explicit buckets for the histogram
     try mp.addView(metrics.View.View{
@@ -98,7 +98,7 @@ test "Histogram_Record_With_Non_Static_Values" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Add a view with custom explicit buckets for the histogram
     try mp.addView(metrics.View.View{
@@ -169,7 +169,7 @@ test "Histogram_Record_With_Many_Buckets" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Create histogram with 50 buckets similar to Rust benchmarks
     var buckets: [50]f64 = undefined;
@@ -230,7 +230,7 @@ test "Histogram_Concurrent" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Add a view with custom explicit buckets for the histogram
     try mp.addView(metrics.View.View{
@@ -309,7 +309,7 @@ test "Histogram_Record_Varied_Values" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Add a view with custom explicit buckets for the histogram
     try mp.addView(metrics.View.View{

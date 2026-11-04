@@ -33,7 +33,7 @@ test "Gauge_Record" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.gauge",
@@ -80,7 +80,7 @@ test "Gauge_Record_Realistic_Values" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.gauge.realistic",
@@ -125,7 +125,7 @@ test "Gauge_Record_Non_Static_Values" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.gauge.dynamic",
@@ -181,7 +181,7 @@ test "Gauge_Record_Varied_Values" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
     });

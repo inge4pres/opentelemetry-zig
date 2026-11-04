@@ -24,7 +24,7 @@ test "AddNoAttrs" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -55,7 +55,7 @@ test "AddOneAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -89,7 +89,7 @@ test "AddThreeAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -127,7 +127,7 @@ test "AddFiveAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -169,7 +169,7 @@ test "AddTenAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -222,7 +222,7 @@ test "RecordHistogram10Bounds" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
 
     // Add a view with custom explicit buckets for the histogram
     try provider.addView(metrics.View.View{
@@ -270,7 +270,7 @@ test "RecordHistogram50Bounds" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
 
     // Create 50 bucket boundaries
     var buckets: [50]f64 = undefined;
@@ -325,7 +325,7 @@ test "AddSingleUseAttrs" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -367,7 +367,7 @@ test "GaugeRecordVaried" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });

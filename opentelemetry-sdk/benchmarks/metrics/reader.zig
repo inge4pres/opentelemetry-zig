@@ -46,7 +46,7 @@ test "MetricReader_collect" {
     defer threaded.deinit();
     const io = threaded.io();
     var mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var me = try MetricExporter.InMemory(std.testing.allocator, io, null, null);
     defer me.in_memory.deinit();
@@ -54,7 +54,7 @@ test "MetricReader_collect" {
     const n10k = 10000;
 
     var reader = try MetricReader.init(std.testing.allocator, io, me.exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const under_test = ReaderBench.init(reader, mp, n10k) catch |err| {
