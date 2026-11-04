@@ -35,7 +35,11 @@ const context = @import("context.zig");
 pub const BaggageEntry = struct {
     /// The value associated with this baggage entry
     value: []const u8,
-    /// Optional metadata for this entry (opaque string)
+    /// Optional metadata for this entry (opaque string).
+    ///
+    /// Propagators forward it as is, neither encoding nor decoding it, so the caller
+    /// percent-encodes whatever needs it (`%20` for a space in a property value). It
+    /// cannot hold a `,` or a control character, which would corrupt the header.
     metadata: ?[]const u8,
 
     /// Create a new baggage entry
@@ -152,7 +156,9 @@ pub const Baggage = struct {
     /// - `allocator`: Memory allocator for the new baggage data
     /// - `name`: The key to associate with the value (case-sensitive)
     /// - `value`: The string value to store
-    /// - `metadata`: Optional metadata string for this entry
+    /// - `metadata`: Optional opaque metadata string for this entry. Propagators
+    ///   write it to the baggage header as is, so it must already be percent-encoded
+    ///   where needed (see `BaggageEntry.metadata`).
     ///
     /// ## Errors
     /// - `OutOfMemory`: If allocation fails during baggage creation

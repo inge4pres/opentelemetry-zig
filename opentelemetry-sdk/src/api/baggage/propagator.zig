@@ -5,7 +5,9 @@
 //!
 //! W3C Baggage Format: key1=value1;metadata,key2=value2;metadata
 //! - Keys and values are URL-encoded
-//! - Metadata is optional and follows a semicolon
+//! - Metadata is optional and follows a semicolon. It is opaque: it is neither
+//!   encoded nor decoded, so the caller percent-encodes whatever needs it. It
+//!   cannot hold a `,` or a control character (see `error.InvalidBaggageMetadata`)
 //! - Multiple entries are comma-separated
 //!
 //! Example usage:
@@ -61,8 +63,16 @@ fn urlDecode(buffer: []u8, input: []const u8) []u8 {
 /// - `carrier`: The carrier to inject into (e.g., HTTP headers)
 /// - `setter`: The TextMapSetter for the carrier type
 ///
+/// An entry's metadata is opaque and written as is, after the `;` that follows
+/// its value. The caller must therefore provide it already percent-encoded where
+/// needed, for example `%20` for a space in a property value. It cannot hold a `,`,
+/// which would start another entry, or a control character, which would corrupt the
+/// header. Empty metadata is not written.
+///
 /// ## Errors
 /// - `OutOfMemory`: If allocation fails during encoding
+/// - `InvalidBaggageMetadata`: If an entry's metadata holds a `,` or a control
+///   character. Nothing is injected.
 /// - Carrier-specific errors from the setter
 pub fn inject(
     allocator: std.mem.Allocator,
@@ -91,6 +101,17 @@ fn injectWithKey(
     };
 }
 
+/// Whether `metadata` can be written to a baggage header as is: it must not hold a
+/// `,`, which would start another entry, nor a control character, as CR and LF would
+/// split the header. A tab is whitespace and is accepted.
+fn isValidMetadata(metadata: []const u8) bool {
+    for (metadata) |c| switch (c) {
+        ',', 0x00...0x08, 0x0A...0x1F, 0x7F => return false,
+        else => {},
+    };
+    return true;
+}
+
 fn formatBaggage(allocator: std.mem.Allocator, baggage: Baggage) ![]u8 {
     var header_value: std.ArrayList(u8) = .empty;
     errdefer header_value.deinit(allocator);
@@ -108,9 +129,10 @@ fn formatBaggage(allocator: std.mem.Allocator, baggage: Baggage) ![]u8 {
             urlEncode(entry.value_ptr.value),
         });
 
-        // Add metadata if present
+        // Add metadata if present, verbatim: it is opaque
         if (entry.value_ptr.metadata) |metadata| {
-            try header_value.print(allocator, ";{f}", .{urlEncode(metadata)});
+            if (!isValidMetadata(metadata)) return error.InvalidBaggageMetadata;
+            if (metadata.len > 0) try header_value.print(allocator, ";{s}", .{metadata});
         }
     }
 
@@ -123,6 +145,10 @@ fn formatBaggage(allocator: std.mem.Allocator, baggage: Baggage) ![]u8 {
 /// - `allocator`: Memory allocator for the new baggage
 /// - `carrier`: The carrier to extract from (e.g., HTTP headers)
 /// - `getter`: The TextMapGetter for the carrier type
+///
+/// An entry's metadata is opaque and kept exactly as received. If it holds a control
+/// character (see `inject`), only the metadata is dropped and the entry is kept, so
+/// that what was extracted can always be injected again.
 ///
 /// ## Returns
 /// The extracted Baggage, or null if no baggage header is present.
@@ -146,8 +172,8 @@ fn parseBaggageHeader(allocator: std.mem.Allocator, header_value: []const u8) !?
     var baggage = Baggage.init();
     errdefer baggage.deinit();
 
-    // The decoded key, value and metadata of one entry never take more room than
-    // the header does, so each entry can decode into the start of this buffer.
+    // The decoded key and value of one entry never take more room than the header
+    // does, so each entry can decode into the start of this buffer.
     const scratch = try allocator.alloc(u8, header_value.len);
     defer allocator.free(scratch);
 
@@ -163,16 +189,15 @@ fn parseBaggageHeader(allocator: std.mem.Allocator, header_value: []const u8) !?
         const encoded_value = std.mem.trim(u8, parts.first(), &std.ascii.whitespace);
         if (encoded_value.len == 0) continue;
 
-        // Get metadata if present, kept verbatim rather than parsed further
-        const encoded_metadata = std.mem.trim(u8, parts.rest(), &std.ascii.whitespace);
-
-        // Decode key, value and metadata one after the other into the scratch buffer
+        // Decode key and value one after the other into the scratch buffer
         const key = urlDecode(scratch, entry.name);
         const value = urlDecode(scratch[entry.name.len..], encoded_value);
-        const metadata = if (encoded_metadata.len > 0)
-            urlDecode(scratch[entry.name.len + encoded_value.len ..], encoded_metadata)
-        else
-            null;
+
+        // Metadata is opaque: kept as received, neither decoded nor parsed further.
+        // Invalid metadata is dropped rather than the entry, and anything kept can
+        // be injected again. This is network input, so it may well be sloppy.
+        const raw_metadata = std.mem.trim(u8, parts.rest(), &std.ascii.whitespace);
+        const metadata: ?[]const u8 = if (raw_metadata.len > 0 and isValidMetadata(raw_metadata)) raw_metadata else null;
 
         // Add to baggage
         baggage.setValue(allocator, key, value, metadata) catch continue;
@@ -379,6 +404,116 @@ test "inject and extract baggage with metadata" {
     try std.testing.expectEqualStrings("priority=high", entry.metadata.?);
 }
 
+test "inject writes metadata verbatim" {
+    const allocator = std.testing.allocator;
+
+    var baggage = Baggage.init();
+    try baggage.setValue(allocator, "account_id", "12345", "priority=high");
+    defer baggage.deinit();
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var value_it = headers.valueIterator();
+        while (value_it.next()) |value| allocator.free(value.*);
+        headers.deinit();
+    }
+
+    try inject(allocator, baggage, &headers, HttpSetter);
+
+    // The `=` of a property is not escaped, or a receiver would not see a property.
+    try std.testing.expectEqualStrings("account_id=12345;priority=high", headers.get("baggage").?);
+}
+
+test "inject keeps the properties of a metadata and percent sequences in it" {
+    const allocator = std.testing.allocator;
+
+    var baggage = Baggage.init();
+    try baggage.setValue(allocator, "key", "value", "k1=v1;k2;k3=a%2Cb");
+    defer baggage.deinit();
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var value_it = headers.valueIterator();
+        while (value_it.next()) |value| allocator.free(value.*);
+        headers.deinit();
+    }
+
+    try inject(allocator, baggage, &headers, HttpSetter);
+
+    try std.testing.expectEqualStrings("key=value;k1=v1;k2;k3=a%2Cb", headers.get("baggage").?);
+}
+
+test "inject does not write empty metadata" {
+    const allocator = std.testing.allocator;
+
+    var baggage = Baggage.init();
+    try baggage.setValue(allocator, "key", "value", "");
+    defer baggage.deinit();
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var value_it = headers.valueIterator();
+        while (value_it.next()) |value| allocator.free(value.*);
+        headers.deinit();
+    }
+
+    try inject(allocator, baggage, &headers, HttpSetter);
+
+    try std.testing.expectEqualStrings("key=value", headers.get("baggage").?);
+}
+
+test "inject writes whitespace and other non-structural characters as is" {
+    const allocator = std.testing.allocator;
+
+    var baggage = Baggage.init();
+    try baggage.setValue(allocator, "key", "value", "p1 = a b ; p2=\"q\"\tx");
+    defer baggage.deinit();
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var value_it = headers.valueIterator();
+        while (value_it.next()) |value| allocator.free(value.*);
+        headers.deinit();
+    }
+
+    try inject(allocator, baggage, &headers, HttpSetter);
+
+    try std.testing.expectEqualStrings("key=value;p1 = a b ; p2=\"q\"\tx", headers.get("baggage").?);
+}
+
+test "inject rejects metadata that would corrupt the header" {
+    const allocator = std.testing.allocator;
+
+    const invalid = [_][]const u8{ "a,b", "new\nline", "carriage\rreturn", "ctl\x01", "nul\x00", "del\x7f" };
+    for (invalid) |metadata| {
+        var baggage = Baggage.init();
+        try baggage.setValue(allocator, "key", "value", metadata);
+        defer baggage.deinit();
+
+        var headers = std.StringHashMap([]const u8).init(allocator);
+        defer headers.deinit();
+
+        try std.testing.expectError(error.InvalidBaggageMetadata, inject(allocator, baggage, &headers, HttpSetter));
+        // Nothing is injected, not even the entries before the invalid one.
+        try std.testing.expectEqual(0, headers.count());
+    }
+}
+
+test "inject rejects invalid metadata on a later entry without leaking" {
+    const allocator = std.testing.allocator;
+
+    var baggage = Baggage.init();
+    try baggage.setValue(allocator, "good", "1", "p=1");
+    try baggage.setValue(allocator, "bad", "2", "a,b");
+    defer baggage.deinit();
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    try std.testing.expectError(error.InvalidBaggageMetadata, inject(allocator, baggage, &headers, HttpSetter));
+    try std.testing.expectEqual(0, headers.count());
+}
+
 test "inject and extract multiple entries" {
     const allocator = std.testing.allocator;
 
@@ -516,6 +651,98 @@ test "extract keeps '=' inside values and metadata" {
     const account = extracted.getValue("account").?;
     try std.testing.expectEqualStrings("12345", account.value);
     try std.testing.expectEqualStrings("priority=high", account.metadata.?);
+}
+
+test "extract keeps metadata verbatim without decoding it" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // Percent sequences and '+' in a property are opaque, unlike in a value.
+    try headers.put("baggage", "plain=a%20b;k%3Dv,second=2 ; p1=x+y;p2=%2C ");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    const plain = extracted.getValue("plain").?;
+    try std.testing.expectEqualStrings("a b", plain.value);
+    try std.testing.expectEqualStrings("k%3Dv", plain.metadata.?);
+
+    const second = extracted.getValue("second").?;
+    try std.testing.expectEqualStrings("2", second.value);
+    try std.testing.expectEqualStrings("p1=x+y;p2=%2C", second.metadata.?);
+}
+
+test "extract drops invalid metadata but keeps the entry" {
+    const allocator = std.testing.allocator;
+
+    const invalid = [_][]const u8{
+        "k=v;a=b\x01c",
+        "k=v;a=b\x7fc",
+        "k=v;a=b\nc",
+        "k=v;a=b\rc",
+    };
+    for (invalid) |header| {
+        var headers = std.StringHashMap([]const u8).init(allocator);
+        defer headers.deinit();
+        try headers.put("baggage", header);
+
+        var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+        defer extracted.deinit();
+
+        try std.testing.expectEqual(1, extracted.count());
+        const entry = extracted.getValue("k").?;
+        try std.testing.expectEqualStrings("v", entry.value);
+        try std.testing.expect(entry.metadata == null);
+    }
+}
+
+test "extract keeps whitespace in metadata as received" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // Metadata is opaque: spaces around properties, and inside them, are not touched.
+    try headers.put("baggage", "k = v ;\tp1 = a%20b ; p2 ;p3=c d ");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    const entry = extracted.getValue("k").?;
+    try std.testing.expectEqualStrings("v", entry.value);
+    try std.testing.expectEqualStrings("p1 = a%20b ; p2 ;p3=c d", entry.metadata.?);
+}
+
+test "extracted baggage can always be injected again" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // The first entry's metadata is invalid, the second one's is fine.
+    try headers.put("baggage", "user=alice;note=a\x01b,team=blue;p=1");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+    try std.testing.expectEqual(2, extracted.count());
+
+    var out = std.StringHashMap([]const u8).init(allocator);
+    defer {
+        var value_it = out.valueIterator();
+        while (value_it.next()) |value| allocator.free(value.*);
+        out.deinit();
+    }
+    try inject(allocator, extracted, &out, HttpSetter);
+
+    var again = (try extract(allocator, &out, HttpGetter)).?;
+    defer again.deinit();
+
+    try std.testing.expectEqualStrings("alice", again.getValue("user").?.value);
+    try std.testing.expect(again.getValue("user").?.metadata == null);
+    try std.testing.expectEqualStrings("blue", again.getValue("team").?.value);
+    try std.testing.expectEqualStrings("p=1", again.getValue("team").?.metadata.?);
 }
 
 test "extract skips a member with an empty value" {

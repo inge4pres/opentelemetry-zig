@@ -22,6 +22,7 @@ const log = std.log.scoped(.otlp);
 const proto = @import("opentelemetry-proto");
 const protobuf = @import("protobuf");
 const grpc_transport = @import("grpc_transport");
+const CommaSeparatedAssignmentIterator = @import("sdk/key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
 
 const pbmetrics = proto.metrics_v1;
 const pblogs = proto.logs_v1;
@@ -261,6 +262,9 @@ pub const ConfigOptions = struct {
     /// Comma-separated list of key=value pairs to include in the request as headers.
     /// Format "key1=value1,key2=value2,...".
     /// They wll be parsed into HTTP headers, or gRPC metadata, and all the values will be treated as strings.
+    ///
+    /// Keys and values are sent as is: they are not percent-decoded. The W3C Baggage
+    /// metadata syntax (`;property`) is not supported, and a `;` is rejected.
     headers: ?[]const u8 = null,
 
     tls_opts: ?TLSOptions = null,
@@ -1151,32 +1155,35 @@ fn calculateDelayMillisec(base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u
 }
 
 // Parses the key-value, comma separated list of headers from the config.
-// Caller owns the memory and must free it.
+//
+// The format is the one of a W3C Baggage header, without its `;property` metadata:
+// whitespace around keys, values and commas is ignored, blank entries are skipped,
+// a value may be empty or hold further `=`. A missing `=`, an empty key or a `;` is
+// invalid. Keys and values are not percent-decoded: they are sent as is.
+//
+// The returned names and values point into `key_values`.
+// Caller owns the returned slice and must free it.
 fn parseHeaders(allocator: std.mem.Allocator, key_values: []const u8) ![]std.http.Header {
     // Maximum 64 items are allowd in the W3C baggage
     var headers = try allocator.alloc(std.http.Header, 64);
     defer allocator.free(headers);
 
-    var comma_split = std.mem.splitScalar(u8, key_values, ',');
+    var entries: CommaSeparatedAssignmentIterator = .init(key_values);
 
     var idx: usize = 0;
     // The sum of all characters in the key and value must be less than 8192 bytes (2^13).
     var cum_bytes: u13 = 0;
-    while (comma_split.next()) |item| {
+    while (entries.next()) |entry| {
         // Fail if there are more than 64 headers.
         if (idx == headers.len) {
             return ConfigError.InvalidHeadersTooManyItems;
         }
-        var kv = std.mem.splitScalar(u8, item, '=');
-        const key: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeadersSyntax;
+        const key = entry.name;
         if (key.len == 0) {
             return ConfigError.InvalidHeadersSyntax;
         }
-        const value: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeadersSyntax;
-        if (value.len == 0) {
-            return ConfigError.InvalidHeadersSyntax;
-        }
-        if (kv.next()) |_| {
+        const value = entry.value orelse return ConfigError.InvalidHeadersSyntax;
+        if (std.mem.indexOfScalar(u8, key, ';') != null or std.mem.indexOfScalar(u8, value, ';') != null) {
             return ConfigError.InvalidHeadersSyntax;
         }
         // Fail when the sum of all bytes for the headers overflows.
@@ -1222,7 +1229,35 @@ test "otlp config parse headers" {
     try std.testing.expectEqualSlices(u8, "key2", parsed[3].name);
     try std.testing.expectEqualSlices(u8, "value2", parsed[3].value);
 
-    const invalid_headers: [4][]const u8 = .{ "a=,", "=b", "a=b=c", "a=b,=c=d" };
+    // Blank entries are skipped, and whitespace of any kind around the separators is ignored.
+    const blanks = try parseHeaders(allocator, " a=b ,, \t, c\t=\td ,");
+    defer allocator.free(blanks);
+
+    try std.testing.expectEqual(2, blanks.len);
+    try std.testing.expectEqualSlices(u8, "a", blanks[0].name);
+    try std.testing.expectEqualSlices(u8, "b", blanks[0].value);
+    try std.testing.expectEqualSlices(u8, "c", blanks[1].name);
+    try std.testing.expectEqualSlices(u8, "d", blanks[1].value);
+
+    // A value may be empty, or hold further '=' (a legal W3C Baggage octet).
+    const odd_values = try parseHeaders(allocator, "empty=,equation=a=b=c,token=dGVzdA==");
+    defer allocator.free(odd_values);
+
+    try std.testing.expectEqual(3, odd_values.len);
+    try std.testing.expectEqualSlices(u8, "empty", odd_values[0].name);
+    try std.testing.expectEqualSlices(u8, "", odd_values[0].value);
+    try std.testing.expectEqualSlices(u8, "a=b=c", odd_values[1].value);
+    try std.testing.expectEqualSlices(u8, "dGVzdA==", odd_values[2].value);
+
+    // Values are sent as is, never percent-decoded.
+    const encoded = try parseHeaders(allocator, "Authorization=Bearer%20abc,plus=a+b");
+    defer allocator.free(encoded);
+
+    try std.testing.expectEqualSlices(u8, "Bearer%20abc", encoded[0].value);
+    try std.testing.expectEqualSlices(u8, "a+b", encoded[1].value);
+
+    // An empty key, a missing '=' and the unsupported ';' metadata are invalid.
+    const invalid_headers = [_][]const u8{ "=b", "a=b,=c=d", "novalue", "a=b,novalue", "a=b;c", "a=b;c=d", "a;b=c" };
     for (invalid_headers) |header| {
         try std.testing.expectError(ConfigError.InvalidHeadersSyntax, parseHeaders(allocator, header));
     }
