@@ -191,7 +191,9 @@ pub fn meterProviderCreate() callconv(.c) ?*OtelMeterProvider {
     };
 
     const handle = allocator.create(MeterProviderHandle) catch {
-        provider.shutdown();
+        provider.deinit();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
         return null;
     };
     handle.* = .{
@@ -219,7 +221,9 @@ pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
     };
 
     const handle = allocator.create(MeterProviderHandle) catch {
-        provider.shutdown();
+        provider.deinit();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
         return null;
     };
     handle.* = .{
