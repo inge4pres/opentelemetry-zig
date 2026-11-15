@@ -492,7 +492,8 @@ fn processDeltaDataPoints(
         const incoming_ts = dp.timestamps orelse return TemporalAggregationError.MissingTimestampTimeUnixNano;
         const dp_time = incoming_ts.time_ns;
         const observed = dp.value;
-        var start_time: u64 = 0;
+        // A series first seen here starts at the instrument's collection window start.
+        var start_time: u64 = incoming_ts.start_time_ns orelse dp_time;
         const gop = try map.getOrPut(identity);
         if (gop.found_existing) {
             if (gop.value_ptr.timestamps) |existing_time| {
@@ -709,7 +710,8 @@ test "temporal aggregator process delta temporality with timestamps" {
     // Simulate two rounds of measurements with paired attributes.
     for (0..4) |i| {
         data_points[i] = try DataPoint(i64).new(allocator, @intCast(i), .{ "key", true, "secondkey", @as(u64, @mod(i, 2)) });
-        data_points[i].timestamps = .{ .time_ns = @intCast(i + 100) };
+        // Simulate the instrument reporting its collection window start.
+        data_points[i].timestamps = .{ .start_time_ns = 50, .time_ns = @intCast(i + 100) };
     }
 
     var m1 = Measurements{
@@ -730,10 +732,10 @@ test "temporal aggregator process delta temporality with timestamps" {
     };
 
     try ta.process(&m1, view.TemporalityDelta);
-    // First batch: start_time_ns == 0 for each point
-    try std.testing.expectEqual(@as(u64, 0), m1.data.int[0].timestamps.?.start_time_ns);
+    // First batch: new series start at the instrument's window start, not the epoch
+    try std.testing.expectEqual(50, m1.data.int[0].timestamps.?.start_time_ns);
     try std.testing.expectEqual(100, m1.data.int[0].timestamps.?.time_ns);
-    try std.testing.expectEqual(@as(u64, 0), m1.data.int[1].timestamps.?.start_time_ns);
+    try std.testing.expectEqual(50, m1.data.int[1].timestamps.?.start_time_ns);
     try std.testing.expectEqual(101, m1.data.int[1].timestamps.?.time_ns);
 
     try ta.process(&m2, view.TemporalityDelta);

@@ -2006,6 +2006,7 @@ test "exemplar collection windows stay stable across delta cumulative and idle c
         var meter = Meter{ .scope = .{ .name = "exemplar-cycles" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io, .exemplar_filter = .always_on };
         defer meter.deinit();
         const counter = try meter.createCounter(u64, .{ .name = "requests" });
+        const created_ns = counter.collection_start_ns;
         const temporal = try metrics_temporality.init(allocator);
         defer temporal.deinit();
         var initial_start: ?u64 = null;
@@ -2027,7 +2028,7 @@ test "exemplar collection windows stay stable across delta cumulative and idle c
             try std.testing.expectEqual(if (cumulative) total else @as(i64, @intCast(value)), point.value);
             const timestamps = point.timestamps.?;
             if (initial_start == null) initial_start = timestamps.start_time_ns;
-            if (cumulative) try std.testing.expectEqual(initial_start, timestamps.start_time_ns) else if (previous_end) |end| try std.testing.expectEqual(end, timestamps.start_time_ns.?);
+            if (cumulative) try std.testing.expectEqual(initial_start, timestamps.start_time_ns) else try std.testing.expectEqual(previous_end orelse created_ns, timestamps.start_time_ns.?);
             try std.testing.expectEqual(@as(usize, if (cycle == 0 and !sample_first) 0 else 1), point.exemplars.len);
             for (point.exemplars) |sample| {
                 try std.testing.expect(timestamps.start_time_ns.? <= sample.time_ns);
