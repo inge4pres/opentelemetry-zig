@@ -13,6 +13,7 @@ const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequen
 const EnvMap = std.process.Environ.Map;
 
 const Sampler = @import("trace/sampler.zig").Sampler;
+const spec = @import("../api/metrics/spec.zig");
 
 /// Log level for SDK internal logging
 pub const LogLevel = enum {
@@ -193,7 +194,7 @@ pub const MetricsConfig = struct {
                 ExemplarFilter.fromString(s) orelse .trace_based
             else
                 .trace_based,
-            .cardinality_limit = parseInt(u32, env_map, "OTEL_METRICS_CARDINALITY_LIMIT") orelse 2000,
+            .cardinality_limit = parseInt(u32, env_map, "OTEL_METRICS_CARDINALITY_LIMIT") orelse @intCast(spec.default_cardinality_limit),
         };
     }
 

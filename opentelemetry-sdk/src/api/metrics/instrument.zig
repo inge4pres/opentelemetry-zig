@@ -317,7 +317,7 @@ pub fn Counter(comptime T: type) type {
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .pre_sum = true,
-                .cardinality_limit = 2000,
+                .cardinality_limit = spec.default_cardinality_limit,
                 .aggregated_points = .empty,
                 .data_points = .empty,
                 .allocator = allocator,
@@ -485,52 +485,24 @@ pub fn Counter(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            const has_aggregated = self.aggregated_points.count() > 0;
-            const has_raw = self.data_points.items.len > 0;
+            // Both batches share one window, which only advances once the collection succeeds.
+            var agg_end_ns = self.collection_start_ns;
+            const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &agg_end_ns);
+            defer allocator.free(agg_copied);
+            errdefer for (agg_copied) |*p| p.deinit(allocator);
+            var raw_end_ns = self.collection_start_ns;
+            const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &raw_end_ns);
+            defer allocator.free(raw_copied);
+            errdefer for (raw_copied) |*p| p.deinit(allocator);
+            const combined = try std.mem.concat(allocator, DataPoint(i64), &.{ agg_copied, raw_copied });
+            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
 
-            if (has_aggregated and !has_raw) {
-                defer {
-                    for (self.aggregated_points.values()) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.aggregated_points.clearRetainingCapacity();
-                }
-                return .{ .int = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns) };
-            } else if (!has_aggregated and has_raw) {
-                defer {
-                    for (self.data_points.items) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.data_points.clearRetainingCapacity();
-                }
-                return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-            } else if (has_aggregated and has_raw) {
-                const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns);
-                errdefer {
-                    for (agg_copied) |*p| p.deinit(allocator);
-                    allocator.free(agg_copied);
-                }
-                const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns);
-                errdefer {
-                    for (raw_copied) |*p| p.deinit(allocator);
-                    allocator.free(raw_copied);
-                }
-                const combined = try allocator.alloc(DataPoint(i64), agg_copied.len + raw_copied.len);
-                @memcpy(combined[0..agg_copied.len], agg_copied);
-                @memcpy(combined[agg_copied.len..], raw_copied);
-                allocator.free(agg_copied);
-                allocator.free(raw_copied);
+            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
+            self.aggregated_points.clearRetainingCapacity();
+            for (self.data_points.items) |*m| m.deinit(self.allocator);
+            self.data_points.clearRetainingCapacity();
 
-                for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
-                self.aggregated_points.clearRetainingCapacity();
-
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
-
-                return .{ .int = combined };
-            } else {
-                return .{ .int = try allocator.alloc(DataPoint(i64), 0) };
-            }
+            return .{ .int = combined };
         }
     };
 }
@@ -602,7 +574,7 @@ pub fn Histogram(comptime T: type) type {
 
         pre_aggregate: bool = false,
         mode: Mode = .explicit,
-        cardinality_limit: usize = 2000,
+        cardinality_limit: usize = spec.default_cardinality_limit,
 
         /// Keeps track of the raw recorded values for each set of attributes.
         /// Used when pre_aggregate is false (e.g. standalone instruments or custom pipelines).
@@ -1087,43 +1059,188 @@ pub fn Histogram(comptime T: type) type {
 }
 
 pub fn Gauge(comptime T: type) type {
+    comptime {
+        switch (@typeInfo(T)) {
+            .int, .float => {},
+            else => @compileError("Gauge only supports integer and floating-point types, found " ++ @typeName(T)),
+        }
+    }
+
     return struct {
         const Self = @This();
+
+        pub const AggType = switch (@typeInfo(T)) {
+            .int => i64,
+            .float => f64,
+            else => unreachable,
+        };
+
+        fn toAgg(value: T) AggType {
+            return switch (@typeInfo(T)) {
+                .int => @intCast(value),
+                .float => @floatCast(value),
+                else => unreachable,
+            };
+        }
+
+        fn wrapData(points: []DataPoint(AggType)) MeasurementsData {
+            return switch (AggType) {
+                i64 => .{ .int = points },
+                f64 => .{ .double = points },
+                else => unreachable,
+            };
+        }
 
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
         collection_start_ns: u64 = 0,
+        pre_last_value: bool = true,
+        cardinality_limit: usize,
 
+        /// Pre-aggregated data points when every reader and view resolves to LastValue.
+        aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true),
+
+        /// Raw data points kept as fallback when any reader or view resolves to non-LastValue (e.g. Drop).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
+
+        const overflow_attrs = [_]Attribute{
+            .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
+        };
+        const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
+                .pre_last_value = true,
+                .cardinality_limit = spec.default_cardinality_limit,
+                .aggregated_points = .empty,
+                .data_points = .empty,
                 .allocator = allocator,
                 .io = io,
-                .data_points = .empty,
                 .lock = std.Io.Mutex.init,
                 .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             };
         }
 
         fn deinit(self: *Self) void {
+            for (self.aggregated_points.values()) |*m| {
+                m.deinit(self.allocator);
+            }
+            self.aggregated_points.deinit(self.allocator);
+
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
             self.data_points.deinit(self.allocator);
         }
 
-        /// Record the given value to the gauge, using the provided attributes.
-        pub fn record(self: *Self, value: T, attributes: anytype) !void {
+        /// Fold `raw_dp` into the pre-aggregated series.
+        ///
+        /// Used when draining raw points into aggregated points upon switching to pre-aggregation.
+        /// Whatever gets moved into the map is cleared from `raw_dp`, so the caller
+        /// must always call `raw_dp.deinit` afterwards:
+        /// it frees what was not moved (everything on error, the merged duplicate on success).
+        fn recordRawPoint(self: *Self, raw_dp: *DataPoint(T)) !void {
+            const val = toAgg(raw_dp.value);
+            const key = Attributes.with(raw_dp.attributes);
+            if (self.aggregated_points.getPtr(key)) |existing| {
+                existing.value = val;
+                if (raw_dp.exemplar_candidate) |sample| {
+                    if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                    existing.exemplar_candidate = sample;
+                    raw_dp.exemplar_candidate = null;
+                }
+                return;
+            }
+
+            if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
+                if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
+                    overflow_ptr.value = val;
+                    if (raw_dp.exemplar_candidate) |sample| {
+                        if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                        overflow_ptr.exemplar_candidate = sample;
+                        raw_dp.exemplar_candidate = null;
+                    }
+                    return;
+                }
+
+                log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                const overflow_slice = try self.allocator.dupe(Attribute, &overflow_attrs);
+                var overflow_dp = DataPoint(AggType){
+                    .value = val,
+                    .attributes = overflow_slice,
+                    .attributes_owned = false,
+                };
+                var overflow_stored = false;
+                defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
+
+                if (raw_dp.exemplar_candidate) |sample| {
+                    overflow_dp.exemplar_candidate = sample;
+                    raw_dp.exemplar_candidate = null;
+                }
+
+                try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
+                overflow_stored = true;
+                return;
+            }
+
+            const dp_agg = DataPoint(AggType){
+                .value = val,
+                .attributes = raw_dp.attributes,
+                .attributes_owned = raw_dp.attributes_owned,
+                .exemplar_candidate = raw_dp.exemplar_candidate,
+                .exemplars = raw_dp.exemplars,
+                .timestamps = raw_dp.timestamps,
+            };
+            try self.aggregated_points.put(self.allocator, Attributes.with(raw_dp.attributes), dp_agg);
+
+            // The map owns these now.
+            raw_dp.attributes = null;
+            raw_dp.attributes_owned = false;
+            raw_dp.exemplar_candidate = null;
+            raw_dp.exemplars = &.{};
+        }
+
+        pub fn setPreLastValue(self: *Self, enabled: bool) void {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            var dp = try DataPoint(T).new(self.allocator, value, attributes);
-            errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-            try self.data_points.append(self.allocator, dp);
+            if (self.pre_last_value == enabled) return;
+            self.pre_last_value = enabled;
+
+            if (enabled) {
+                // Switching back to LastValue: drain any pending raw points into aggregated_points.
+                // On allocation failure, the failed point and the ones after it stay in data_points,
+                // and we revert pre_last_value to false so subsequent measurements preserve chronological order.
+                const items = self.data_points.items;
+                var drained: usize = 0;
+                for (items) |*raw_dp| {
+                    self.recordRawPoint(raw_dp) catch {
+                        self.pre_last_value = false;
+                        break;
+                    };
+                    drained += 1;
+                }
+                // Drained points were moved out of or merged, so only the leftovers need freeing.
+                for (items[0..drained]) |*raw_dp| raw_dp.deinit(self.allocator);
+                const remaining = items.len - drained;
+                std.mem.copyForwards(DataPoint(T), items[0..remaining], items[drained..]);
+                self.data_points.shrinkRetainingCapacity(remaining);
+            }
+        }
+
+        /// Record the given value to the gauge, using the provided attributes.
+        pub fn record(self: *Self, value: T, attributes: anytype) !void {
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+            }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.recordWithSlice(value, attrs);
         }
 
         /// Record a value with a pre-built attribute slice.
@@ -1132,38 +1249,122 @@ pub fn Gauge(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            var dp = DataPoint(T){
-                .value = value,
-                .attributes = if (attributes) |attrs|
-                    try self.allocator.dupe(Attribute, attrs)
-                else
-                    null,
+            if (!self.pre_last_value) {
+                var dp = DataPoint(T){
+                    .value = value,
+                    .attributes = if (attributes) |attrs|
+                        try self.allocator.dupe(Attribute, attrs)
+                    else
+                        null,
+                };
+                errdefer dp.deinit(self.allocator);
+                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                try self.data_points.append(self.allocator, dp);
+                return;
+            }
+
+            const val = toAgg(value);
+
+            var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
+            defer if (candidate) |*s| s.deinit(self.allocator);
+
+            const key = Attributes.with(attributes);
+
+            if (self.aggregated_points.getPtr(key)) |existing| {
+                existing.value = val;
+                if (candidate) |sample| {
+                    if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                    existing.exemplar_candidate = sample;
+                    candidate = null;
+                }
+                return;
+            }
+
+            // The spec requires creating the overflow series prior to reaching the cardinality limit,
+            // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
+            // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
+            if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
+                if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
+                    overflow_ptr.value = val;
+                    if (candidate) |sample| {
+                        if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                        overflow_ptr.exemplar_candidate = sample;
+                        candidate = null;
+                    }
+                    return;
+                }
+
+                log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                const overflow_slice = try self.allocator.dupe(Attribute, &overflow_attrs);
+                var overflow_dp = DataPoint(AggType){
+                    .value = val,
+                    .attributes = overflow_slice,
+                    .attributes_owned = false,
+                };
+                var overflow_stored = false;
+                defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
+
+                if (candidate) |sample| {
+                    overflow_dp.exemplar_candidate = sample;
+                    candidate = null;
+                }
+
+                try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
+                overflow_stored = true;
+                return;
+            }
+
+            var owned_attrs = if (attributes) |attrs|
+                try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+            else
+                null;
+            defer if (owned_attrs) |attrs| {
+                for (attrs) |attr| {
+                    self.allocator.free(attr.key);
+                    if (attr.value == .string) self.allocator.free(attr.value.string);
+                }
+                self.allocator.free(attrs);
             };
-            errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-            try self.data_points.append(self.allocator, dp);
+
+            var new_dp = DataPoint(AggType){
+                .value = val,
+                .attributes = owned_attrs,
+                .attributes_owned = (owned_attrs != null),
+                .exemplar_candidate = candidate,
+            };
+            owned_attrs = null;
+            candidate = null;
+
+            var dp_stored = false;
+            defer if (!dp_stored) new_dp.deinit(self.allocator);
+
+            try self.aggregated_points.put(self.allocator, Attributes.with(new_dp.attributes), new_dp);
+            dp_stored = true;
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            defer {
-                for (self.data_points.items) |*dp| {
-                    dp.deinit(self.allocator);
-                }
-                self.data_points.clearRetainingCapacity();
-            }
+            // Both batches share one window, which only advances once the collection succeeds.
+            var agg_end_ns = self.collection_start_ns;
+            const agg_copied = try copyNormalizedPoints(AggType, AggType, allocator, self.io, self.aggregated_points.values(), &agg_end_ns);
+            defer allocator.free(agg_copied);
+            errdefer for (agg_copied) |*p| p.deinit(allocator);
+            var raw_end_ns = self.collection_start_ns;
+            const raw_copied = try copyNormalizedPoints(T, AggType, allocator, self.io, self.data_points.items, &raw_end_ns);
+            defer allocator.free(raw_copied);
+            errdefer for (raw_copied) |*p| p.deinit(allocator);
+            const combined = try std.mem.concat(allocator, DataPoint(AggType), &.{ agg_copied, raw_copied });
+            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
 
-            switch (T) {
-                i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                },
-                f32, f64 => {
-                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                },
-                else => unreachable,
-            }
+            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
+            self.aggregated_points.clearRetainingCapacity();
+            for (self.data_points.items) |*m| m.deinit(self.allocator);
+            self.data_points.clearRetainingCapacity();
+
+            return wrapData(combined);
         }
     };
 }
@@ -1430,8 +1631,184 @@ test "gauge instrument records value without attributes" {
 
     try gauge.record(42, .{});
     try gauge.record(-42, .{});
-    std.debug.assert(gauge.data_points.items.len == 2);
-    std.debug.assert(gauge.data_points.pop().?.value == -42);
+    // In record-time last-value aggregation, identical attributes aggregate into 1 point
+    std.debug.assert(gauge.aggregated_points.count() == 1);
+    std.debug.assert(gauge.aggregated_points.values()[0].value == -42);
+}
+
+test "gauge keeps separate last value per attribute set" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(f64, .{ .name = "temperature" });
+
+    try gauge.record(20.5, .{ "room", @as([]const u8, "kitchen") });
+    try gauge.record(22.0, .{ "room", @as([]const u8, "living_room") });
+    try gauge.record(21.0, .{ "room", @as([]const u8, "kitchen") });
+
+    try std.testing.expectEqual(@as(usize, 2), gauge.aggregated_points.count());
+
+    var measurements = try gauge.measurementsData(std.testing.allocator);
+    defer measurements.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), measurements.double.len);
+    for (measurements.double) |dp| {
+        const room = dp.attributes.?[0].value.string;
+        if (std.mem.eql(u8, room, "kitchen")) {
+            try std.testing.expectEqual(21.0, dp.value);
+        } else if (std.mem.eql(u8, room, "living_room")) {
+            try std.testing.expectEqual(22.0, dp.value);
+        } else {
+            return error.UnexpectedAttribute;
+        }
+    }
+}
+
+test "gauge cardinality limit creates overflow series and records excess measurements" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(i64, .{ .name = "gauge-cardinality" });
+    gauge.cardinality_limit = 3;
+
+    try gauge.record(10, .{ "k", @as([]const u8, "v1") });
+    try gauge.record(20, .{ "k", @as([]const u8, "v2") });
+    // Limit is 3, so at 3 - 1 = 2 regular series, next series goes to overflow
+    try gauge.record(30, .{ "k", @as([]const u8, "v3") });
+    try gauge.record(40, .{ "k", @as([]const u8, "v4") });
+
+    // Should have 3 points: v1, v2, and the overflow series
+    try std.testing.expectEqual(@as(usize, 3), gauge.aggregated_points.count());
+
+    // The overflow series should hold the latest value (40)
+    var found_overflow = false;
+    for (gauge.aggregated_points.values()) |dp| {
+        if (dp.attributes) |attrs| {
+            if (attrs.len == 1 and std.mem.eql(u8, attrs[0].key, "otel.metric.overflow")) {
+                found_overflow = true;
+                try std.testing.expectEqual(@as(i64, 40), dp.value);
+            }
+        }
+    }
+    try std.testing.expect(found_overflow);
+}
+
+test "gauge record existing series performs zero heap allocations" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(f64, .{ .name = "zero-alloc-gauge" });
+
+    // Initial record creates the series
+    try gauge.record(1.0, .{ "host", @as([]const u8, "server-1") });
+
+    // Subsequent records to the same series must not allocate any heap memory
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const prev_allocator = gauge.allocator;
+    gauge.allocator = failing_allocator.allocator();
+    defer gauge.allocator = prev_allocator;
+
+    try gauge.record(2.5, .{ "host", @as([]const u8, "server-1") });
+    try gauge.record(3.5, .{ "host", @as([]const u8, "server-1") });
+
+    try std.testing.expectEqual(@as(usize, 1), gauge.aggregated_points.count());
+    try std.testing.expectEqual(3.5, gauge.aggregated_points.values()[0].value);
+}
+
+test "gauge setPreLastValue drains pending raw data points" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(i32, .{ .name = "drain-gauge" });
+
+    // Disable pre-aggregation to accumulate raw points
+    gauge.setPreLastValue(false);
+    try gauge.record(10, .{ "color", @as([]const u8, "red") });
+    try gauge.record(20, .{ "color", @as([]const u8, "blue") });
+    try gauge.record(30, .{ "color", @as([]const u8, "red") });
+    try std.testing.expectEqual(@as(usize, 3), gauge.data_points.items.len);
+    try std.testing.expectEqual(@as(usize, 0), gauge.aggregated_points.count());
+
+    // Switch back to pre-aggregation: drains into aggregated_points
+    gauge.setPreLastValue(true);
+    try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
+    try std.testing.expectEqual(@as(usize, 2), gauge.aggregated_points.count());
+}
+
+test "gauge setPreLastValue failed drain reverts to raw recording mode" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(i32, .{ .name = "drain-fail-gauge" });
+
+    gauge.setPreLastValue(false);
+    try gauge.record(10, .{ "color", @as([]const u8, "red") });
+    try std.testing.expectEqual(@as(usize, 1), gauge.data_points.items.len);
+
+    // Make allocations fail during drain
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const prev_allocator = gauge.allocator;
+    gauge.allocator = failing_allocator.allocator();
+
+    // Drain fails because put/copyAttributes fails:
+    gauge.setPreLastValue(true);
+    // Mode must revert to false so new points are not inserted out of order
+    try std.testing.expectEqual(false, gauge.pre_last_value);
+    try std.testing.expectEqual(@as(usize, 1), gauge.data_points.items.len);
+
+    // Restore allocator
+    gauge.allocator = prev_allocator;
+    // Record another measurement: appends to raw data_points in chronological order
+    try gauge.record(20, .{ "color", @as([]const u8, "red") });
+    try std.testing.expectEqual(@as(usize, 2), gauge.data_points.items.len);
+
+    // Subsequent drain succeeds
+    gauge.setPreLastValue(true);
+    try std.testing.expectEqual(true, gauge.pre_last_value);
+    try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
+    try std.testing.expectEqual(@as(usize, 1), gauge.aggregated_points.count());
+    try std.testing.expectEqual(@as(i64, 20), gauge.aggregated_points.values()[0].value);
+}
+
+test "gauge mixed aggregated and raw points share the collection start time" {
+    const io = std.testing.io;
+    var g = Gauge(i32).init(std.testing.allocator, io);
+    defer g.deinit();
+    g.collection_start_ns = 1;
+
+    try g.record(10, .{ "color", @as([]const u8, "red") });
+    g.setPreLastValue(false);
+    try g.record(20, .{ "color", @as([]const u8, "blue") });
+
+    var data = try g.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(2, data.int.len);
+    for (data.int) |point| try std.testing.expectEqual(1, point.timestamps.?.start_time_ns);
+    try std.testing.expectEqual(@max(data.int[0].timestamps.?.time_ns, data.int[1].timestamps.?.time_ns), g.collection_start_ns);
+}
+
+fn testGaugeAllocationFailures(allocator: std.mem.Allocator) !void {
+    const io = std.testing.io;
+    var g = Gauge(f64).init(allocator, io);
+    defer g.deinit();
+    g.cardinality_limit = 2;
+
+    try g.record(10.0, .{ "status", @as([]const u8, "200") });
+    try g.record(5.0, .{ "status", @as([]const u8, "200") });
+    try g.record(20.0, .{ "status", @as([]const u8, "404") });
+    try g.record(30.0, .{ "status", @as([]const u8, "500") });
+
+    var data = try g.measurementsData(allocator);
+    defer data.deinit(allocator);
+}
+
+test "gauge in-place aggregation handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testGaugeAllocationFailures, .{});
 }
 
 test "upDownCounter instrument records and stores value" {
@@ -1908,6 +2285,23 @@ fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "switching back to Sum handles allocation failures without leaks or double-frees" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testSwitchBackToSumAllocationFailures, .{});
+}
+
+test "counter mixed aggregated and raw points share the collection start time" {
+    const io = std.testing.io;
+    var c = Counter(u32).init(std.testing.allocator, io);
+    defer c.deinit();
+    c.collection_start_ns = 1;
+
+    try c.add(1, .{ "status", @as([]const u8, "200") });
+    c.setPreSum(false);
+    try c.add(2, .{ "status", @as([]const u8, "404") });
+
+    var data = try c.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(2, data.int.len);
+    for (data.int) |point| try std.testing.expectEqual(1, point.timestamps.?.start_time_ns);
+    try std.testing.expectEqual(@max(data.int[0].timestamps.?.time_ns, data.int[1].timestamps.?.time_ns), c.collection_start_ns);
 }
 
 test "switching back to Sum keeps the exemplars captured at record time" {

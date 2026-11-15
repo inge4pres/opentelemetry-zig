@@ -200,7 +200,7 @@ pub const MeterProvider = struct {
             .exemplar_filter = if (self.sdk_disabled) .always_off else if (self.config) |cfg| cfg.metrics_config.exemplar_filter else .trace_based,
             .exemplar_sampler = .{ .allocator = self.allocator },
             .provider = self,
-            .cardinality_limit = if (self.config) |cfg| cfg.metrics_config.cardinality_limit else 2000,
+            .cardinality_limit = if (self.config) |cfg| cfg.metrics_config.cardinality_limit else spec.default_cardinality_limit,
         };
 
         const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
@@ -303,6 +303,15 @@ pub const MeterProvider = struct {
                             h.pre_aggregate = false;
                         }
                     },
+                    inline .Gauge_i16,
+                    .Gauge_i32,
+                    .Gauge_i64,
+                    .Gauge_f32,
+                    .Gauge_f64,
+                    => |g| {
+                        const is_last_value = resolvesToLastValueOnlyUnlocked(self, instr.*, &meter.scope);
+                        g.setPreLastValue(is_last_value);
+                    },
                     else => {},
                 }
             }
@@ -344,6 +353,34 @@ fn resolvesToSumOnly(provider: ?*MeterProvider, instr: *const Instrument, scope:
     p.mx.lockUncancelable(p.io);
     defer p.mx.unlock(p.io);
     return resolvesToSumOnlyUnlocked(p, instr, scope);
+}
+
+fn resolvesToLastValueOnlyUnlocked(p: *const MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    // If any view matching this instrument defines an attribute filter, we cannot pre-aggregate
+    // at the instrument level because filtering can merge series whose map order does not
+    // reflect measurement order.
+    for (p.views.items) |v| {
+        if (v.matches(instr, scope) and v.attribute_filter != null) return false;
+    }
+
+    if (p.readers.items.len > 0) {
+        for (p.readers.items) |r| {
+            const agg = view.aggregationForViews(p.views.items, instr, scope, r.aggregation);
+            if (agg != .LastValue) return false;
+        }
+    } else {
+        const agg = view.aggregationForViews(p.views.items, instr, scope, view.DefaultAggregation);
+        if (agg != .LastValue) return false;
+    }
+
+    return true;
+}
+
+fn resolvesToLastValueOnly(provider: ?*MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    const p = provider orelse return true;
+    p.mx.lockUncancelable(p.io);
+    defer p.mx.unlock(p.io);
+    return resolvesToLastValueOnlyUnlocked(p, instr, scope);
 }
 
 fn histogramAggregationsEqual(a: view.Aggregation, b: view.Aggregation) bool {
@@ -399,7 +436,7 @@ pub const Meter = struct {
     exemplar_filter: exemplar.ExemplarFilter = .trace_based,
     exemplar_sampler: exemplar.Sampler = .{},
     provider: ?*MeterProvider = null,
-    cardinality_limit: usize = 2000,
+    cardinality_limit: usize = spec.default_cardinality_limit,
 
     mx: std.Io.Mutex = std.Io.Mutex.init,
 
@@ -510,8 +547,18 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        g.cardinality_limit = self.cardinality_limit;
         g.exemplar_filter = self.exemplar_filter;
-        try self.registerInstrument(i);
+
+        if (self.provider) |p| {
+            p.mx.lockUncancelable(p.io);
+            defer p.mx.unlock(p.io);
+            g.pre_last_value = resolvesToLastValueOnlyUnlocked(p, i, &self.scope);
+            try self.registerInstrument(i);
+        } else {
+            g.pre_last_value = true;
+            try self.registerInstrument(i);
+        }
 
         return g;
     }
@@ -1783,6 +1830,45 @@ test "exemplar aggregation samples the series after View attribute filtering" {
     try std.testing.expectEqualStrings(if (sample.value.int == 7) "one" else "two", sample.filtered_attributes[0].value.string);
 }
 
+test "gauge with filtered view preserves measurement order" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    // Register a view that filters attributes (drops distinguishing sub_id attribute)
+    const v = view.View{
+        .instrument_selector = .{ .name = "temperature" },
+        .aggregation = .LastValue,
+        .temporality = .Delta,
+        .attribute_filter = .{ .include_keys = &.{"sensor"} },
+    };
+    try mp.addView(v);
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+    var gauge = try meter.createGauge(f64, .{ .name = "temperature" });
+
+    // Pre-aggregation must be disabled because a view filters attributes
+    try std.testing.expectEqual(false, gauge.pre_last_value);
+
+    // Record A=10, B=20, A=30
+    try gauge.record(10.0, .{ "sensor", @as([]const u8, "temp1"), "sub_id", @as([]const u8, "a") });
+    try gauge.record(20.0, .{ "sensor", @as([]const u8, "temp1"), "sub_id", @as([]const u8, "b") });
+    try gauge.record(30.0, .{ "sensor", @as([]const u8, "temp1"), "sub_id", @as([]const u8, "a") });
+
+    const collected = try AggregatedMetrics.fetch(allocator, meter, mp.views.items, null);
+    defer {
+        for (collected) |*measurement| measurement.deinit(allocator);
+        allocator.free(collected);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), collected.len);
+    const points = collected[0].data.double;
+    try std.testing.expectEqual(@as(usize, 1), points.len);
+    // Must be 30.0, not 20.0!
+    try std.testing.expectEqual(30.0, points[0].value);
+}
+
 test "exemplar aggregation aligns histogram samples with bucket boundaries" {
     const allocator = std.testing.allocator;
     var meter = Meter{ .scope = .{ .name = "exemplar-test" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
@@ -2040,6 +2126,59 @@ test "exemplar collection windows stay stable across delta cumulative and idle c
             try std.testing.expectEqual(@as(usize, 0), idle.len);
         }
     };
+}
+
+test "counter with pre-summed and raw points keeps spec collection windows" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |cumulative| {
+        var meter = Meter{ .scope = .{ .name = "mixed-windows" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+        defer meter.deinit();
+        const counter = try meter.createCounter(u64, .{ .name = "requests" });
+        const temporal = try metrics_temporality.init(allocator);
+        defer temporal.deinit();
+        var initial_start: ?u64 = null;
+        var previous_end: ?u64 = null;
+        var total: i64 = 0;
+        for (0..3) |_| {
+            counter.setPreSum(true);
+            try counter.add(1, .{ "series", @as(u64, 1) });
+            counter.setPreSum(false);
+            try counter.add(2, .{ "series", @as(u64, 1) });
+            total += 3;
+            const data = try AggregatedMetrics.fetch(allocator, &meter, &.{}, null);
+            defer {
+                for (data) |*measurement| measurement.deinit(allocator);
+                allocator.free(data);
+            }
+            try temporal.process(&data[0], if (cumulative) view.TemporalityCumulative else view.TemporalityDelta);
+            try std.testing.expectEqual(@as(usize, 1), data[0].data.int.len);
+            const point = data[0].data.int[0];
+            try std.testing.expectEqual(if (cumulative) total else 3, point.value);
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#metricreader
+            const timestamps = point.timestamps.?;
+            if (initial_start == null) initial_start = timestamps.start_time_ns;
+            if (cumulative) try std.testing.expectEqual(initial_start, timestamps.start_time_ns) else if (previous_end) |end| try std.testing.expectEqual(end, timestamps.start_time_ns.?);
+            previous_end = timestamps.time_ns;
+        }
+    }
+}
+
+test "gauge with pre-aggregated and raw points reports the last measurement" {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "mixed-last-value" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const gauge = try meter.createGauge(i64, .{ .name = "temperature" });
+    try gauge.record(10, .{ "room", @as(u64, 1) });
+    gauge.setPreLastValue(false);
+    try gauge.record(20, .{ "room", @as(u64, 1) });
+
+    const data = try AggregatedMetrics.fetch(allocator, &meter, &.{}, null);
+    defer {
+        for (data) |*measurement| measurement.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.int.len);
+    try std.testing.expectEqual(20, data[0].data.int[0].value);
 }
 
 test "exemplar disabling an instrument after recording preserves buffered ownership" {

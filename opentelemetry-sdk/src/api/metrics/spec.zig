@@ -196,6 +196,10 @@ test "identifying fields for instruments change with unit" {
 // See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation
 pub const default_histogram_explicit_bucket_boundaries: []const f64 = &[_]f64{ 0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0, 7500.0, 10000.0 };
 
+/// Default cardinality limit for metric instruments as defined in the OpenTelemetry specification.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#cardinality-limits
+pub const default_cardinality_limit: usize = 2000;
+
 /// Validate the histogram option to use explicit bucket boundaries is conformant to the OpenTelemetry specification.
 /// Bucket boundaries must be between 0 and a positive real number, and in increasing order.
 /// There is no theoretical limit on the number of buckets, but the number of buckets should be kept small (usually between 5 and 20).
