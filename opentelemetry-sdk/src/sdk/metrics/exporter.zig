@@ -1,5 +1,5 @@
 const std = @import("std");
-const clock = @import("clock");
+const clock = @import("timeout");
 
 const log = std.log.scoped(.exporter);
 
@@ -726,6 +726,41 @@ test "e2e periodic exporting metric reader" {
         }
     }
     try std.testing.expect(seen_counter and seen_histogram);
+}
+
+test "periodic exporting metric reader exports pending metrics on shutdown" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+
+    // Default interval: no periodic export can happen during the test,
+    // so the counter can only reach the exporter through shutdown.
+    var per = try PeriodicExportingReader.init(allocator, io, mp, metric_exporter, null, null);
+
+    // Let the worker's initial collect run before recording anything.
+    std.Io.sleep(io, .fromMilliseconds(50), .awake) catch {};
+
+    const meter = try mp.getMeter(.{ .name = "shutdown-flush" });
+    var counter = try meter.createCounter(u64, .{ .name = "requests" });
+    try counter.add(7, .{});
+
+    per.shutdown();
+
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| d.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(1, data.len);
+    try std.testing.expectEqualStrings("requests", data[0].instrumentOptions.name);
+    try std.testing.expectEqual(7, data[0].data.int[0].value);
 }
 
 // Include testing for the exporters

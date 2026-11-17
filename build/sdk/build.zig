@@ -45,12 +45,12 @@ pub fn Setup(
 
 // Returns the selected gRPC backend.
 fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !GrpcProvider {
-    const clock_mod = b.createModule(.{
-        .root_source_file = b.path(sdk_root ++ "/src/clock.zig"),
+    const timeout_mod = b.createModule(.{
+        .root_source_file = b.path(sdk_root ++ "/src/timeout.zig"),
         .target = info.target,
         .optimize = info.optimize,
     });
-    try dependencies.put("clock", clock_mod);
+    try dependencies.put("timeout", timeout_mod);
 
     const grpc_provider = b.option(GrpcProvider, "grpc-provider", "Which gRPC implementation to use, if any") orelse .none;
     const grpc_link_mode = b.option(std.builtin.LinkMode, "grpc-link-mode", "Link libgrpc statically or dynamically, with -Dgrpc-provider=libgrpc");
@@ -98,7 +98,7 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !G
         "protobuf",
         "opentelemetry-proto",
         "opentelemetry-semconv",
-        "clock",
+        "timeout",
         "grpc_transport",
     };
     const sdk_mod = b.addModule("sdk", .{
@@ -354,7 +354,7 @@ fn addDocsStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) 
         "protobuf",
         "opentelemetry-proto",
         "opentelemetry-semconv",
-        "clock",
+        "timeout",
     };
 
     const sdk_docs = b.addObject(.{
@@ -406,7 +406,7 @@ fn buildExamples(
                 "otlp-stub",
                 "opentelemetry-proto",
                 "opentelemetry-semconv",
-                "clock",
+                "timeout",
             };
 
             const b_mod = b.createModule(.{
@@ -452,7 +452,7 @@ fn buildBenchmarks(
             var dep_names = [_][]const u8{
                 "opentelemetry-sdk",
                 "benchmark",
-                "clock",
+                "timeout",
             };
             const b_mod = b.createModule(.{
                 .root_source_file = file_name,
@@ -495,7 +495,7 @@ fn buildIntegrationTests(
     grpc_provider: GrpcProvider,
 ) ![]*std.Build.Step.Compile {
     const otel_mod = mods.get("opentelemetry-sdk") orelse return BuildError.ModuleNotFound;
-    const clock_mod = mods.get("clock") orelse return BuildError.ModuleNotFound;
+    const timeout_mod = mods.get("timeout") orelse return BuildError.ModuleNotFound;
 
     var integration_tests: std.ArrayList(*std.Build.Step.Compile) = .empty;
     errdefer integration_tests.deinit(b.allocator);
@@ -511,7 +511,7 @@ fn buildIntegrationTests(
 
     var dep_names = [_][]const u8{
         "opentelemetry-sdk",
-        "clock",
+        "timeout",
     };
     const common_mod = b.createModule(.{
         .root_source_file = common_path,
@@ -546,7 +546,7 @@ fn buildIntegrationTests(
                             .imports = &.{
                                 .{ .name = "opentelemetry-sdk", .module = otel_mod },
                                 .{ .name = "common", .module = common_mod },
-                                .{ .name = "clock", .module = clock_mod },
+                                .{ .name = "timeout", .module = timeout_mod },
                             },
                         });
 
@@ -564,7 +564,7 @@ fn buildIntegrationTests(
                     .imports = &.{
                         .{ .name = "opentelemetry-sdk", .module = otel_mod },
                         .{ .name = "common", .module = common_mod },
-                        .{ .name = "clock", .module = clock_mod },
+                        .{ .name = "timeout", .module = timeout_mod },
                     },
                 });
 

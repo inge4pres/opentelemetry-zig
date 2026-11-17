@@ -1,14 +1,5 @@
 const std = @import("std");
 
-pub fn timeoutAfterNs(ns: u64) std.Io.Timeout {
-    return .{
-        .duration = .{
-            .raw = .{ .nanoseconds = @intCast(ns) },
-            .clock = .awake,
-        },
-    };
-}
-
 pub fn timeoutAfterMs(ms: u64) std.Io.Timeout {
     // NOTE: ms is u64, if this function is ever
     // widened to accept u128, the multiplication must be bounded.
@@ -18,10 +9,6 @@ pub fn timeoutAfterMs(ms: u64) std.Io.Timeout {
             .clock = .awake,
         },
     };
-}
-
-pub fn waitTimeout(io: std.Io, event: *std.Io.Event, ns: u64) (error{Timeout} || std.Io.Cancelable)!void {
-    return event.waitTimeout(io, timeoutAfterNs(ns));
 }
 
 fn PayloadOf(comptime Fn: type) type {

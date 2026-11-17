@@ -1,5 +1,5 @@
 const std = @import("std");
-const clock = @import("clock");
+const clock = @import("timeout");
 const logs = @import("../../api/logs/logger_provider.zig");
 const context = @import("../../api/context.zig");
 const LogRecordExporter = @import("log_record_exporter.zig").LogRecordExporter;

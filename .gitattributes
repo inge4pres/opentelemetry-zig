@@ -1,0 +1,2 @@
+# Windows checkouts would otherwise get CRLF, breaking zig fmt and string comparisons in tests
+* text=auto eol=lf

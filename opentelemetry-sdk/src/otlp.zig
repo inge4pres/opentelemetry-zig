@@ -9,7 +9,7 @@
 //! `error.UnimplementedTransportProtocol`.
 
 const std = @import("std");
-const clock = @import("clock");
+const timeout = @import("timeout");
 const build_info = @import("build_info");
 const http = std.http;
 const Uri = std.Uri;
@@ -1006,7 +1006,7 @@ const HTTPClient = struct {
         if (self.config.timeout_sec == 0) {
             return self.client.fetch(opts);
         }
-        return clock.callTimeout(
+        return timeout.callTimeout(
             self.client.io,
             self.config.timeout_sec * std.time.ms_per_s,
             http.Client.fetch,

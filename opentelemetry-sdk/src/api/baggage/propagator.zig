@@ -828,9 +828,9 @@ test "inject and extract baggage with environment variables" {
 
     try injectIntoEnvironment(allocator, baggage, &env_map);
 
-    // BAGGAGE should be set, but lowercase "baggage" should not
-    try std.testing.expect(env_map.get("BAGGAGE") != null);
-    try std.testing.expect(env_map.get("baggage") == null);
+    // Assert the stored key spelling: on Windows env lookups ignore case, so get("baggage") would match.
+    try std.testing.expectEqual(1, env_map.count());
+    try std.testing.expectEqualStrings("BAGGAGE", env_map.keys()[0]);
 
     // Extract from environment
     var extracted = (try extractFromEnvironment(allocator, &env_map)).?;

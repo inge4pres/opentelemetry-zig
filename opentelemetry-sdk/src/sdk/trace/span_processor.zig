@@ -1,5 +1,5 @@
 const std = @import("std");
-const clock = @import("clock");
+const clock = @import("timeout");
 const trace = @import("../../api/trace.zig");
 const context = @import("../../api/context.zig");
 const SpanExporter = @import("span_exporter.zig").SpanExporter;
