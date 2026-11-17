@@ -138,8 +138,9 @@ fn formatTraceparent(allocator: std.mem.Allocator, span_context: SpanContext) ![
     });
 }
 
+/// Format a TraceState as a W3C `tracestate` value, owned by the caller.
 /// Returns null when the TraceState has no entries
-fn formatTracestate(allocator: std.mem.Allocator, trace_state: TraceState) !?[]u8 {
+pub fn formatTracestate(allocator: std.mem.Allocator, trace_state: TraceState) !?[]u8 {
     if (trace_state.entries.count() == 0) return null;
 
     var buf: std.ArrayList(u8) = .empty;
