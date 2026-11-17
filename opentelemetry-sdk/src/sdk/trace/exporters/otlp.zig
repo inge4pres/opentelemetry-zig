@@ -191,6 +191,7 @@ pub const OTLPExporter = struct {
                     self.allocator.free(span.trace_id);
                     self.allocator.free(span.span_id);
                     if (span.parent_span_id.len > 0) self.allocator.free(span.parent_span_id);
+                    if (span.trace_state.len > 0) self.allocator.free(span.trace_state);
                     span.attributes.deinit(self.allocator);
 
                     for (span.events.items) |*event| {
@@ -201,6 +202,7 @@ pub const OTLPExporter = struct {
                     for (span.links.items) |*link| {
                         self.allocator.free(link.trace_id);
                         self.allocator.free(link.span_id);
+                        if (link.trace_state.len > 0) self.allocator.free(link.trace_state);
                         link.attributes.deinit(self.allocator);
                     }
                     span.links.deinit(self.allocator);
@@ -263,7 +265,7 @@ pub const OTLPExporter = struct {
             links.appendAssumeCapacity(.{
                 .trace_id = try allocator.dupe(u8, &link_trace_id),
                 .span_id = try allocator.dupe(u8, &link_span_id),
-                .trace_state = (""), // Convert trace state if needed
+                .trace_state = try trace.propagator.formatTracestate(allocator, link.span_context.trace_state) orelse "",
                 .attributes = link_attributes,
                 .dropped_attributes_count = 0,
                 .flags = @intCast(link.span_context.trace_flags.value),
@@ -277,10 +279,12 @@ pub const OTLPExporter = struct {
             break :parent try allocator.dupe(u8, &binary);
         } else "";
         errdefer if (parent_span_id.len > 0) allocator.free(parent_span_id);
+        const trace_state: []const u8 = try trace.propagator.formatTracestate(allocator, span_context.trace_state) orelse "";
+        errdefer if (trace_state.len > 0) allocator.free(trace_state);
         return pbtrace.Span{
             .trace_id = try allocator.dupe(u8, &trace_id),
             .span_id = try allocator.dupe(u8, &span_id),
-            .trace_state = (""), // Convert trace state if needed
+            .trace_state = trace_state,
             .parent_span_id = parent_span_id,
             .flags = @intCast(span_context.trace_flags.value),
             .name = (span.name),
@@ -474,6 +478,68 @@ test "span parent_span_id is exported" {
 
     const otlp_span = request.resource_spans.items[0].scope_spans.items[0].spans.items[0];
     try std.testing.expectEqualSlices(u8, &expected_parent_span_id, otlp_span.parent_span_id);
+}
+
+test "span and link trace_state are exported in W3C form" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    var config = try otlp.ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, io, config);
+    defer exporter.deinit();
+
+    var trace_state = trace.TraceState.init(allocator);
+    defer trace_state.deinit();
+    try trace_state.append("rojo", "00f067aa0ba902b7");
+    try trace_state.append("congo", "t61rcWkgMzE");
+
+    const span_context = trace.SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 11, 12, 13, 14, 15, 16, 17, 18 }),
+        trace.TraceFlags.default(),
+        trace_state,
+        false,
+    );
+
+    var link_trace_state = trace.TraceState.init(allocator);
+    defer link_trace_state.deinit();
+    try link_trace_state.append("vendor", "value");
+
+    const link_context = trace.SpanContext.init(
+        trace.TraceID.init([16]u8{ 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 12, 12, 13, 14, 15, 16, 17, 18 }),
+        trace.TraceFlags.default(),
+        link_trace_state,
+        false,
+    );
+
+    var empty_trace_state = trace.TraceState.init(allocator);
+    defer empty_trace_state.deinit();
+    const empty_link_context = trace.SpanContext.init(
+        trace.TraceID.init([16]u8{ 3, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 13, 12, 13, 14, 15, 16, 17, 18 }),
+        trace.TraceFlags.default(),
+        empty_trace_state,
+        false,
+    );
+
+    var test_span = trace.Span.init(allocator, io, span_context, "traced", .Internal, .{ .name = "test" });
+    defer test_span.deinit();
+    try test_span.addLink(link_context, null);
+    try test_span.addLink(empty_link_context, null);
+
+    var spans = [_]trace.Span{test_span};
+    var request = try exporter.spansToOTLPRequest(spans[0..]);
+    defer exporter.cleanupRequest(&request);
+
+    const otlp_span = request.resource_spans.items[0].scope_spans.items[0].spans.items[0];
+    try std.testing.expectEqualStrings("rojo=00f067aa0ba902b7,congo=t61rcWkgMzE", otlp_span.trace_state);
+    try std.testing.expectEqualStrings("vendor=value", otlp_span.links.items[0].trace_state);
+    try std.testing.expectEqualStrings("", otlp_span.links.items[1].trace_state);
 }
 
 test "OTLPExporter basic functionality" {
