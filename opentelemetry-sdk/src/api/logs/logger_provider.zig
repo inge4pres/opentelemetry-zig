@@ -14,6 +14,7 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const flattenAttributes = @import("../../attributes.zig").flatten;
 const attributesFromPairs = @import("../../attributes.zig").fromPairs;
+const semconv = @import("opentelemetry-semconv");
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const context_api = @import("../context/context.zig");
 const Context = context_api.Context;
@@ -608,9 +609,9 @@ test "LoggerProvider with custom resource" {
     const service_version: []const u8 = "1.0.0";
     const deployment_env: []const u8 = "production";
     const resource_attrs = try Attributes.from(allocator, .{
-        "service.name",    service_name,
-        "service.version", service_version,
-        "deployment.env",  deployment_env,
+        semconv.attribute.service_name.name,                service_name,
+        semconv.attribute.service_version.name,             service_version,
+        semconv.attribute.deployment_environment_name.name, deployment_env,
     });
     defer if (resource_attrs) |attrs| allocator.free(attrs);
 
@@ -619,7 +620,7 @@ test "LoggerProvider with custom resource" {
 
     try std.testing.expect(provider.resource != null);
     try std.testing.expectEqual(@as(usize, 3), provider.resource.?.len);
-    try std.testing.expectEqualStrings("service.name", provider.resource.?[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, provider.resource.?[0].key);
     try std.testing.expectEqualStrings("my-service", provider.resource.?[0].value.string);
 }
 
@@ -630,8 +631,8 @@ test "Logger log records inherit resource from provider" {
     const service_name: []const u8 = "test-service";
     const host_name: []const u8 = "test-host";
     const resource_attrs = try Attributes.from(allocator, .{
-        "service.name", service_name,
-        "host.name",    host_name,
+        semconv.attribute.service_name.name, service_name,
+        semconv.attribute.host_name.name,    host_name,
     });
     defer if (resource_attrs) |attrs| allocator.free(attrs);
 
@@ -678,7 +679,7 @@ test "Logger log records inherit resource from provider" {
     // Verify resource was passed to the log record
     try std.testing.expect(mock_exporter.captured_resource != null);
     try std.testing.expectEqual(@as(usize, 2), mock_exporter.captured_resource.?.len);
-    try std.testing.expectEqualStrings("service.name", mock_exporter.captured_resource.?[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, mock_exporter.captured_resource.?[0].key);
     try std.testing.expectEqualStrings("test-service", mock_exporter.captured_resource.?[0].value.string);
 }
 
@@ -993,8 +994,8 @@ test "Logger.emitStructured flattens nested body fields and keeps attributes sep
             self.attribute_count = records[0].attributes.len;
             for (records[0].attributes) |attr| {
                 // Both values are string literals in this test, so they outlive the callback.
-                if (std.mem.eql(u8, attr.key, "http.request.method")) self.method = attr.value.string;
-                if (std.mem.eql(u8, attr.key, "http.response.status_code")) self.status = attr.value.int;
+                if (std.mem.eql(u8, attr.key, semconv.attribute.http_request_method.name)) self.method = attr.value.string;
+                if (std.mem.eql(u8, attr.key, semconv.attribute.http_response_status_code.name)) self.status = attr.value.int;
             }
         }
 
@@ -1025,11 +1026,9 @@ test "Logger.emitStructured flattens nested body fields and keeps attributes sep
     const logger = try provider.getLogger(scope);
 
     // Semantic convention fields go in the attributes, the event payload in the body.
-    // Their names are spelled out here; applications pass the definitions of the semconv
-    // module to fromPairs instead, as the examples/logs/structured.zig example does.
     const attrs = attributesFromPairs(.{
-        .{ "http.request.method", "GET" },
-        .{ "http.response.status_code", 200 },
+        .{ semconv.attribute.http_request_method, .get },
+        .{ semconv.attribute.http_response_status_code, 200 },
     });
     logger.emitStructured(.info, .{
         .cache = .{ .hit = false, .lookup_ms = 0.4 },
@@ -1053,8 +1052,8 @@ test "Logger.emitStructured flattens nested body fields and keeps attributes sep
     }, .{
         .event_name = "app.request.handled",
         .attributes = &attributesFromPairs(.{
-            .{ "http.request.method", "POST" },
-            .{ "http.response.status_code", 204 },
+            .{ semconv.attribute.http_request_method, .post },
+            .{ semconv.attribute.http_response_status_code, 204 },
         }),
     });
 

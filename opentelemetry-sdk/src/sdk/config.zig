@@ -8,6 +8,7 @@
 
 const std = @import("std");
 
+const semconv = @import("opentelemetry-semconv");
 const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
 
 const EnvMap = std.process.Environ.Map;
@@ -407,7 +408,7 @@ fn serviceNameFromResourceAttributes(allocator: std.mem.Allocator, attrs: []cons
     while (iter.next() catch unreachable) |entry| {
         // A bare `service.name` with no value does not count; keep looking.
         const value = entry.value orelse continue;
-        if (!std.mem.eql(u8, entry.name, "service.name")) continue;
+        if (!std.mem.eql(u8, entry.name, semconv.attribute.service_name.name)) continue;
         return try allocator.dupe(u8, value);
     }
     return null;

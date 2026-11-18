@@ -5,6 +5,7 @@ const otlp = @import("../../../otlp.zig");
 const attribute = @import("../../../attributes.zig");
 
 const proto = @import("opentelemetry-proto");
+const semconv = @import("opentelemetry-semconv");
 const pblogs = proto.logs_v1;
 const pbcollector_logs = proto.collector_logs_v1;
 const pbcommon = proto.common_v1;
@@ -228,10 +229,10 @@ pub const OTLPExporter = struct {
             attributes.appendAssumeCapacity(try attributeToOTLP(attr.key, attr.value));
         }
         if (log_record.location) |loc| {
-            attributes.appendAssumeCapacity(try attributeToOTLP("code.file.path", .{ .string = loc.file }));
-            attributes.appendAssumeCapacity(try attributeToOTLP("code.function.name", .{ .string = loc.fn_name }));
-            attributes.appendAssumeCapacity(try attributeToOTLP("code.line.number", .{ .int = @intCast(loc.line) }));
-            attributes.appendAssumeCapacity(try attributeToOTLP("code.column.number", .{ .int = @intCast(loc.column) }));
+            attributes.appendAssumeCapacity(try attributeToOTLP(semconv.attribute.code_file_path.name, .{ .string = loc.file }));
+            attributes.appendAssumeCapacity(try attributeToOTLP(semconv.attribute.code_function_name.name, .{ .string = loc.fn_name }));
+            attributes.appendAssumeCapacity(try attributeToOTLP(semconv.attribute.code_line_number.name, .{ .int = @intCast(loc.line) }));
+            attributes.appendAssumeCapacity(try attributeToOTLP(semconv.attribute.code_column_number.name, .{ .int = @intCast(loc.column) }));
         }
 
         // trace_id and span_id are protobuf `bytes` fields.
@@ -457,13 +458,13 @@ test "Log record to OTLP conversion with all fields" {
     try std.testing.expectEqualSlices(u8, &trace_id, otlp_log.trace_id);
     try std.testing.expectEqualSlices(u8, &span_id, otlp_log.span_id);
     // Source location attributes
-    try std.testing.expectEqualStrings("code.file.path", otlp_log.attributes.items[2].key);
+    try std.testing.expectEqualStrings(semconv.attribute.code_file_path.name, otlp_log.attributes.items[2].key);
     try std.testing.expectEqualStrings("src/mylib.zig", otlp_log.attributes.items[2].value.?.value.?.string_value);
-    try std.testing.expectEqualStrings("code.function.name", otlp_log.attributes.items[3].key);
+    try std.testing.expectEqualStrings(semconv.attribute.code_function_name.name, otlp_log.attributes.items[3].key);
     try std.testing.expectEqualStrings("doWork", otlp_log.attributes.items[3].value.?.value.?.string_value);
-    try std.testing.expectEqualStrings("code.line.number", otlp_log.attributes.items[4].key);
+    try std.testing.expectEqualStrings(semconv.attribute.code_line_number.name, otlp_log.attributes.items[4].key);
     try std.testing.expectEqual(@as(i64, 42), otlp_log.attributes.items[4].value.?.value.?.int_value);
-    try std.testing.expectEqualStrings("code.column.number", otlp_log.attributes.items[5].key);
+    try std.testing.expectEqualStrings(semconv.attribute.code_column_number.name, otlp_log.attributes.items[5].key);
     try std.testing.expectEqual(@as(i64, 4), otlp_log.attributes.items[5].value.?.value.?.int_value);
     try std.testing.expectEqualStrings("test.event", otlp_log.event_name);
 }
@@ -584,10 +585,10 @@ test "Resource attributes in OTLP export" {
     const scope = InstrumentationScope{ .name = "test-logger" };
 
     // Create resource attributes
-    const resource_attrs = try allocator.alloc(attribute.Attribute, 2);
-    defer allocator.free(resource_attrs);
-    resource_attrs[0] = attribute.Attribute{ .key = "service.name", .value = .{ .string = "my-service" } };
-    resource_attrs[1] = attribute.Attribute{ .key = "service.version", .value = .{ .string = "1.0.0" } };
+    const resource_attrs = attribute.fromPairs(.{
+        .{ semconv.attribute.service_name, "my-service" },
+        .{ semconv.attribute.service_version, "1.0.0" },
+    });
 
     var log_records = [_]logs.ReadableLogRecord{
         logs.ReadableLogRecord{
@@ -600,7 +601,7 @@ test "Resource attributes in OTLP export" {
             .severity_text = "INFO",
             .body = .{ .string = "Test message" },
             .attributes = &[_]attribute.Attribute{},
-            .resource = resource_attrs,
+            .resource = &resource_attrs,
             .scope = scope,
             .location = null,
             .event_name = null,
@@ -619,7 +620,7 @@ test "Resource attributes in OTLP export" {
     try std.testing.expectEqual(@as(usize, 2), resource.attributes.items.len);
 
     // Verify service.name attribute
-    try std.testing.expectEqualStrings("service.name", resource.attributes.items[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource.attributes.items[0].key);
     try std.testing.expectEqualStrings("my-service", resource.attributes.items[0].value.?.value.?.string_value);
 }
 

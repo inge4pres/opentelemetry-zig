@@ -1,5 +1,6 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
+const semconv = @import("opentelemetry-semconv");
 
 // Override std.log to use OpenTelemetry bridge
 pub const std_options: std.Options = .{
@@ -39,8 +40,8 @@ pub fn main(init: std.process.Init) !void {
     const service_name: []const u8 = "migration-example";
     const service_version: []const u8 = "1.0.0";
     const resource = try sdk.attributes.Attributes.from(allocator, .{
-        "service.name",    service_name,
-        "service.version", service_version,
+        semconv.attribute.service_name.name,    service_name,
+        semconv.attribute.service_version.name, service_version,
     });
     defer if (resource) |r| allocator.free(r);
 

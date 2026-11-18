@@ -6,6 +6,7 @@ const otlp = @import("../../../otlp.zig");
 const attribute = @import("../../../attributes.zig");
 
 const proto = @import("opentelemetry-proto");
+const semconv = @import("opentelemetry-semconv");
 const pbtrace = proto.trace_v1;
 const pbcollector_trace = proto.collector_trace_v1;
 const pbcommon = proto.common_v1;
@@ -592,10 +593,10 @@ test "span resource is exported" {
     var exporter = try OTLPExporter.init(allocator, io, config);
     defer exporter.deinit();
 
-    const resource = [_]attribute.Attribute{
-        .{ .key = "service.name", .value = .{ .string = "test-service" } },
-        .{ .key = "service.version", .value = .{ .string = "1.2.3" } },
-    };
+    const resource = attribute.fromPairs(.{
+        .{ semconv.attribute.service_name, "test-service" },
+        .{ semconv.attribute.service_version, "1.2.3" },
+    });
 
     const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
     const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
@@ -617,9 +618,9 @@ test "span resource is exported" {
 
     const exported = request.resource_spans.items[0].resource.?;
     try std.testing.expectEqual(@as(usize, 2), exported.attributes.items.len);
-    try std.testing.expectEqualStrings("service.name", exported.attributes.items[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, exported.attributes.items[0].key);
     try std.testing.expectEqualStrings("test-service", exported.attributes.items[0].value.?.value.?.string_value);
-    try std.testing.expectEqualStrings("service.version", exported.attributes.items[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_version.name, exported.attributes.items[1].key);
     try std.testing.expectEqualStrings("1.2.3", exported.attributes.items[1].value.?.value.?.string_value);
 }
 

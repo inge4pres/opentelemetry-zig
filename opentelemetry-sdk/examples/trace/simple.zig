@@ -1,5 +1,6 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
+const semconv = @import("opentelemetry-semconv");
 const trace = sdk.trace;
 const trace_api = sdk.api.trace;
 
@@ -42,9 +43,9 @@ pub fn main(init: std.process.Init) !void {
 
     // Create attributes for HTTP span
     const http_span_attributes = try sdk.Attributes.from(allocator, .{
-        "http.method",      @as([]const u8, "GET"),
-        "http.url",         @as([]const u8, "/api/users"),
-        "http.status_code", @as(i64, 200),
+        semconv.attribute.http_request_method.name,       @as([]const u8, "GET"),
+        semconv.attribute.url_path.name,                  @as([]const u8, "/api/users"),
+        semconv.attribute.http_response_status_code.name, @as(i64, 200),
     });
     defer allocator.free(http_span_attributes.?);
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const semconv = @import("opentelemetry-semconv");
 const attribute = @import("../../attributes.zig");
 const trace = @import("../trace.zig");
 const context = @import("../context.zig");
@@ -524,10 +525,10 @@ pub const Span = struct {
         const timestamp: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
         var event = Event.init(self.allocator, "exception", timestamp);
 
-        try event.attributes.put(self.allocator, "exception.type", .{ .string = exception_type });
-        try event.attributes.put(self.allocator, "exception.message", .{ .string = message });
+        try event.attributes.put(self.allocator, semconv.attribute.exception_type.name, .{ .string = exception_type });
+        try event.attributes.put(self.allocator, semconv.attribute.exception_message.name, .{ .string = message });
         if (stacktrace) |st| {
-            try event.attributes.put(self.allocator, "exception.stacktrace", .{ .string = st });
+            try event.attributes.put(self.allocator, semconv.attribute.exception_stacktrace.name, .{ .string = st });
         }
 
         if (attributes) |attrs| {

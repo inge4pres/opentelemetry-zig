@@ -1,5 +1,6 @@
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
+const semconv = @import("opentelemetry-semconv");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -35,9 +36,9 @@ pub fn main(init: std.process.Init) !void {
     const service_version: []const u8 = "1.0.0";
     const deployment_env: []const u8 = "development";
     const resource_attrs = try sdk.attributes.Attributes.from(allocator, .{
-        "service.name",    service_name,
-        "service.version", service_version,
-        "deployment.env",  deployment_env,
+        semconv.attribute.service_name.name,                service_name,
+        semconv.attribute.service_version.name,             service_version,
+        semconv.attribute.deployment_environment_name.name, deployment_env,
     });
     defer if (resource_attrs) |attrs| allocator.free(attrs);
 
@@ -68,12 +69,12 @@ pub fn main(init: std.process.Init) !void {
     logger.emit(.fatal, "Fatal error - application cannot continue", .{ .severity_text = "CRITICAL" });
 
     // Emit with attributes
-    const attrs = [_]sdk.attributes.Attribute{
-        .{ .key = "http.method", .value = .{ .string = "GET" } },
-        .{ .key = "http.url", .value = .{ .string = "/api/users/123" } },
-        .{ .key = "http.status_code", .value = .{ .int = 200 } },
-        .{ .key = "http.response_time_ms", .value = .{ .double = 45.67 } },
-    };
+    const attrs = sdk.attributes.fromPairs(.{
+        .{ semconv.attribute.http_request_method, .get },
+        .{ semconv.attribute.url_path, "/api/users/123" },
+        .{ semconv.attribute.http_response_status_code, 200 },
+        .{ "http.response_time_ms", 45.67 },
+    });
     logger.emit(.info, "HTTP request processed", .{ .attributes = &attrs });
 
     // Emit log with trace correlation (demonstrates distributed tracing integration)

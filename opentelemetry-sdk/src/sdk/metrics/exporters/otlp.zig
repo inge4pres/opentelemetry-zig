@@ -9,6 +9,7 @@ const log = std.log.scoped(.otlp_exporter);
 
 const Attribute = @import("../../../attributes.zig").Attribute;
 const Attributes = @import("../../../attributes.zig").Attributes;
+const fromPairs = @import("../../../attributes.zig").fromPairs;
 
 const instrument = @import("../../../api/metrics/instrument.zig");
 const Instrument = instrument.Instrument;
@@ -26,6 +27,7 @@ const view = @import("../view.zig");
 const metric_exemplar = @import("../exemplar.zig");
 
 const protobuf = @import("protobuf");
+const semconv = @import("opentelemetry-semconv");
 const pbcommon = @import("opentelemetry-proto").common_v1;
 const pbresource = @import("opentelemetry-proto").resource_v1;
 const pbmetrics = @import("opentelemetry-proto").metrics_v1;
@@ -629,10 +631,10 @@ test "exporters/otlp init/deinit" {
 test "exporters/otlp resource conversion" {
     const allocator = std.testing.allocator;
 
-    const resource = [_]Attribute{
-        .{ .key = "service.name", .value = .{ .string = "test-service" } },
-        .{ .key = "service.version", .value = .{ .string = "1.2.3" } },
-    };
+    const resource = fromPairs(.{
+        .{ semconv.attribute.service_name, "test-service" },
+        .{ semconv.attribute.service_version, "1.2.3" },
+    });
 
     var kvs = try resourceToProtobuf(allocator, &resource);
     defer {
@@ -641,9 +643,9 @@ test "exporters/otlp resource conversion" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), kvs.items.len);
-    try std.testing.expectEqualStrings("service.name", kvs.items[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, kvs.items[0].key);
     try std.testing.expectEqualStrings("test-service", kvs.items[0].value.?.value.?.string_value);
-    try std.testing.expectEqualStrings("service.version", kvs.items[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_version.name, kvs.items[1].key);
     try std.testing.expectEqualStrings("1.2.3", kvs.items[1].value.?.value.?.string_value);
 }
 

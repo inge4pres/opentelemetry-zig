@@ -2,6 +2,7 @@ const std = @import("std");
 
 const log = std.log.scoped(.reader);
 
+const semconv = @import("opentelemetry-semconv");
 const pbcommon = @import("opentelemetry-proto").common;
 const pbresource = @import("opentelemetry-proto").resource;
 const pbmetrics = @import("opentelemetry-proto").metrics;
@@ -871,11 +872,11 @@ test "metric reader frees pending histograms on collection failure" {
             const histogram = try meter.createHistogram(f64, .{ .name = "test-histogram" });
             const get: []const u8 = "GET";
             const post: []const u8 = "POST";
-            try histogram.record(0.25, .{ "http.request.method", get });
-            try histogram.record(1.0, .{ "http.request.method", post });
+            try histogram.record(0.25, .{ semconv.attribute.http_request_method.name, get });
+            try histogram.record(1.0, .{ semconv.attribute.http_request_method.name, post });
 
             if (data_kind == .exponential_histogram) {
-                try histogram.record(-0.5, .{ "http.request.method", post });
+                try histogram.record(-0.5, .{ semconv.attribute.http_request_method.name, post });
             }
 
             try reader.collect();
@@ -934,11 +935,11 @@ test "metric reader cumulative histograms retain inactive series" {
 
         const get: []const u8 = "GET";
         const post: []const u8 = "POST";
-        try histogram.record(0.25, .{ "http.request.method", get });
-        try histogram.record(1.0, .{ "http.request.method", post });
+        try histogram.record(0.25, .{ semconv.attribute.http_request_method.name, get });
+        try histogram.record(1.0, .{ semconv.attribute.http_request_method.name, post });
 
         for (0..2) |cycle| {
-            if (cycle == 1) try histogram.record(0.5, .{ "http.request.method", get });
+            if (cycle == 1) try histogram.record(0.5, .{ semconv.attribute.http_request_method.name, get });
             try reader.collect();
             const collected = try inMem.fetch(allocator);
             defer {
@@ -954,7 +955,7 @@ test "metric reader cumulative histograms retain inactive series" {
             for (data_points) |dp| {
                 const attrs = dp.attributes orelse return error.MissingAttributes;
                 try std.testing.expectEqual(1, attrs.len);
-                try std.testing.expectEqualStrings("http.request.method", attrs[0].key);
+                try std.testing.expectEqualStrings(semconv.attribute.http_request_method.name, attrs[0].key);
                 const method = switch (attrs[0].value) {
                     .string => |value| value,
                     else => return error.UnexpectedAttributeType,

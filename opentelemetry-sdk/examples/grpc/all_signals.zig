@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const sdk = @import("opentelemetry-sdk");
+const semconv = @import("opentelemetry-semconv");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -79,7 +80,7 @@ pub fn main(init: std.process.Init) !void {
     // ── Logs ─────────────────────────────────────────────────────────────────
 
     const resource_attrs = try sdk.Attributes.from(allocator, .{
-        "host.name", @as([]const u8, "my-computer"),
+        semconv.attribute.host_name.name, @as([]const u8, "my-computer"),
     });
     defer if (resource_attrs) |attrs| allocator.free(attrs);
     var logs_exporter = try sdk.logs.OTLPExporter.init(allocator, io, config);
@@ -113,8 +114,8 @@ pub fn main(init: std.process.Init) !void {
     for (requests) |req| {
         var span = try tracer.startSpan(allocator, req.path, .{ .kind = .Server });
         defer span.deinit();
-        try span.setAttribute("http.method", .{ .string = req.method });
-        try span.setAttribute("http.route", .{ .string = req.path });
+        try span.setAttribute(semconv.attribute.http_request_method.name, .{ .string = req.method });
+        try span.setAttribute(semconv.attribute.http_route.name, .{ .string = req.path });
         try span.setAttribute("example.source", .{ .string = "grpc-all-signals" });
 
         logger.emitStructured(.info, .{
@@ -126,12 +127,12 @@ pub fn main(init: std.process.Init) !void {
         std.Io.sleep(io, .fromNanoseconds(@as(u64, @intFromFloat(req.latency_ms * std.time.ns_per_ms))), .awake) catch {};
 
         try req_count.add(1, .{
-            "http.method", req.method,
-            "http.route",  req.path,
+            semconv.attribute.http_request_method.name, req.method,
+            semconv.attribute.http_route.name,          req.path,
         });
         try req_duration.record(req.latency_ms, .{
-            "http.method", req.method,
-            "http.route",  req.path,
+            semconv.attribute.http_request_method.name, req.method,
+            semconv.attribute.http_route.name,          req.path,
         });
 
         span.setStatus(sdk.api.trace.Status.ok());

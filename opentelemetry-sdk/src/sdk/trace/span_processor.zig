@@ -1,5 +1,6 @@
 const std = @import("std");
 const clock = @import("timeout");
+const semconv = @import("opentelemetry-semconv");
 const trace = @import("../../api/trace.zig");
 const context = @import("../../api/context.zig");
 const SpanExporter = @import("span_exporter.zig").SpanExporter;
@@ -855,9 +856,9 @@ test "BatchingProcessor queued span owns its TraceState" {
 test "BatchingProcessor cloneSpan preserves resource" {
     const allocator = std.testing.allocator;
 
-    const resource = [_]attribute.Attribute{
-        .{ .key = "service.name", .value = .{ .string = "test-service" } },
-    };
+    const resource = attribute.fromPairs(.{
+        .{ semconv.attribute.service_name, "test-service" },
+    });
 
     const span_context = trace.SpanContext.init(
         trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
@@ -873,7 +874,7 @@ test "BatchingProcessor cloneSpan preserves resource" {
     defer queued.deinit();
 
     try std.testing.expect(queued.resource != null);
-    try std.testing.expectEqualStrings("service.name", queued.resource.?[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, queued.resource.?[0].key);
     try std.testing.expectEqualStrings("test-service", queued.resource.?[0].value.string);
 }
 
