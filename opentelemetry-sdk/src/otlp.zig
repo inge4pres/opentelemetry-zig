@@ -1362,6 +1362,10 @@ pub fn Export(
                 .insecure = target.insecure,
                 .timeout_sec = config.timeout_sec,
                 .headers = headers,
+                .compression = switch (config.compression) {
+                    .none => .none,
+                    .gzip => .gzip,
+                },
                 .server_root_certificates_filename = if (config.tls_opts) |tls| tls.certificate_file else null,
                 .client_certificate_filename = if (config.tls_opts) |tls| tls.client_certificate_file else null,
                 .client_private_key_filename = if (config.tls_opts) |tls| tls.client_private_key_file else null,

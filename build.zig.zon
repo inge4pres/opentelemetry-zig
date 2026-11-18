@@ -45,8 +45,8 @@
         // with `-Dgrpc-provider=libgrpc`. Lazy so builds using the default
         // (`none`) never fetch it, nor the libgrpc sources it depends on.
         .cgrpc_wrapper = .{
-            .url = "git+https://github.com/agagniere/cgrpc_wrapper?ref=master#7d77024856572957f98bf80b93c45de8712d693d",
-            .hash = "cgrpc_wrapper-0.3.1-O5w4NYyxAAAFBnmciarz82WDOJhwFOSqoWZMSrhGWw8N",
+            .url = "git+https://github.com/agagniere/cgrpc_wrapper?ref=master#475d6f3cb89a11f11a65177a7b920f64eac839f1",
+            .hash = "cgrpc_wrapper-0.4.0-O5w4NezRAABmxYWI3PZukpL99fT0YhWSK95Hv8LRrzjz",
             .lazy = true,
         },
     },

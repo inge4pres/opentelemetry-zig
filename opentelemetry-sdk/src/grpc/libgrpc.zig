@@ -37,7 +37,12 @@ pub fn send(
     var credentials: grpc.client.Credentials = try makeCredentials(arena, io, config);
     defer credentials.deinit();
 
-    var channel: grpc.Channel = try grpc.Channel.init(endpoint, credentials);
+    var channel: grpc.Channel = try .init(endpoint, credentials, .{
+        .compression = switch (config.compression) {
+            .none => .none,
+            .gzip => .gzip,
+        },
+    });
     defer channel.deinit();
 
     var queue: grpc.PluckQueue = .init();
@@ -154,6 +159,20 @@ fn makeSSLCredentials(arena: Allocator, io: std.Io, config: Configuration) !grpc
         if (client_key_cert != null) "with" else "without",
     });
     return .ssl(root_certs, client_key_cert);
+}
+
+test "send builds its channel whatever the compression" {
+    // Nothing listens on port 1: the call gets as far as the connection attempt,
+    // which fails as `Unavailable`, a retryable code.
+    inline for (std.meta.tags(configuration.Compression)) |compression| {
+        try std.testing.expectError(error.RetryableStatusCodeInResponse, send(
+            std.testing.allocator,
+            std.testing.io,
+            "/some.Service/Method",
+            "payload",
+            .{ .endpoint = "127.0.0.1:1", .insecure = true, .timeout_sec = 1, .compression = compression },
+        ));
+    }
 }
 
 test {

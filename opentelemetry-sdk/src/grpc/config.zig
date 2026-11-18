@@ -2,6 +2,11 @@
 
 const std = @import("std");
 
+/// gRPC message compression: applied per message by gRPC itself and announced
+/// in the `grpc-encoding` header, not gzip applied to the protobuf bytes as is
+/// done over HTTP.
+pub const Compression = enum { none, gzip };
+
 pub const Configuration = struct {
     /// The endpoint to send the data to.
     /// Must be in the form of "host:port", without scheme.
@@ -26,6 +31,9 @@ pub const Configuration = struct {
     /// gRPC requires lowercase keys, so backends lowercase the header names,
     /// which are case-insensitive.
     headers: []const std.http.Header = &.{},
+
+    /// Compression of the messages sent.
+    compression: Compression = .none,
 
     /// CA chain used to verify server certificate (PEM format).
     ///
