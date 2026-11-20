@@ -282,7 +282,7 @@ pub const MeterProvider = struct {
                         h.lock.lockUncancelable(h.io);
                         defer h.lock.unlock(h.io);
                         if (maybe_agg) |agg| {
-                            if (h.explicit_points.count() == 0 and h.exponential_points.count() == 0) {
+                            if (h.explicit_storage.count() == 0 and h.exponential_storage.count() == 0) {
                                 switch (agg) {
                                     .ExplicitBucketHistogram => |conf| {
                                         h.buckets = conf.buckets;

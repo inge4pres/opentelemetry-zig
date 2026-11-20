@@ -18,12 +18,15 @@ pub const OTLPExporter = @import("metrics/exporters/otlp.zig").OTLPExporter;
 pub const PrometheusExporter = @import("metrics/exporters/prometheus.zig").PrometheusExporter;
 pub const PrometheusExporterConfig = @import("metrics/exporters/prometheus.zig").ExporterConfig;
 
+pub const storage = @import("metrics/storage.zig");
+
 test {
     _ = @import("metrics/exporter.zig");
     _ = @import("metrics/reader.zig");
     _ = @import("metrics/view.zig");
     _ = @import("metrics/temporality.zig");
     _ = @import("metrics/aggregation.zig");
+    _ = @import("metrics/storage.zig");
 }
 
 pub const exemplar = @import("metrics/exemplar.zig");

@@ -175,7 +175,7 @@ pub fn aggregateExponentialBucketHistogram(
 
         const result = try aggregated_state.getOrPut(attributes);
         if (!result.found_existing) {
-            result.value_ptr.* = ExponentialHistogramState.init(allocator, max_scale);
+            result.value_ptr.* = ExponentialHistogramState.init(max_scale);
             // Duplicate the attributes for the new entry
             result.key_ptr.* = Attributes.with(try attributes.dupe(allocator));
         }
@@ -219,8 +219,7 @@ pub const ExponentialHistogramState = struct {
     negative_buckets: std.AutoArrayHashMapUnmanaged(i32, u64),
     const min_scale: i32 = -10;
 
-    pub fn init(allocator: std.mem.Allocator, scale: i32) ExponentialHistogramState {
-        _ = allocator;
+    pub fn init(scale: i32) ExponentialHistogramState {
         return ExponentialHistogramState{
             .scale = scale,
             .sum = null,
@@ -680,7 +679,7 @@ test "clean up after a memory allocation failure while shrinking the exponential
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     const allocator = failing.allocator();
 
-    var state = ExponentialHistogramState.init(allocator, 0);
+    var state = ExponentialHistogramState.init(0);
     defer state.deinit(allocator);
 
     for ([_]f64{ -0.375, -0.75, 1.5 }) |v| {
