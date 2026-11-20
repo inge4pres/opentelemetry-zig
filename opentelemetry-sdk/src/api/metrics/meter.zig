@@ -133,32 +133,41 @@ pub const MeterProvider = struct {
 
     /// Flush and shut down all registered MetricReaders.
     /// Idempotent: subsequent calls return immediately.
+    /// Every reader is shut down even if some fail; the first error is returned.
     /// To free provider memory and meters, call deinit().
     /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#meterprovider-shutdown
-    pub fn shutdown(self: *Self) void {
+    pub fn shutdown(self: *Self) !void {
         if (self.is_shutdown.swap(true, .acq_rel)) {
             return;
         }
 
+        var first_error: ?anyerror = null;
         self.mx.lockUncancelable(self.io);
         const readers = self.allocator.dupe(*MetricReader, self.readers.items) catch {
             for (self.readers.items) |reader| {
-                reader.shutdown();
+                reader.shutdown() catch |err| {
+                    if (first_error == null) first_error = err;
+                };
             }
             self.mx.unlock(self.io);
+            if (first_error) |err| return err;
             return;
         };
         self.mx.unlock(self.io);
         defer self.allocator.free(readers);
 
         for (readers) |reader| {
-            reader.shutdown();
+            reader.shutdown() catch |err| {
+                if (first_error == null) first_error = err;
+            };
         }
+        if (first_error) |err| return err;
     }
 
     /// Shutdown the provider, if it is still running, and free it along with its meters.
+    /// Callers that need the readers' final export result call shutdown() first.
     pub fn deinit(self: *Self) void {
-        self.shutdown();
+        self.shutdown() catch |err| log.err("shutdown: error while shutting down readers: {}", .{err});
 
         self.mx.lockUncancelable(self.io);
 
@@ -861,7 +870,7 @@ test "meter provider shutdown shuts down registered readers and flushes metrics"
     try counter.add(42, .{});
 
     // Calling shutdown on the provider must shut down the reader and export pending metrics
-    mp.shutdown();
+    try mp.shutdown();
 
     // Verify metrics were collected and exported during provider shutdown
     const exported = try inMem.fetch(allocator);
@@ -875,6 +884,33 @@ test "meter provider shutdown shuts down registered readers and flushes metrics"
     try std.testing.expectEqual(@as(usize, 1), exported.len);
 }
 
+test "meter provider shutdown shuts down every reader and returns the first error" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    // Registered first, so the provider must keep going after its failure.
+    var failing = exporter.ExporterImpl{ .exportFn = exporter.failingExporter };
+    const failing_exporter = try MetricExporter.new(allocator, io, &failing);
+    const failing_reader = try MetricReader.init(allocator, io, failing_exporter);
+    defer failing_reader.deinit();
+    try mp.addReader(failing_reader);
+
+    var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
+    const noop_exporter = try MetricExporter.new(allocator, io, &noop);
+    const reader = try MetricReader.init(allocator, io, noop_exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    try std.testing.expectError(error.ExportFailed, mp.shutdown());
+
+    // The reader after the failing one was shut down too.
+    try std.testing.expect(@atomicLoad(bool, &reader.hasShutDown, .acquire));
+    try std.testing.expect(reader.meterProvider == null);
+}
+
 test "meter provider shutdown is idempotent" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -882,8 +918,8 @@ test "meter provider shutdown is idempotent" {
     var mp = try MeterProvider.init(allocator, io);
     defer mp.deinit();
 
-    mp.shutdown();
-    mp.shutdown();
+    try mp.shutdown();
+    try mp.shutdown();
 }
 
 test "meter provider forceFlush flushes all registered readers" {

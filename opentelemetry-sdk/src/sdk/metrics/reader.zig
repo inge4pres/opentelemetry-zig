@@ -299,27 +299,35 @@ pub const MetricReader = struct {
         try self.exporter.forceFlush(timeout);
     }
 
-    pub fn shutdown(self: *Self) void {
+    /// Collect and export a last time, then shut down the exporter.
+    /// Idempotent: subsequent calls return immediately.
+    /// The reader is shut down even when the final export fails, and that error is returned so the
+    /// caller knows whether the last data points reached the exporter.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#shutdown-1
+    pub fn shutdown(self: *Self) !void {
         if (@atomicRmw(bool, &self.hasShutDown, .Xchg, true, .acq_rel)) {
             return;
         }
         if (self.shutdown_hook) |hook| {
             hook.shutdownFn(hook.ctx);
         }
-        self.collectInternal() catch |e| {
-            if (e != MetricReadError.CollectFailedOnMissingMeterProvider) {
-                log.err("shutdown: error while collecting metrics: {}", .{e});
-            }
-        };
+        const collected = self.collectInternal();
         if (self.meterProvider) |mp| {
             mp.detachReader(self);
             self.meterProvider = null;
         }
         self.exporter.shutdown();
+        collected catch |err| switch (err) {
+            // A reader that was never registered has nothing to export.
+            MetricReadError.CollectFailedOnMissingMeterProvider => {},
+            else => return err,
+        };
     }
 
+    /// Shut down, if not done yet, and free the reader.
+    /// Callers that need the final export's result call shutdown() first.
     pub fn deinit(self: *Self) void {
-        self.shutdown();
+        self.shutdown() catch |err| log.err("shutdown: error while collecting metrics: {}", .{err});
         self.temporal_aggregation.deinit();
         self.allocator.destroy(self);
     }
@@ -334,11 +342,35 @@ test "metric reader shutdown prevents collect() to execute" {
 
     const e = metric_reader.collect();
     try std.testing.expectEqual(MetricReadError.CollectFailedOnMissingMeterProvider, e);
-    metric_reader.shutdown();
+    try metric_reader.shutdown();
     // Subsequent collect calls are no-ops
     try metric_reader.collect();
     // Subsequent shutdown calls are no-ops
-    metric_reader.shutdown();
+    try metric_reader.shutdown();
+}
+
+test "metric reader shutdown returns the final export's error and still shuts down" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var failing = exporter.ExporterImpl{ .exportFn = exporter.failingExporter };
+    const metric_exporter = try MetricExporter.new(allocator, io, &failing);
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const m = try mp.getMeter(.{ .name = "my-meter" });
+    var counter = try m.createCounter(u32, .{ .name = "my-counter" });
+    try counter.add(1, .{});
+
+    // The caller learns that the last data points never reached the exporter.
+    try std.testing.expectError(MetricReadError.ExportFailed, reader.shutdown());
+    // The reader is shut down all the same: detached, and later calls are no-ops.
+    try std.testing.expect(reader.meterProvider == null);
+    try reader.shutdown();
 }
 
 test "metric reader collects data from meter provider" {

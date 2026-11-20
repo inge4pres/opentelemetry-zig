@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         5000, // collect every 5 seconds
         null,
     );
-    defer periodic_reader.shutdown();
+    defer periodic_reader.shutdown() catch |err| std.log.err("metrics flush failed: {t}", .{err});
 
     // Create a meter
     const meter = try mp.getMeter(.{

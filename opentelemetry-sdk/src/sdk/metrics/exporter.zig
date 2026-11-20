@@ -269,6 +269,13 @@ pub const MetricExporter = struct {
 pub fn noopExporter(_: *ExporterImpl, _: []Measurements) MetricReadError!void {
     return;
 }
+// test harness to build an exporter that refuses every batch. It owns the batch, so it frees it.
+// marked as pub only for testing purposes.
+pub fn failingExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
+    for (metrics) |*m| m.deinit(std.testing.allocator);
+    std.testing.allocator.free(metrics);
+    return MetricReadError.ExportFailed;
+}
 // mocked metric exporter to assert metrics data are read once exported.
 fn mockExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
     defer {
@@ -607,12 +614,16 @@ pub const PeriodicExportingReader = struct {
         self.collectThread.join();
     }
 
-    pub fn shutdown(self: *Self) void {
+    /// Stop the background collector, export a last time and free the reader.
+    /// The reader is freed even when the final export fails, and that error is returned.
+    pub fn shutdown(self: *Self) !void {
         self.stopWorker();
-        self.reader.deinit();
-
         // Only when the background collector has stopped we can destroy.
-        self.allocator.destroy(self);
+        defer {
+            self.reader.deinit();
+            self.allocator.destroy(self);
+        }
+        try self.reader.shutdown();
     }
 };
 
@@ -668,7 +679,7 @@ test "e2e periodic exporting metric reader" {
         waiting_ms,
         null,
     );
-    defer per.shutdown();
+    defer per.shutdown() catch |err| std.debug.panic("PeriodicExportingReader shutdown: {}", .{err});
 
     var meter = try mp.getMeter(.{ .name = "test-reader", .attributes = try Attributes.from(
         allocator,
@@ -728,6 +739,20 @@ test "e2e periodic exporting metric reader" {
     try std.testing.expect(seen_counter and seen_histogram);
 }
 
+test "periodic exporting metric reader shutdown returns the final export's error" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var failing = ExporterImpl{ .exportFn = failingExporter };
+    const metric_exporter = try MetricExporter.new(allocator, io, &failing);
+
+    const per = try PeriodicExportingReader.init(allocator, io, mp, metric_exporter, null, null);
+    try std.testing.expectError(MetricReadError.ExportFailed, per.shutdown());
+}
+
 test "periodic exporting metric reader exports pending metrics on shutdown" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -751,7 +776,7 @@ test "periodic exporting metric reader exports pending metrics on shutdown" {
     var counter = try meter.createCounter(u64, .{ .name = "requests" });
     try counter.add(7, .{});
 
-    per.shutdown();
+    try per.shutdown();
 
     const data = try inMem.fetch(allocator);
     defer {
