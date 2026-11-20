@@ -271,20 +271,15 @@ pub fn Counter(comptime T: type) type {
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
         collection_start_ns: u64 = 0,
         pre_sum: bool = true,
-        cardinality_limit: usize,
 
         storage: storage.SumStorage,
 
         /// Raw data points kept as fallback when any reader or view resolves to non-Sum (e.g. LastValue, Histogram, Drop).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        pub const overflow_attrs = storage.SumStorage.overflow_attrs;
-        pub const overflow_key = storage.SumStorage.overflow_key;
-
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .pre_sum = true,
-                .cardinality_limit = spec.default_cardinality_limit,
                 .storage = storage.SumStorage.init(allocator, io, spec.default_cardinality_limit),
                 .data_points = .empty,
                 .allocator = allocator,
@@ -304,8 +299,6 @@ pub fn Counter(comptime T: type) type {
         }
 
         fn recordSumPoint(self: *Self, dp: *DataPoint(T), capture_exemplar: bool) !void {
-            self.storage.cardinality_limit = self.cardinality_limit;
-            self.storage.allocator = self.allocator;
             try self.storage.recordPoint(T, dp, capture_exemplar, self.exemplar_filter);
         }
 
@@ -427,9 +420,6 @@ pub fn Histogram(comptime T: type) type {
             exponential,
         };
 
-        pub const ExplicitState = storage.ExplicitState;
-        pub const ExponentialState = storage.ExponentialState;
-
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
@@ -438,25 +428,13 @@ pub fn Histogram(comptime T: type) type {
 
         pre_aggregate: bool = false,
         mode: Mode = .explicit,
-        cardinality_limit: usize = spec.default_cardinality_limit,
 
         /// Keeps track of the raw recorded values for each set of attributes.
         /// Used when pre_aggregate is false (e.g. standalone instruments or custom pipelines).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        // Explicit bucket configuration
-        buckets: []const f64 = spec.default_histogram_explicit_bucket_boundaries,
-        record_min_max: bool = true,
-        record_sum: bool = true,
         explicit_storage: storage.ExplicitBucketHistogramStorage,
-
-        // Exponential bucket configuration
-        max_scale: i32 = 20,
-        max_size: u32 = 1024,
         exponential_storage: storage.ExponentialHistogramStorage,
-
-        pub const overflow_attrs = storage.ExplicitBucketHistogramStorage.overflow_attrs;
-        pub const overflow_key = storage.ExplicitBucketHistogramStorage.overflow_key;
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
@@ -546,20 +524,9 @@ pub fn Histogram(comptime T: type) type {
 
             switch (self.mode) {
                 .explicit => {
-                    self.explicit_storage.allocator = self.allocator;
-                    self.explicit_storage.cardinality_limit = self.cardinality_limit;
-                    self.explicit_storage.buckets = self.buckets;
-                    self.explicit_storage.record_min_max = self.record_min_max;
-                    self.explicit_storage.record_sum = self.record_sum;
                     try self.explicit_storage.record(f64_val, attributes, &candidate);
                 },
                 .exponential => {
-                    self.exponential_storage.allocator = self.allocator;
-                    self.exponential_storage.cardinality_limit = self.cardinality_limit;
-                    self.exponential_storage.max_scale = self.max_scale;
-                    self.exponential_storage.max_size = self.max_size;
-                    self.exponential_storage.record_min_max = self.record_min_max;
-                    self.exponential_storage.record_sum = self.record_sum;
                     try self.exponential_storage.record(f64_val, attributes, &candidate);
                 },
             }
@@ -574,7 +541,6 @@ pub fn Histogram(comptime T: type) type {
             const has_raw = self.data_points.items.len > 0;
 
             if (has_raw and has_explicit) {
-                self.explicit_storage.allocator = self.allocator;
                 for (self.data_points.items) |*raw_dp| {
                     const f64_val = toF64(raw_dp.value);
                     var cand = raw_dp.exemplar_candidate;
@@ -585,7 +551,6 @@ pub fn Histogram(comptime T: type) type {
                 for (self.data_points.items) |*m| m.deinit(self.allocator);
                 self.data_points.clearRetainingCapacity();
             } else if (has_raw and has_exponential) {
-                self.exponential_storage.allocator = self.allocator;
                 for (self.data_points.items) |*raw_dp| {
                     const f64_val = toF64(raw_dp.value);
                     var cand = raw_dp.exemplar_candidate;
@@ -616,15 +581,11 @@ pub fn Histogram(comptime T: type) type {
             }
 
             if (has_explicit) {
-                self.explicit_storage.collection_start_ns = self.collection_start_ns;
-                const data = try self.explicit_storage.snapshot(allocator);
-                self.collection_start_ns = self.explicit_storage.collection_start_ns;
+                const data = try self.explicit_storage.snapshot(allocator, &self.collection_start_ns);
                 self.explicit_storage.clearRetainingCapacity();
                 return .{ .histogram = data };
             } else {
-                self.exponential_storage.collection_start_ns = self.collection_start_ns;
-                const data = try self.exponential_storage.snapshot(allocator);
-                self.collection_start_ns = self.exponential_storage.collection_start_ns;
+                const data = try self.exponential_storage.snapshot(allocator, &self.collection_start_ns);
                 self.exponential_storage.clearRetainingCapacity();
                 return .{ .exponential_histogram = data };
             }
@@ -671,20 +632,15 @@ pub fn Gauge(comptime T: type) type {
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
         collection_start_ns: u64 = 0,
         pre_last_value: bool = true,
-        cardinality_limit: usize,
 
         storage: storage.LastValueStorage(AggType),
 
         /// Raw data points kept as fallback when any reader or view resolves to non-LastValue (e.g. Drop).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
-        pub const overflow_attrs = storage.LastValueStorage(AggType).overflow_attrs;
-        pub const overflow_key = storage.LastValueStorage(AggType).overflow_key;
-
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .pre_last_value = true,
-                .cardinality_limit = spec.default_cardinality_limit,
                 .storage = storage.LastValueStorage(AggType).init(allocator, io, spec.default_cardinality_limit),
                 .data_points = .empty,
                 .allocator = allocator,
@@ -704,8 +660,6 @@ pub fn Gauge(comptime T: type) type {
         }
 
         fn recordRawPoint(self: *Self, raw_dp: *DataPoint(T)) !void {
-            self.storage.cardinality_limit = self.cardinality_limit;
-            self.storage.allocator = self.allocator;
             try self.storage.recordRawPoint(T, raw_dp);
         }
 
@@ -775,8 +729,6 @@ pub fn Gauge(comptime T: type) type {
             var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
             defer if (candidate) |*s| s.deinit(self.allocator);
 
-            self.storage.cardinality_limit = self.cardinality_limit;
-            self.storage.allocator = self.allocator;
             try self.storage.record(val, attributes, &candidate);
         }
 
@@ -887,7 +839,7 @@ test "histogram records value with explicit buckets" {
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
-    histogram.buckets = &[_]f64{ 2.0, 10.0 };
+    histogram.explicit_storage.buckets = &[_]f64{ 2.0, 10.0 };
 
     try histogram.record(1, .{});
     try histogram.record(5, .{});
@@ -1021,7 +973,7 @@ test "histogram enforces cardinality limit" {
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "cardinality-test" });
-    histogram.cardinality_limit = 2;
+    histogram.explicit_storage.cardinality_limit = 2;
 
     try histogram.record(1, .{ "attr", @as([]const u8, "a") });
     try histogram.record(2, .{ "attr", @as([]const u8, "b") });
@@ -1037,8 +989,8 @@ test "histogram exponential bucket mode aggregates in place" {
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(f64, .{ .name = "exp-test" });
     histogram.mode = .exponential;
-    histogram.max_scale = 10;
-    histogram.max_size = 4;
+    histogram.exponential_storage.max_scale = 10;
+    histogram.exponential_storage.max_size = 4;
 
     try histogram.record(1.0, .{});
     try histogram.record(2.0, .{});
@@ -1109,7 +1061,7 @@ test "gauge cardinality limit creates overflow series and records excess measure
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i64, .{ .name = "gauge-cardinality" });
-    gauge.cardinality_limit = 3;
+    gauge.storage.cardinality_limit = 3;
 
     try gauge.record(10, .{ "k", @as([]const u8, "v1") });
     try gauge.record(20, .{ "k", @as([]const u8, "v2") });
@@ -1147,7 +1099,11 @@ test "gauge record existing series performs zero heap allocations" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const prev_allocator = gauge.allocator;
     gauge.allocator = failing_allocator.allocator();
-    defer gauge.allocator = prev_allocator;
+    gauge.storage.allocator = failing_allocator.allocator();
+    defer {
+        gauge.allocator = prev_allocator;
+        gauge.storage.allocator = prev_allocator;
+    }
 
     try gauge.record(2.5, .{ "host", @as([]const u8, "server-1") });
     try gauge.record(3.5, .{ "host", @as([]const u8, "server-1") });
@@ -1192,6 +1148,7 @@ test "gauge setPreLastValue failed drain reverts to raw recording mode" {
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const prev_allocator = gauge.allocator;
     gauge.allocator = failing_allocator.allocator();
+    gauge.storage.allocator = failing_allocator.allocator();
 
     // Drain fails because put/copyAttributes fails:
     gauge.setPreLastValue(true);
@@ -1201,6 +1158,7 @@ test "gauge setPreLastValue failed drain reverts to raw recording mode" {
 
     // Restore allocator
     gauge.allocator = prev_allocator;
+    gauge.storage.allocator = prev_allocator;
     // Record another measurement: appends to raw data_points in chronological order
     try gauge.record(20, .{ "color", @as([]const u8, "red") });
     try std.testing.expectEqual(@as(usize, 2), gauge.data_points.items.len);
@@ -1234,7 +1192,7 @@ fn testGaugeAllocationFailures(allocator: std.mem.Allocator) !void {
     const io = std.testing.io;
     var g = Gauge(f64).init(allocator, io);
     defer g.deinit();
-    g.cardinality_limit = 2;
+    g.storage.cardinality_limit = 2;
 
     try g.record(10.0, .{ "status", @as([]const u8, "200") });
     try g.record(5.0, .{ "status", @as([]const u8, "200") });
@@ -1583,7 +1541,7 @@ test "counter enforces cardinality limit with overflow series" {
 
     const meter = try mp.getMeter(.{ .name = "test-meter" });
     var counter = try meter.createCounter(u64, .{ .name = "high.cardinality" });
-    counter.cardinality_limit = 3;
+    counter.storage.cardinality_limit = 3;
 
     // The overflow series is created before the limit is reached and takes one of its slots:
     // with a limit of 3, only 2 regular series fit.
@@ -1681,7 +1639,7 @@ fn testCounterAllocationFailures(allocator: std.mem.Allocator) !void {
     const io = std.testing.io;
     var c = Counter(u32).init(allocator, io);
     defer c.deinit();
-    c.cardinality_limit = 2;
+    c.storage.cardinality_limit = 2;
 
     try c.add(10, .{ "status", @as([]const u8, "200") });
     try c.add(5, .{ "status", @as([]const u8, "200") });
@@ -1701,7 +1659,7 @@ fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
     const io = std.testing.io;
     var c = Counter(u32).init(allocator, io);
     defer c.deinit();
-    c.cardinality_limit = 3;
+    c.storage.cardinality_limit = 3;
 
     c.setPreSum(false);
     try c.add(1, .{ "status", @as([]const u8, "200") });
@@ -1792,7 +1750,7 @@ test "histogram cardinality limit creates overflow series and aggregates excess 
     var h = Histogram(f64).init(std.testing.allocator, io);
     defer h.deinit();
     h.pre_aggregate = true;
-    h.cardinality_limit = 3; // Allows 2 regular series + 1 overflow series
+    h.explicit_storage.cardinality_limit = 3; // Allows 2 regular series + 1 overflow series
 
     try h.record(10.0, .{ "status", @as([]const u8, "200") });
     try h.record(20.0, .{ "status", @as([]const u8, "200") });
@@ -1869,7 +1827,7 @@ fn testHistogramAllocationFailures(allocator: std.mem.Allocator) !void {
     var h = Histogram(f64).init(allocator, io);
     defer h.deinit();
     h.pre_aggregate = true;
-    h.cardinality_limit = 2;
+    h.explicit_storage.cardinality_limit = 2;
 
     try h.record(10.0, .{ "status", @as([]const u8, "200") });
     try h.record(5.0, .{ "status", @as([]const u8, "200") });

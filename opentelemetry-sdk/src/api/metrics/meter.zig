@@ -285,23 +285,23 @@ pub const MeterProvider = struct {
                             if (h.explicit_storage.count() == 0 and h.exponential_storage.count() == 0) {
                                 switch (agg) {
                                     .ExplicitBucketHistogram => |conf| {
-                                        h.buckets = conf.buckets;
+                                        h.explicit_storage.buckets = conf.buckets;
+                                        h.explicit_storage.record_min_max = conf.record_min_max;
                                         h.mode = .explicit;
-                                        h.record_min_max = conf.record_min_max;
                                     },
                                     .ExponentialBucketHistogram => |conf| {
-                                        h.max_scale = conf.max_scale;
-                                        h.max_size = conf.max_size;
+                                        h.exponential_storage.max_scale = conf.max_scale;
+                                        h.exponential_storage.max_size = conf.max_size;
+                                        h.exponential_storage.record_min_max = conf.record_min_max;
                                         h.mode = .exponential;
-                                        h.record_min_max = conf.record_min_max;
                                     },
                                     else => unreachable,
                                 }
                                 h.pre_aggregate = (h.data_points.items.len == 0);
                             } else {
                                 const matches = switch (agg) {
-                                    .ExplicitBucketHistogram => |conf| h.mode == .explicit and std.mem.eql(f64, h.buckets, conf.buckets),
-                                    .ExponentialBucketHistogram => |conf| h.mode == .exponential and h.max_scale == conf.max_scale and h.max_size == conf.max_size,
+                                    .ExplicitBucketHistogram => |conf| h.mode == .explicit and std.mem.eql(f64, h.explicit_storage.buckets, conf.buckets),
+                                    .ExponentialBucketHistogram => |conf| h.mode == .exponential and h.exponential_storage.max_scale == conf.max_scale and h.exponential_storage.max_size == conf.max_size,
                                     else => false,
                                 };
                                 if (!matches) {
@@ -460,7 +460,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
-        c.cardinality_limit = self.cardinality_limit;
+        c.storage.cardinality_limit = self.cardinality_limit;
         c.exemplar_filter = self.exemplar_filter;
 
         if (self.provider) |p| {
@@ -485,7 +485,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
-        c.cardinality_limit = self.cardinality_limit;
+        c.storage.cardinality_limit = self.cardinality_limit;
         c.exemplar_filter = self.exemplar_filter;
 
         if (self.provider) |p| {
@@ -510,7 +510,8 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
-        h.cardinality_limit = self.cardinality_limit;
+        h.explicit_storage.cardinality_limit = self.cardinality_limit;
+        h.exponential_storage.cardinality_limit = self.cardinality_limit;
         h.exemplar_filter = self.exemplar_filter;
 
         if (self.provider) |p| {
@@ -521,15 +522,15 @@ pub const Meter = struct {
             if (maybe_agg) |agg| {
                 switch (agg) {
                     .ExplicitBucketHistogram => |conf| {
-                        h.buckets = conf.buckets;
+                        h.explicit_storage.buckets = conf.buckets;
+                        h.explicit_storage.record_min_max = conf.record_min_max;
                         h.mode = .explicit;
-                        h.record_min_max = conf.record_min_max;
                     },
                     .ExponentialBucketHistogram => |conf| {
-                        h.max_scale = conf.max_scale;
-                        h.max_size = conf.max_size;
+                        h.exponential_storage.max_scale = conf.max_scale;
+                        h.exponential_storage.max_size = conf.max_size;
+                        h.exponential_storage.record_min_max = conf.record_min_max;
                         h.mode = .exponential;
-                        h.record_min_max = conf.record_min_max;
                     },
                     else => unreachable,
                 }
@@ -556,7 +557,7 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
-        g.cardinality_limit = self.cardinality_limit;
+        g.storage.cardinality_limit = self.cardinality_limit;
         g.exemplar_filter = self.exemplar_filter;
 
         if (self.provider) |p| {
@@ -1466,9 +1467,9 @@ test "fetch validates exponential histogram max_size" {
     const meter = try mp.getMeter(.{ .name = "test" });
     var histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });
     histogram.mode = .exponential;
-    histogram.max_scale = 10;
-    histogram.max_size = 2;
-    histogram.record_min_max = false;
+    histogram.exponential_storage.max_scale = 10;
+    histogram.exponential_storage.max_size = 2;
+    histogram.exponential_storage.record_min_max = false;
     try histogram.record(1.0, .{});
     try histogram.record(2.0, .{});
 

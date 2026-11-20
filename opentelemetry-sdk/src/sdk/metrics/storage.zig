@@ -15,6 +15,11 @@ fn toKey(attributes: ?[]const Attribute) Attributes {
     return Attributes.with(if (attributes) |attrs| @constCast(attrs) else null);
 }
 
+const overflow_attrs = [_]Attribute{
+    .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
+};
+const overflow_key = Attributes.with(@constCast(&overflow_attrs));
+
 /// Deep-copy and normalize points to the target type with timestamps assigned from collection_start_ns.
 pub fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.mem.Allocator, io: std.Io, points: []const DataPoint(From), collection_start_ns: *u64) ![]DataPoint(To) {
     const copied = try allocator.alloc(DataPoint(To), points.len);
@@ -53,20 +58,13 @@ pub const SumStorage = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     cardinality_limit: usize,
-    collection_start_ns: u64,
     aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),
-
-    pub const overflow_attrs = [_]Attribute{
-        .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
-    };
-    pub const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, cardinality_limit: usize) SumStorage {
         return .{
             .allocator = allocator,
             .io = io,
             .cardinality_limit = cardinality_limit,
-            .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .aggregated_points = .empty,
         };
     }
@@ -176,20 +174,13 @@ pub fn LastValueStorage(comptime AggType: type) type {
         allocator: std.mem.Allocator,
         io: std.Io,
         cardinality_limit: usize,
-        collection_start_ns: u64,
         aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true),
-
-        pub const overflow_attrs = [_]Attribute{
-            .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
-        };
-        pub const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
         pub fn init(allocator: std.mem.Allocator, io: std.Io, cardinality_limit: usize) Self {
             return .{
                 .allocator = allocator,
                 .io = io,
                 .cardinality_limit = cardinality_limit,
-                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
                 .aggregated_points = .empty,
             };
         }
@@ -386,7 +377,6 @@ pub const ExplicitBucketHistogramStorage = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     cardinality_limit: usize,
-    collection_start_ns: u64,
     buckets: []const f64,
     record_min_max: bool,
     record_sum: bool,
@@ -396,11 +386,6 @@ pub const ExplicitBucketHistogramStorage = struct {
         Attributes.ArrayHashContext,
         true,
     ),
-
-    pub const overflow_attrs = [_]Attribute{
-        .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
-    };
-    pub const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -414,7 +399,6 @@ pub const ExplicitBucketHistogramStorage = struct {
             .allocator = allocator,
             .io = io,
             .cardinality_limit = cardinality_limit,
-            .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .buckets = buckets,
             .record_min_max = record_min_max,
             .record_sum = record_sum,
@@ -520,7 +504,7 @@ pub const ExplicitBucketHistogramStorage = struct {
         try self.insertExplicitPoint(attributes, f64_val, candidate);
     }
 
-    pub fn snapshot(self: *ExplicitBucketHistogramStorage, allocator: std.mem.Allocator) ![]DataPoint(HistogramDataPoint) {
+    pub fn snapshot(self: *ExplicitBucketHistogramStorage, allocator: std.mem.Allocator, end_time_ns: *u64) ![]DataPoint(HistogramDataPoint) {
         var total_points: usize = 0;
         for (self.explicit_points.values()) |*val| {
             var ex_count: usize = 0;
@@ -568,8 +552,8 @@ pub const ExplicitBucketHistogramStorage = struct {
 
         if (data.len > 0) {
             const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
-            for (data) |*point| point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
-            self.collection_start_ns = collection_time;
+            for (data) |*point| point.timestamps = .{ .start_time_ns = end_time_ns.*, .time_ns = collection_time };
+            end_time_ns.* = collection_time;
         }
 
         return data;
@@ -612,7 +596,6 @@ pub const ExponentialHistogramStorage = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     cardinality_limit: usize,
-    collection_start_ns: u64,
     max_scale: i32,
     max_size: u32,
     record_min_max: bool,
@@ -623,11 +606,6 @@ pub const ExponentialHistogramStorage = struct {
         Attributes.ArrayHashContext,
         true,
     ),
-
-    pub const overflow_attrs = [_]Attribute{
-        .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
-    };
-    pub const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -642,7 +620,6 @@ pub const ExponentialHistogramStorage = struct {
             .allocator = allocator,
             .io = io,
             .cardinality_limit = cardinality_limit,
-            .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .max_scale = max_scale,
             .max_size = max_size,
             .record_min_max = record_min_max,
@@ -706,7 +683,7 @@ pub const ExponentialHistogramStorage = struct {
         try self.insertExponentialPoint(attributes, f64_val, candidate);
     }
 
-    pub fn snapshot(self: *ExponentialHistogramStorage, allocator: std.mem.Allocator) ![]DataPoint(ExponentialHistogramDataPoint) {
+    pub fn snapshot(self: *ExponentialHistogramStorage, allocator: std.mem.Allocator, end_time_ns: *u64) ![]DataPoint(ExponentialHistogramDataPoint) {
         const cnt = self.exponential_points.count();
         var data = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), cnt);
         var success_count: usize = 0;
@@ -739,8 +716,8 @@ pub const ExponentialHistogramStorage = struct {
 
         if (data.len > 0) {
             const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
-            for (data) |*point| point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
-            self.collection_start_ns = collection_time;
+            for (data) |*point| point.timestamps = .{ .start_time_ns = end_time_ns.*, .time_ns = collection_time };
+            end_time_ns.* = collection_time;
         }
 
         return data;
@@ -777,7 +754,7 @@ test "SumStorage basic recording and snapshot" {
 
     try std.testing.expectEqual(@as(usize, 1), sum_storage.count());
 
-    var end_time: u64 = sum_storage.collection_start_ns;
+    var end_time: u64 = 0;
     const points = try sum_storage.snapshot(std.testing.allocator, &end_time);
     defer {
         for (points) |*p| p.deinit(std.testing.allocator);
@@ -808,7 +785,7 @@ test "SumStorage cardinality limit with overflow series" {
 
     try std.testing.expectEqual(@as(usize, 3), sum_storage.count());
 
-    var end_time: u64 = sum_storage.collection_start_ns;
+    var end_time: u64 = 0;
     const points = try sum_storage.snapshot(std.testing.allocator, &end_time);
     defer {
         for (points) |*p| p.deinit(std.testing.allocator);
@@ -829,7 +806,7 @@ test "LastValueStorage basic recording and snapshot" {
 
     try std.testing.expectEqual(@as(usize, 1), storage_i64.count());
 
-    var end_time: u64 = storage_i64.collection_start_ns;
+    var end_time: u64 = 0;
     const points = try storage_i64.snapshot(std.testing.allocator, &end_time);
     defer {
         for (points) |*p| p.deinit(std.testing.allocator);
@@ -853,7 +830,8 @@ test "ExplicitBucketHistogramStorage basic recording" {
 
     try std.testing.expectEqual(@as(usize, 1), hist_storage.count());
 
-    const points = try hist_storage.snapshot(std.testing.allocator);
+    var end_time: u64 = 0;
+    const points = try hist_storage.snapshot(std.testing.allocator, &end_time);
     defer {
         for (points) |*p| p.deinit(std.testing.allocator);
         std.testing.allocator.free(points);

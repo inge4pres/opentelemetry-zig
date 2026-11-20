@@ -18,8 +18,6 @@ pub const OTLPExporter = @import("metrics/exporters/otlp.zig").OTLPExporter;
 pub const PrometheusExporter = @import("metrics/exporters/prometheus.zig").PrometheusExporter;
 pub const PrometheusExporterConfig = @import("metrics/exporters/prometheus.zig").ExporterConfig;
 
-pub const storage = @import("metrics/storage.zig");
-
 test {
     _ = @import("metrics/exporter.zig");
     _ = @import("metrics/reader.zig");
